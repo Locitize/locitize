@@ -39,11 +39,12 @@ python -m venv .venv
 
 `agent_setup.py` performs the wizard's core sequence with the same functions
 the wizard uses: seeds the config, finds or downloads the GPU-matched
-llama.cpp build (digest-verified), and discovers + registers the GGUF models
-already on the machine (hardlinked, never copied). It is idempotent - re-run it
-any time; existing pieces are detected and skipped. Optional features (voice,
-vision, Open WebUI, fine-tune studio) are added later via `LOCITIZE.vbs
---setup`.
+llama.cpp build (digest-verified), discovers + registers the GGUF models
+already on the machine (hardlinked, never copied), and installs and enables
+Open WebUI as the chat app (separately licensed; skip it with
+`--no-openwebui`). It is idempotent - re-run it any time; existing pieces are
+detected and skipped. Other optional features (voice, vision, fine-tune
+studio) are added later via `LOCITIZE.vbs --setup`.
 
 ## Verify the setup
 

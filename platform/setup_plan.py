@@ -261,6 +261,7 @@ FEATURES: tuple[Feature, ...] = (
         "llama.cpp's built-in minimal UI. Large: it pulls its own stack. "
         "Separately licensed third-party software.",
         requires=("webui_venv", "webui_pip"),
+        default_on=True,
     ),
     Feature(
         "finetune", "Fine-tune models",

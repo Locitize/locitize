@@ -192,9 +192,10 @@ openwebui:
   # venv. It is pointed at the running llama.cpp server (OpenAI-compatible
   # backend) and supervised by the same lifecycle as every other LOCITIZE service.
   #
-  # OFF by default: it is separately licensed third-party software with its own
-  # terms, and installing it is the user's decision, not a side effect of
-  # starting LOCITIZE.
+  # false in this template: it is separately licensed third-party software, so
+  # it is only switched on once setup has installed it. The wizard (box ticked
+  # by default) and agent_setup.py (unless --no-openwebui) install it and set
+  # this to true; starting LOCITIZE never installs it as a side effect.
   enabled: false
   venv: ".webui-venv"           # dedicated venv dir under the data root
   data_dir: "webui-data"        # under the data root; private like memory/

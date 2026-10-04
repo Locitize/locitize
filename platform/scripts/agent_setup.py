@@ -10,6 +10,10 @@ wizard calls (never a parallel implementation):
      record its path in settings.yaml
   3. discover the GGUF models already on this machine and register them
      (hardlinked into the models dir - no copies; re-runs never duplicate)
+  4. install Open WebUI (the rich chat app) into its own .webui-venv and
+     enable it, as the wizard does when its Open WebUI box is ticked (the
+     default). Open WebUI is separately licensed third-party software; pass
+     --no-openwebui to skip it.
 
 It then makes sure the shared model store folder exists and installs the
 claude-local shim (claude-local.cmd/.ps1 in ~/.local/bin), which runs Claude
@@ -23,8 +27,8 @@ Idempotent: every step detects what already exists and skips it, so re-running
 is always safe. Exit 0 = usable install (a machine with no models still exits 0
 - models can be imported or downloaded later); exit 1 = a hard step failed.
 
-Optional features (voice, vision, Open WebUI, fine-tune studio) stay wizard/
-user-driven - this script installs the core serve-a-model path only. ASCII only.
+Other optional features (voice, vision, fine-tune studio) stay wizard/
+user-driven - add them later with LOCITIZE.vbs --setup. ASCII only.
 """
 
 from __future__ import annotations
@@ -47,13 +51,18 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--no-openwebui",
+        action="store_true",
+        help="skip installing Open WebUI (chat then uses llama.cpp's built-in UI)",
+    )
+    args = parser.parse_args(argv)
     say = print
     data_root = setup_env.BASE_DIR / "locitize-data"
 
     # -- 1. seed config ------------------------------------------------------
     actions = config.ensure_user_config(data_root, setup_env.BASE_DIR)
-    say(f"[1/3] config seeded at {data_root} "
+    say(f"[1/4] config seeded at {data_root} "
         f"({', '.join(a.kind for a in actions) or 'already present'})")
 
     # -- 2. llama.cpp --------------------------------------------------------
@@ -61,15 +70,15 @@ def main(argv: list[str] | None = None) -> int:
     say(f"      GPU: {gpu_name or 'none detected (CPU build will be used)'}")
     server = setup_env.find_llama_server()
     if server:
-        say(f"[2/3] llama.cpp found: {server}")
+        say(f"[2/4] llama.cpp found: {server}")
     else:
         result, server = setup_env.install_llama_cpp(
             data_root / "bin", has_gpu, confirm_unverified=False, say=say
         )
         if not server:
-            say(f"[2/3] FAILED: {result.message}")
+            say(f"[2/4] FAILED: {result.message}")
             return 1
-        say(f"[2/3] llama.cpp installed: {server}")
+        say(f"[2/4] llama.cpp installed: {server}")
     written = setup_env.write_settings_paths(
         sys.executable, data_root, {"llama_cpp": server}
     )
@@ -79,12 +88,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # -- 3. the user's models ------------------------------------------------
     found = setup_env.find_local_models(say=say)
-    if not found:
-        say("[3/3] no local GGUF models found; use the Models page (or the "
-            "user's own files) to add some - setup itself is complete")
-        return 0
     models_dir = data_root / "models"
     imported = skipped = failed = 0
+    if not found:
+        say("[3/4] no local GGUF models found; use the Models page (or the "
+            "user's own files) to add some")
     for entry in found:
         location = setup_env.place_into_models_dir(entry["path"], models_dir)
         mmproj_src = setup_env.pair_mmproj(entry["path"])
@@ -109,8 +117,36 @@ def main(argv: list[str] | None = None) -> int:
         else:
             failed += 1
             say(f"      {entry['name']}: {result.message[:100]}")
-    say(f"[3/3] models: {imported} imported, {skipped} already registered, "
-        f"{failed} failed")
+    if found:
+        say(f"[3/4] models: {imported} imported, {skipped} already registered, "
+            f"{failed} failed")
+
+    # -- 4. Open WebUI -------------------------------------------------------
+    # Not a hard step: the core install works without it (chat falls back to
+    # llama.cpp's built-in UI), so a failure is reported, not fatal.
+    if args.no_openwebui:
+        say("[4/4] Open WebUI skipped (--no-openwebui)")
+    else:
+        say("[4/4] installing Open WebUI (large download; separately licensed "
+            "third-party software)")
+        webui_venv = setup_env.REPO_DIR / ".webui-venv"
+        made = setup_env.create_venv(webui_venv)
+        if not made.ok:
+            say(f"      FAILED to create {webui_venv}: {made.message}")
+        else:
+            webui_exe = webui_venv / ("Scripts/python.exe" if sys.platform == "win32"
+                                      else "bin/python")
+            installed = setup_env.pip_install(
+                webui_exe, setup_env.PIP_SETS["webui_pip"]
+            )
+            if not installed.ok:
+                say(f"      FAILED: {installed.message[-200:]}")
+            else:
+                enabled = setup_env.enable_openwebui_via_venv(
+                    sys.executable, data_root
+                )
+                say(f"      {'ok' if enabled.ok else 'note'}: {enabled.message}")
+
     say("")
     say("Done. Verify with: launcher.py --health --json")
     store = setup_env.ensure_model_store(say)
