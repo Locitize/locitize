@@ -88,7 +88,7 @@ def _report(outcome: modelhub.DownloadOutcome) -> int:
         print(f"  verification: {outcome.verification} - {rung}")
         print(
             "Next: add this path as a model 'location:' in models.yaml "
-            "(or use the Models page's Register button) and restart LOCITIZE."
+            "(or use the Models page's Register button) and restart locitize."
         )
         return 0
     print(f"FAIL: {outcome.error}")
@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="fetch_model",
         description=(
             "PROTECTED owner-run checksummed model downloader. The only raw-URL "
-            "download entry point in LOCITIZE."
+            "download entry point in locitize."
         ),
     )
     parser.add_argument("--url", help="confirmed direct https download URL")
@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "proceed when HuggingFace publishes no checksum; the file is saved "
-            "and its computed digest recorded, but LOCITIZE cannot verify it"
+            "and its computed digest recorded, but locitize cannot verify it"
         ),
     )
     parser.add_argument(
@@ -149,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.url:
         if not args.sha256:
             print(
-                "REFUSING: --url requires --sha256. LOCITIZE will not download a "
+                "REFUSING: --url requires --sha256. locitize will not download a "
                 "file from an arbitrary URL without a digest to check it against."
             )
             return 1

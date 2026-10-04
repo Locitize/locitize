@@ -205,12 +205,12 @@ def notice_text(
         )
     else:
         closing = (
-            "LOCITIZE deleted nothing - it only ever copied - and the old folder at "
+            "locitize deleted nothing - it only ever copied - and the old folder at "
             f"{install_dir} is no longer on this machine."
         )
     return (
-        "LOCITIZE moved to a single data folder. Your existing conversations, logs "
-        f"and settings were copied from {install_dir} to {data_dir}. LOCITIZE now "
+        "locitize moved to a single data folder. Your existing conversations, logs "
+        f"and settings were copied from {install_dir} to {data_dir}. locitize now "
         f"reads and writes only the data folder. {closing}"
     )
 
@@ -523,7 +523,7 @@ def _copy_atomically(source: Path, destination: Path) -> None:
         if source.is_dir():
             staging.mkdir()
             (staging / _STAGING_SENTINEL).write_text(
-                "Created by LOCITIZE while copying user data into the data folder. "
+                "Created by locitize while copying user data into the data folder. "
                 "Safe to delete along with this directory.\n",
                 encoding="utf-8",
             )

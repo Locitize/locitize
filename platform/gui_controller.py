@@ -2498,7 +2498,7 @@ class GuiController:
             registered = self._registry.get(model_id)
             argv, env = build_local_launch(choice, project, model_id, self._active_port,
                                            payload.get("resume_id", ""), registered.context_size)
-            harness_launch.spawn_in_terminal(argv, project, env, f"{choice} - LOCITIZE ({model_id})")
+            harness_launch.spawn_in_terminal(argv, project, env, f"{choice} - locitize ({model_id})")
             self._controller._session_reserved_model = model_id
             self._local_session_launches = getattr(self, "_local_session_launches", 0) + 1
             sid = payload.get("resume_id")
@@ -3019,7 +3019,7 @@ class GuiController:
                 # The window is closing and Thread E has already been cancelled and
                 # joined. Starting a transfer now would create a worker nothing
                 # cancels or joins, so this command is refused instead.
-                refusal = "LOCITIZE is shutting down; the download was not started."
+                refusal = "locitize is shutting down; the download was not started."
             elif self._hub_thread is not None and self._hub_thread.is_alive():
                 # One download at a time. No queue: parallel multi-gigabyte
                 # transfers fight for bandwidth and give the user two slow
@@ -3278,7 +3278,7 @@ class GuiController:
             note = "Local model routing applies to this terminal only."
 
             harness_launch.spawn_in_terminal(
-                argv, project_dir, env, title=f"{choice} - LOCITIZE ({model_id})"
+                argv, project_dir, env, title=f"{choice} - locitize ({model_id})"
             )
             self._controller._session_reserved_model = model_id
             self._local_session_launches = getattr(self, "_local_session_launches", 0) + 1
@@ -4003,7 +4003,7 @@ class GuiController:
                 context_size,
                 server_args,
                 note=(
-                    f"context_size set by LOCITIZE auto-tune "
+                    f"context_size set by locitize auto-tune "
                     f"{_today_stamp()}: real trial starts on this machine"
                 ),
             )

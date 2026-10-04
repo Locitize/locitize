@@ -61,5 +61,5 @@ class SessionService:
         import re
 
         fence = "`" * max(3, 1 + max((len(x) for x in re.findall(r"`+", text)), default=0))
-        _atomic_write(destination, f"# LOCITIZE session export\n\n{fence}text\n{text}\n{fence}\n")
+        _atomic_write(destination, f"# locitize session export\n\n{fence}text\n{text}\n{fence}\n")
         return destination

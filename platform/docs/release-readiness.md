@@ -1,4 +1,4 @@
-# LOCITIZE 0.2.0-beta.1 release readiness
+# locitize 0.2.0-beta.1 release readiness
 
 Status: unsigned internal beta candidate. Not approved as a production release.
 This work uses the repository build/test/package process; no vault workflow.
@@ -47,7 +47,7 @@ Prepare the venv with requirements-core.lock and requirements-dev.txt. Track all
 intended source files. From the repository root:
 
 ```powershell
-.venv\Scripts\python platform/scripts/build_release.py --output dist/LOCITIZE-0.2.0-beta.1-candidate
+.venv\Scripts\python platform/scripts/build_release.py --output dist/locitize-0.2.0-beta.1-candidate
 ```
 
 The builder never downloads components or signs output. It refuses an existing
@@ -55,8 +55,8 @@ output directory. release-manifest.json records the source commit, dirty-source
 flag, actual runtime versions and every packaged file hash. An uncommitted build
 must be identified using its manifest; it must not be presented as a clean tag.
 
-Extract the ZIP before installation. Run Install LOCITIZE.bat, then the new
-shortcut. Portable use via LOCITIZE.exe is also supported. User data stays outside
+Extract the ZIP before installation. Run Install locitize.bat, then the new
+shortcut. Portable use via locitize.exe is also supported. User data stays outside
 the install tree. Older versions remain available for manual rollback.
 Never distribute a QA directory that has been changed after manifest generation.
 

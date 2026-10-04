@@ -73,7 +73,7 @@ def run_round_trip() -> dict:
     memory = ConversationMemory(mem_root)
 
     state = ConversationState(session_id=_SESSION_ID)
-    state.append("system", "You are LOCITIZE.")
+    state.append("system", "You are locitize.")
     loop = AssistantLoop(
         _CannedLlm(), _CannedLlm(), None, state, memory=memory
     )

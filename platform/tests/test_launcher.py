@@ -292,7 +292,7 @@ def test_no_menu_renders_and_exits():
     code = Launcher(deps=_deps(_pass_report(), lines)).run(["--no-menu"])
     assert code == 0
     text = "\n".join(lines)
-    assert "LOCITIZE" in text
+    assert "locitize" in text
     assert "System Status" in text
     assert "Installed Models" in text
     assert "Applications" in text
@@ -353,7 +353,7 @@ def test_force_utf8_output_lets_emoji_reply_print_on_cp1252_stdout():
 
     from launcher import _force_utf8_output
 
-    reply = "LOCITIZE: All set \U0001f60a"  # U+1F60A, not encodable in cp1252
+    reply = "locitize: All set \U0001f60a"  # U+1F60A, not encodable in cp1252
     original = _sys.stdout
 
     # Baseline (documents the reported crash): raw cp1252 stdout cannot encode it.

@@ -1,4 +1,4 @@
-# LOCITIZE architecture
+# locitize architecture
 
 This repository is the build source of truth for this release.
 

@@ -84,7 +84,7 @@ def test_ship_set_guard_reports_a_module_that_was_never_staged(tmp_path):
     (root / "launcher.py").write_text(
         "import helper\n"
         "if __name__ == '__main__':\n"
-        "    print('LOCITIZE usage')\n",
+        "    print('locitize usage')\n",
         encoding="utf-8",
     )
     (root / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
@@ -117,7 +117,7 @@ def test_ship_set_guard_reports_a_lazily_imported_unstaged_module(tmp_path):
 
     (root / "launcher.py").write_text(
         "import argparse\n"
-        "parser = argparse.ArgumentParser(prog='LOCITIZE')\n"
+        "parser = argparse.ArgumentParser(prog='locitize')\n"
         "def open_shell():\n"
         "    import shell\n"
         "    return shell.VALUE\n"
@@ -153,7 +153,7 @@ def test_ship_set_guard_ignores_installed_packages(tmp_path):
         "def later():\n"
         "    import subprocess\n"
         "    return subprocess\n"
-        "parser = argparse.ArgumentParser(prog='LOCITIZE')\n"
+        "parser = argparse.ArgumentParser(prog='locitize')\n"
         "if __name__ == '__main__':\n"
         "    parser.parse_args()\n",
         encoding="utf-8",
@@ -198,7 +198,7 @@ def test_ship_set_guard_passes_when_every_import_is_staged(tmp_path):
     (root / "launcher.py").write_text(
         "import helper\n"
         "import argparse\n"
-        "parser = argparse.ArgumentParser(prog='LOCITIZE')\n"
+        "parser = argparse.ArgumentParser(prog='locitize')\n"
         "if __name__ == '__main__':\n"
         "    parser.parse_args()\n",
         encoding="utf-8",
@@ -258,7 +258,7 @@ def test_ship_set_guard_reports_a_dynamically_imported_unstaged_module(tmp_path)
     (root / "launcher.py").write_text(
         "import argparse\n"
         "import importlib\n"
-        "parser = argparse.ArgumentParser(prog='LOCITIZE')\n"
+        "parser = argparse.ArgumentParser(prog='locitize')\n"
         "def load_plugin():\n"
         "    return importlib.import_module('plugin')\n"
         "if __name__ == '__main__':\n"
@@ -291,7 +291,7 @@ def test_ship_set_guard_names_the_path_that_actually_resolved(tmp_path):
     (root / "launcher.py").write_text(
         "import argparse\n"
         "import plugins\n"
-        "parser = argparse.ArgumentParser(prog='LOCITIZE')\n"
+        "parser = argparse.ArgumentParser(prog='locitize')\n"
         "if __name__ == '__main__':\n"
         "    parser.parse_args()\n",
         encoding="utf-8",
@@ -323,7 +323,7 @@ def test_ship_set_guard_reports_an_untracked_ship_critical_asset(tmp_path, monke
 
     (root / "launcher.py").write_text(
         "import argparse\n"
-        "parser = argparse.ArgumentParser(prog='LOCITIZE')\n"
+        "parser = argparse.ArgumentParser(prog='locitize')\n"
         "if __name__ == '__main__':\n"
         "    parser.parse_args()\n",
         encoding="utf-8",
@@ -376,7 +376,7 @@ def test_unstaged_deletion_is_a_warning_not_a_failure(tmp_path):
 
     (root / "launcher.py").write_text(
         "import argparse\n"
-        "parser = argparse.ArgumentParser(prog='LOCITIZE')\n"
+        "parser = argparse.ArgumentParser(prog='locitize')\n"
         "if __name__ == '__main__':\n"
         "    parser.parse_args()\n",
         encoding="utf-8",
@@ -412,7 +412,7 @@ def test_unstaged_deletion_is_a_warning_not_a_failure(tmp_path):
 
 _RUNNABLE_LAUNCHER = (
     "import argparse\n"
-    "parser = argparse.ArgumentParser(prog='LOCITIZE')\n"
+    "parser = argparse.ArgumentParser(prog='locitize')\n"
     "if __name__ == '__main__':\n"
     "    parser.parse_args()\n"
 )
@@ -443,12 +443,12 @@ def test_a_module_named_only_from_a_bat_wrapper_is_a_known_gap(tmp_path):
     and not about a fixture that cannot fail.
     """
     root = _tracked_repo(tmp_path, "bat_reference")
-    (root / "LOCITIZE Helper.bat").write_text(
+    (root / "locitize Helper.bat").write_text(
         "@echo off\r\npython helper.py %*\r\n", encoding="utf-8"
     )
     (root / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
     subprocess.run(
-        ["git", "add", "LOCITIZE Helper.bat"], cwd=str(root), check=True, capture_output=True
+        ["git", "add", "locitize Helper.bat"], cwd=str(root), check=True, capture_output=True
     )
 
     result = guard.check_ship_set(root)
@@ -482,7 +482,7 @@ def test_an_undeclared_data_asset_is_a_known_gap(tmp_path):
     root = _tracked_repo(tmp_path, "undeclared_asset")
     (root / "launcher.py").write_text(
         "import argparse\n"
-        "parser = argparse.ArgumentParser(prog='LOCITIZE')\n"
+        "parser = argparse.ArgumentParser(prog='locitize')\n"
         "def load_notes():\n"
         "    with open('notes.txt', encoding='utf-8') as handle:\n"
         "        return handle.read()\n"

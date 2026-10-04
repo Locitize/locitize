@@ -195,7 +195,7 @@ def summarize(procs: list[GpuProcess]) -> str:
     noun = "process" if len(procs) == 1 else "processes"
     tail = f" ({known_mb:.0f} MB attributed)" if known_mb else ""
     return (
-        f"{len(procs)} {noun} on the GPU, {len(ours)} owned by LOCITIZE{tail}."
+        f"{len(procs)} {noun} on the GPU, {len(ours)} owned by locitize{tail}."
     )
 
 

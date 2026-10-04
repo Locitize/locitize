@@ -150,7 +150,7 @@ def test_query_none_on_nonzero_exit():
 def test_summarize_counts_ours(monkeypatch):
     marked = mark_ours(parse_compute_apps(SAMPLE), bin_dir=BIN)
     line = gpu_ledger.summarize(marked)
-    assert "1 owned by LOCITIZE" in line
+    assert "1 owned by locitize" in line
     assert "4 processes" in line
 
 

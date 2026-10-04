@@ -41,7 +41,7 @@ def test_shipped_shim_sources_carry_the_contract():
     assert "127.0.0.1" in ps1
     assert "ANTHROPIC_BASE_URL" in ps1
     assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS" in ps1
-    assert "No LOCITIZE model is running" in ps1
+    assert "No locitize model is running" in ps1
     # The trimmed tool allowlist (same as the in-app harness): without it the
     # full tool schema alone overflowed an 8k local window in live testing.
     assert "--strict-mcp-config" in ps1 and "--tools" in ps1

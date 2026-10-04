@@ -84,7 +84,7 @@ def resolve_service_cwd(settings: Any) -> str:
     Invariant W1 (DEC-M14-9) says LOCITIZE writes nothing beneath the install
     directory at runtime. Until now the ServiceSpec builders all passed
     `cwd=None`, which makes a child inherit LOCITIZE's own working directory - and
-    LOCITIZE.bat line 9 does `cd /d "%~dp0"`, i.e. the install directory. Any
+    locitize.bat line 9 does `cd /d "%~dp0"`, i.e. the install directory. Any
     relative path llama-server, whisper, kokoro or Open WebUI wrote therefore
     landed in the install tree, invisible to both halves of the W1 fence
     (review round 6, MEDIUM-1).
@@ -471,7 +471,7 @@ class ManagedProcess:
         # unread pipe buffer would fill and deadlock the child before readiness.
         stdout_target = self._open_output_target(spec)
         # A child inherits the parent's working directory when cwd is None, and
-        # LOCITIZE.bat cd's into the install directory - so every relative file a
+        # locitize.bat cd's into the install directory - so every relative file a
         # managed child writes would land in the install tree (invariant W1,
         # review round 6 MEDIUM-1). Every spec now names its own directory; this
         # makes sure it exists before Popen, which fails outright on a missing one.
@@ -615,7 +615,7 @@ class ManagedProcess:
         if self._log_handle is None:
             return
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        banner = f"\n===== LOCITIZE service start {service_name} {stamp} =====\n"
+        banner = f"\n===== locitize service start {service_name} {stamp} =====\n"
         try:
             self._log_handle.write(banner.encode("ascii", errors="replace"))
             self._log_handle.flush()
@@ -1201,7 +1201,7 @@ class ModelController:
             return
         listed = "; ".join(stale)
         raise ValueError(
-            f"another LOCITIZE model server is already holding the GPU "
+            f"another locitize model server is already holding the GPU "
             f"({listed}). Starting a second one would leave both spilling to "
             f"CPU. Use Offload GPU to clear it, then retry"
         )

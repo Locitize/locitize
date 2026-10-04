@@ -36,7 +36,7 @@ KOKORO_SERVER_NAME = "kokoro_server"
 # The single fixed sentence spoken by --audition in each voice, so the owner can
 # compare voices on identical text. A module constant per Architecture M6.3; the
 # launcher may override it from settings.tts.sample_sentence.
-AUDITION_SENTENCE = "Hello, I am LOCITIZE. This is how this voice sounds."
+AUDITION_SENTENCE = "Hello, I am locitize. This is how this voice sounds."
 
 # The kokoro server is a Python child that must run in the venv where torch/kokoro
 # are installed. The heavy TTS dependencies live in a venv OUTSIDE the compiled

@@ -92,7 +92,7 @@ def build_codex_provider_block(base_url: str) -> str:
     """
     return (
         f"\n[model_providers.{_CODEX_PROVIDER_NAME}]\n"
-        f'name = "LOCITIZE (local)"\n'
+        f'name = "locitize (local)"\n'
         f'base_url = "{base_url}"\n'
         f'env_key = "LOCITIZE_CODEX_API_KEY"\n'
         f'wire_api = "responses"\n'
@@ -295,7 +295,7 @@ def build_opencode_provider_config(base_url: str, model_id: str) -> dict[str, An
         "provider": {
             _OPENCODE_PROVIDER_NAME: {
                 "npm": "@ai-sdk/openai-compatible",
-                "name": "LOCITIZE (local)",
+                "name": "locitize (local)",
                 "options": {"baseURL": base_url},
                 "models": {model_id: {"name": model_id}},
             }
@@ -339,9 +339,9 @@ def write_opencode_project_config(project_dir: str, base_url: str, model_id: str
         # comment-preserving merge for a LOW-severity, non-security issue.
         if path.suffix == ".jsonc" and stripped != raw:
             raise ValueError(
-                f"{path} has comments LOCITIZE cannot safely preserve while merging - "
+                f"{path} has comments locitize cannot safely preserve while merging - "
                 "add the locitize provider to it by hand, or delete opencode.jsonc "
-                "and relaunch so LOCITIZE writes a fresh opencode.json instead"
+                "and relaunch so locitize writes a fresh opencode.json instead"
             )
         parsed = json.loads(stripped) if raw.strip() else {}
         if isinstance(parsed, dict):
@@ -720,7 +720,7 @@ def install_claude_code() -> tuple[bool, str]:
     if detect_executable_fresh(HARNESS_CLAUDE) is None:
         return False, (
             "the installer ran but claude was not found afterward - "
-            "restart LOCITIZE and it should be picked up"
+            "restart locitize and it should be picked up"
         )
     return True, "Claude Code installed"
 
@@ -739,7 +739,7 @@ def install_codex() -> tuple[bool, str]:
     if detect_executable_fresh(HARNESS_CODEX) is None:
         return False, (
             "the installer ran but codex was not found afterward - "
-            "restart LOCITIZE and it should be picked up"
+            "restart locitize and it should be picked up"
         )
     return True, "Codex installed"
 
@@ -811,7 +811,7 @@ def install_opencode() -> tuple[bool, str]:
     if npm_path is None:
         return False, (
             "Node.js was installed but npm could not be found yet - "
-            "restart LOCITIZE and try again"
+            "restart locitize and try again"
         )
     try:
         proc = subprocess.run(
@@ -829,7 +829,7 @@ def install_opencode() -> tuple[bool, str]:
     if detect_executable_fresh(HARNESS_OPENCODE) is None:
         return False, (
             "the installer ran but opencode was not found afterward - "
-            "restart LOCITIZE and it should be picked up"
+            "restart locitize and it should be picked up"
         )
     return True, "OpenCode installed"
 

@@ -8,7 +8,7 @@ function Get-PackageHash([string]$Path) {
 }
 $packageRoot = $PSScriptRoot
 $manifestPath = Join-Path $packageRoot 'release-manifest.json'
-if (-not (Test-Path -LiteralPath $manifestPath)) { throw 'Extract the complete LOCITIZE release first.' }
+if (-not (Test-Path -LiteralPath $manifestPath)) { throw 'Extract the complete locitize release first.' }
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 if ($manifest.version -notmatch '^[0-9A-Za-z.-]+$') { throw 'Invalid release version.' }
 if (-not $InstallRoot) { $InstallRoot = Join-Path $env:LOCALAPPDATA 'Programs\LOCITIZE' }
@@ -38,12 +38,12 @@ Move-Item -LiteralPath $stagingTarget -Destination $installTarget
 if (-not $NoShortcuts) {
     $shell = New-Object -ComObject WScript.Shell
     foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
-        $shortcut = $shell.CreateShortcut((Join-Path $folder 'LOCITIZE.lnk'))
-        $shortcut.TargetPath = Join-Path $installTarget 'LOCITIZE.exe'
+        $shortcut = $shell.CreateShortcut((Join-Path $folder 'locitize.lnk'))
+        $shortcut.TargetPath = Join-Path $installTarget 'locitize.exe'
         $shortcut.WorkingDirectory = $installTarget
-        $shortcut.IconLocation = Join-Path $installTarget 'LOCITIZE.exe'
+        $shortcut.IconLocation = Join-Path $installTarget 'locitize.exe'
         $shortcut.Save()
     }
 }
-Write-Output "LOCITIZE $($manifest.version) installed at $installTarget"
-Write-Output 'Models and session data stay in the existing LOCITIZE data directory.'
+Write-Output "locitize $($manifest.version) installed at $installTarget"
+Write-Output 'Models and session data stay in the existing locitize data directory.'

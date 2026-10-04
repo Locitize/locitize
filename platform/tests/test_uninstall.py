@@ -70,7 +70,7 @@ def test_missing_pieces_do_not_appear(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     root = tmp_path / "nonexistent-data"
-    # Isolate from the REAL machine: a genuine Desktop LOCITIZE.lnk (this dev
+    # Isolate from the REAL machine: a genuine Desktop locitize.lnk (this dev
     # box has one) must not leak into the honest-empty-plan assertion.
     monkeypatch.setattr(uninstall, "desktop_shortcut", lambda: None)
     delete, keep = uninstall_plan(repo, root, keep_models=True)
@@ -99,7 +99,7 @@ def test_nothing_outside_install_paths(tmp_path, monkeypatch):
     delete, _keep = uninstall_plan(repo, root, keep_models=True)
     allowed = (str(repo), str(root), str(lad / "LOCITIZE"))
     for target in delete:
-        if target.name == "LOCITIZE.lnk":
+        if target.name == "locitize.lnk":
             continue  # the Desktop shortcut is the one path outside the trio
         assert str(target).startswith(allowed), target
 

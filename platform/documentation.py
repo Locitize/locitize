@@ -17,7 +17,7 @@ from pathlib import Path
 
 # Written once when the journal file is first created (Data Model 3.1).
 _HEADER = (
-    "# LOCITIZE Development Journal\n\n"
+    "# locitize Development Journal\n\n"
     "Append-only. Each entry records one platform launch. Never edit or delete "
     "prior entries.\n"
 )

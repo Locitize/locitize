@@ -94,7 +94,7 @@ REQUIREMENTS: dict[str, Requirement] = {
     for r in (
         Requirement(
             "platform_venv", KIND_VENV, "Python environment",
-            "A private .venv for LOCITIZE, so nothing is installed system-wide.",
+            "A private .venv for locitize, so nothing is installed system-wide.",
             None, essential=True,
         ),
         Requirement(
@@ -104,7 +104,7 @@ REQUIREMENTS: dict[str, Requirement] = {
         ),
         Requirement(
             "gui_pip", KIND_PIP, "Desktop UI (PySide6)",
-            "The Qt toolkit the main LOCITIZE window is built on.",
+            "The Qt toolkit the main locitize window is built on.",
             95, essential=True,
         ),
         Requirement(
@@ -116,7 +116,7 @@ REQUIREMENTS: dict[str, Requirement] = {
         ),
         Requirement(
             "first_model", KIND_MODEL, "A model to talk to",
-            "Models already on this machine are found and imported - LOCITIZE "
+            "Models already on this machine are found and imported - locitize "
             "ships no model list and copies nothing. If you have none, the "
             "Models page will help you find one.",
             None, essential=True,
@@ -196,7 +196,7 @@ REQUIREMENTS: dict[str, Requirement] = {
         Requirement(
             "finetune_pip", KIND_PIP, "Fine-tune studio",
             "Streamlit and the trainer front end. Training itself needs Docker, "
-            "which LOCITIZE does not install for you.",
+            "which locitize does not install for you.",
             400,
         ),
     )
@@ -211,7 +211,7 @@ FEATURES: tuple[Feature, ...] = (
     Feature(
         "core", "Run and chat with local models",
         "The engine, the desktop window, and one model to talk to. This is "
-        "LOCITIZE; everything else is optional.",
+        "locitize; everything else is optional.",
         requires=("platform_venv", "base_pip", "gui_pip", "llama_cpp", "first_model"),
         default_on=True, core=True,
     ),

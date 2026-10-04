@@ -145,7 +145,7 @@ def read_gguf_header(path: str | Path) -> GgufHeader:
     file_path = Path(path)
     if not file_path.is_file():
         raise GgufError(
-            f"LOCITIZE could not read the model file at {file_path} because it "
+            f"locitize could not read the model file at {file_path} because it "
             f"does not exist. Check the model's `location` in models.yaml, then "
             f"try again."
         )
@@ -156,7 +156,7 @@ def read_gguf_header(path: str | Path) -> GgufHeader:
     except OSError as exc:
         cause = (exc.strerror or "the file could not be opened").strip().rstrip(".")
         raise GgufError(
-            f"LOCITIZE could not read the model file at {file_path}: {cause}. "
+            f"locitize could not read the model file at {file_path}: {cause}. "
             f"Close any program using the file, then try again."
         ) from exc
 
@@ -174,7 +174,7 @@ def read_native_context_length(path: str | Path) -> int:
         raise GgufError(
             f"The model file at {header.path} carries no "
             f"'{header.architecture}{CONTEXT_LENGTH_SUFFIX}' value in its GGUF "
-            f"header, so LOCITIZE cannot tell what context window it was trained "
+            f"header, so locitize cannot tell what context window it was trained "
             f"for. Set this model's context_size by hand instead of auto-tuning."
         )
     return header.context_length
@@ -199,7 +199,7 @@ def _parse_header(handle: BinaryIO, file_path: Path) -> GgufHeader:
     if version not in SUPPORTED_VERSIONS:
         raise GgufError(
             f"The file at {file_path} uses GGUF format version {version}, which "
-            f"LOCITIZE does not read (it understands versions "
+            f"locitize does not read (it understands versions "
             f"{', '.join(str(v) for v in SUPPORTED_VERSIONS)}). Re-download the "
             f"model in a current GGUF build, or set its context_size by hand."
         )
@@ -250,7 +250,7 @@ def _parse_header(handle: BinaryIO, file_path: Path) -> GgufHeader:
     if not architecture:
         raise GgufError(
             f"The GGUF header at {file_path} carries no '{KEY_ARCHITECTURE}' "
-            f"entry, so LOCITIZE cannot tell which model family it belongs to. "
+            f"entry, so locitize cannot tell which model family it belongs to. "
             f"Set this model's context_size by hand instead of auto-tuning."
         )
 
@@ -318,7 +318,7 @@ def _read_value(handle: BinaryIO, value_type: int, file_path: Path) -> Any:
         return [_read_value(handle, item_type, file_path) for _ in range(length)]
     raise GgufError(
         f"The GGUF header at {file_path} uses metadata value type {value_type}, "
-        f"which is not part of the GGUF specification LOCITIZE reads. The file "
+        f"which is not part of the GGUF specification locitize reads. The file "
         f"is most likely corrupt; re-download it."
     )
 
@@ -364,7 +364,7 @@ def _skip_value(handle: BinaryIO, value_type: int, file_path: Path) -> None:
         return
     raise GgufError(
         f"The GGUF header at {file_path} uses metadata value type {value_type}, "
-        f"which is not part of the GGUF specification LOCITIZE reads. The file "
+        f"which is not part of the GGUF specification locitize reads. The file "
         f"is most likely corrupt; re-download it."
     )
 

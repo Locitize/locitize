@@ -136,7 +136,7 @@ def render_line(summary: EgressSummary) -> str:
     """One honest sentence for a status chip."""
     if summary.total == 0:
         return (
-            "0 outbound connections recorded by LOCITIZE's own downloads "
+            "0 outbound connections recorded by locitize's own downloads "
             "(installers, Open WebUI and coding tools are not covered)."
         )
     hosts = ", ".join(sorted(summary.hosts))

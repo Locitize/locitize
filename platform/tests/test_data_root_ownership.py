@@ -330,7 +330,7 @@ def test_data_root_ownership_running_the_product_writes_nothing_into_the_install
     then diffs the install tree file by file.
 
     The process working directory is moved INTO the watched install tree for the
-    duration, because that is what LOCITIZE.bat line 9 (`cd /d "%~dp0"`) does on a
+    duration, because that is what locitize.bat line 9 (`cd /d "%~dp0"`) does on a
     real machine. Without it, a relative-path write went to whatever directory
     pytest was started from and this test scored it clean - the hole a reviewer
     demonstrated with a one-line `Path("locitize-crash.txt").write_text("boom")` in
@@ -457,7 +457,7 @@ def test_data_root_ownership_every_service_spec_names_a_working_directory(tmp_pa
     """Invariant W1 for CHILD processes, which the fence's two layers cannot see.
 
     A ServiceSpec with `cwd=None` makes the child inherit LOCITIZE's own working
-    directory, and LOCITIZE.bat line 9 (`cd /d "%~dp0"`) makes that the install
+    directory, and locitize.bat line 9 (`cd /d "%~dp0"`) makes that the install
     directory - so every relative file llama-server, Open WebUI, whisper or
     kokoro wrote landed in the install tree. Neither the static fence (a relative
     path names no base_dir) nor the watched-tree test (it watches a synthetic
@@ -472,7 +472,7 @@ def test_data_root_ownership_every_service_spec_names_a_working_directory(tmp_pa
     settings.paths.kokoro_voices = str(tmp_path / "bin" / "voices")
 
     for label, spec in _spec_builders(settings).items():
-        assert spec.cwd, f"{label} inherits LOCITIZE's working directory (cwd=None)"
+        assert spec.cwd, f"{label} inherits locitize's working directory (cwd=None)"
         resolved = Path(spec.cwd).resolve()
         assert install.resolve() not in [resolved, *resolved.parents], (
             f"{label} runs inside the install tree ({spec.cwd}); a relative file "

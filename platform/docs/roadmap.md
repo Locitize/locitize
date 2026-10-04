@@ -5,7 +5,7 @@ Current implementation and outstanding release checks are maintained in
 
 The old milestone-1 deferred-module list has been retired: chat, voice,
 benchmarking, model downloads, desktop setup and memory already exist.
-Session management is now part of LOCITIZE.
+Session management is now part of locitize.
 
 After the release gates, candidate enhancements include a unified first-run
 coding-tool check, recent sessions on Home, explicit provider scan settings,

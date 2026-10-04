@@ -36,4 +36,4 @@ if ($existing -match "\s$hostname(\s|$)") {
 # Append the single loopback mapping. This is the ONLY line this script writes.
 Add-Content -Path $hostsPath -Value $line
 Write-Host "Added '$line' to $hostsPath."
-Write-Host "You can now reach LOCITIZE chat at http://$hostname`:8085/ when the proxy is enabled."
+Write-Host "You can now reach locitize chat at http://$hostname`:8085/ when the proxy is enabled."

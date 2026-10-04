@@ -822,10 +822,10 @@ MUTATIONS: list[Mutation] = [
         "the first-run notice stops naming the folder the data came FROM, so "
         "the user cannot find or check their old copy",
         "migration.py",
-        """        "LOCITIZE moved to a single data folder. Your existing conversations, logs "
-        f"and settings were copied from {install_dir} to {data_dir}. LOCITIZE now \"""",
-        """        "LOCITIZE moved to a single data folder. Your existing conversations, logs "
-        f"and settings were copied to {data_dir}. LOCITIZE now \"""",
+        """        "locitize moved to a single data folder. Your existing conversations, logs "
+        f"and settings were copied from {install_dir} to {data_dir}. locitize now \"""",
+        """        "locitize moved to a single data folder. Your existing conversations, logs "
+        f"and settings were copied to {data_dir}. locitize now \"""",
     ),
     # ---- Review round 6: the defects a green suite did not notice ---------- #
     Mutation(
@@ -926,7 +926,7 @@ MUTATIONS: list[Mutation] = [
     Mutation(
         "W2",
         "a relative-path write is reintroduced in a runtime module - the exact "
-        "one-line probe that passed BOTH W1 layers in round 6, because LOCITIZE's "
+        "one-line probe that passed BOTH W1 layers in round 6, because locitize's "
         "working directory is the install directory",
         "logger.py",
         "def configure_logging(",
@@ -937,7 +937,7 @@ MUTATIONS: list[Mutation] = [
     ),
     Mutation(
         "W3",
-        "Open WebUI goes back to inheriting LOCITIZE's working directory, i.e. the "
+        "Open WebUI goes back to inheriting locitize's working directory, i.e. the "
         "install tree, where every relative file it writes lands",
         "webui.py",
         "        cwd=resolve_service_cwd(settings),",
@@ -977,9 +977,9 @@ MUTATIONS: list[Mutation] = [
         "doubled-backslash string the user had to un-escape by eye",
         "config.py",
         """    return (
-        f"LOCITIZE could not {verb} your model list at {path}: {cause}. Close any \"""",
+        f"locitize could not {verb} your model list at {path}: {cause}. Close any \"""",
         """    return (
-        f"LOCITIZE could not {verb} your model list at {path!r}: {cause}. Close any \"""",
+        f"locitize could not {verb} your model list at {path!r}: {cause}. Close any \"""",
     ),
     Mutation(
         "R3",

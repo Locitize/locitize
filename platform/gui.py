@@ -72,7 +72,7 @@ class LocitizeGui:
     # ---- widget construction --------------------------------------------- #
 
     def _build_widgets(self) -> None:
-        self._root.title("LOCITIZE Command Center")
+        self._root.title("locitize Command Center")
         self._root.minsize(720, 640)
         outer = ttk.Frame(self._root, padding=10)
         outer.pack(fill="both", expand=True)
@@ -252,7 +252,7 @@ class LocitizeGui:
         """Speak a fixed test line in the selected voice (routes to the ops worker)."""
         voice = self._voice_var.get()
         self._tts_status_var.set(f"speaking test in {voice} ...")
-        self._gc.request_speak("LOCITIZE voice test. This is the selected voice.", voice)
+        self._gc.request_speak("locitize voice test. This is the selected voice.", voice)
 
     def _on_audition(self) -> None:
         """Audition every on-disk voice in sequence (routes to the ops worker)."""
@@ -283,7 +283,7 @@ class LocitizeGui:
         started and reflects idle/listening/thinking/speaking via the on_speaking hook
         and GuiSttSource marshalling.
         """
-        frame = ttk.LabelFrame(parent, text="Talk to LOCITIZE (assistant)", padding=8)
+        frame = ttk.LabelFrame(parent, text="Talk to locitize (assistant)", padding=8)
         frame.pack(fill="both", expand=True, pady=(0, 8))
 
         controls = ttk.Frame(frame)
@@ -850,7 +850,7 @@ class LocitizeGui:
                 self._edit_error_var.set(result.error or "save failed")
         elif kind == "chat":
             if result.ok and result.payload.get("opened", True) is False:
-                messagebox.showinfo("LOCITIZE chat", f"Open this in your browser:\n{result.payload.get('url')}")
+                messagebox.showinfo("locitize chat", f"Open this in your browser:\n{result.payload.get('url')}")
             elif result.ok and result.payload.get("reason"):
                 # An honest degrade (Open WebUI missing/not ready): opened the
                 # built-in UI but tell the owner why the fallback happened.

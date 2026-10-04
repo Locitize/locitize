@@ -1,8 +1,8 @@
 ﻿# LOCITIZE GPU build switch (llama.cpp CUDA <-> CPU) - documented + testable.
 #
 # Runtime VRAM free (no rebuild):
-#   LOCITIZE.bat --gpu
-#   LOCITIZE.bat --gpu-free
+#   locitize.bat --gpu
+#   locitize.bat --gpu-free
 #   Desktop header button: "Offload GPU"
 #
 # Build switch (this script):
@@ -10,7 +10,7 @@
 #   .\platform\scripts\gpu_switch.ps1 -Target cpu -DryRun
 #   .\platform\scripts\gpu_switch.ps1 -Target cuda -Apply   # replace binary
 #
-# After -Apply: restart via LOCITIZE.bat (boot order llama -> router -> OWUI -> portal),
+# After -Apply: restart via locitize.bat (boot order llama -> router -> OWUI -> portal),
 # then .\platform\scripts\health.ps1
 
 param(
@@ -42,13 +42,13 @@ $argList = @($lib, "--target", $Target)
 if ($Tag) { $argList += @("--tag", $Tag) }
 if ($Apply) { $argList += "--apply" }
 
-Write-Host "LOCITIZE GPU switch ($Target)  dry-run=$DryRun apply=$Apply"
+Write-Host "locitize GPU switch ($Target)  dry-run=$DryRun apply=$Apply"
 & $py @argList
 $code = $LASTEXITCODE
 if ($DryRun -and -not $Apply) {
     Write-Host ""
     Write-Host "Dry-run only. Re-run with -Apply to replace the llama.cpp build under DATA_ROOT\bin."
     Write-Host "Verify afterwards:  .\platform\scripts\health.ps1"
-    Write-Host "GPU status:         LOCITIZE.bat --gpu"
+    Write-Host "GPU status:         locitize.bat --gpu"
 }
 exit $code

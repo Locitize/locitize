@@ -27,7 +27,7 @@ def build_local_launch(provider, project, model_id, port, resume_id="", context_
         argv += ["-C", project, "-m", model_id]
         overrides = {
             "model_provider": "locitize",
-            "model_providers.locitize.name": "LOCITIZE (local)",
+            "model_providers.locitize.name": "locitize (local)",
             "model_providers.locitize.base_url": base + "/v1",
             "model_providers.locitize.env_key": "LOCITIZE_CODEX_API_KEY",
             "model_providers.locitize.wire_api": "responses",

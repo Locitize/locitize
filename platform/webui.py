@@ -216,7 +216,7 @@ def webui_data_dir(settings: Settings) -> Path:
     data_dir = (base / name).resolve()
     if base != data_dir and base not in data_dir.parents:
         raise ValueError(
-            f"openwebui.data_dir '{name}' resolves outside the LOCITIZE data "
+            f"openwebui.data_dir '{name}' resolves outside the locitize data "
             f"folder; refusing to point the chat data store out of tree"
         )
     return data_dir
@@ -485,8 +485,8 @@ def reconcile_persisted_audio(settings: Settings) -> str:
     except Exception as exc:  # noqa: BLE001 - never block the chat UI starting
         return f"could not update the Open WebUI audio config: {exc}"
     if not changed:
-        return "Open WebUI audio already points at LOCITIZE"
-    return f"Open WebUI audio set to LOCITIZE speech services ({len(changed)} setting(s))"
+        return "Open WebUI audio already points at locitize"
+    return f"Open WebUI audio set to locitize speech services ({len(changed)} setting(s))"
 
 
 def reconcile_voice_interruption(settings: Settings) -> str:
@@ -1322,7 +1322,7 @@ def ensure_single_openwebui_processes(
     ``port`` is logged for operators only.
     """
     if venv_dir is None:
-        return "Open WebUI process check skipped (no LOCITIZE venv given)"
+        return "Open WebUI process check skipped (no locitize venv given)"
     try:
         import psutil
     except ImportError:
@@ -1423,7 +1423,7 @@ def build_openwebui_spec(settings: Settings, log_path: str | None = None) -> Ser
         name=OPENWEBUI_NAME,
         command=command,
         # Never None: a None cwd makes the child inherit LOCITIZE's own working
-        # directory, which LOCITIZE.bat sets to the install tree (invariant W1).
+        # directory, which locitize.bat sets to the install tree (invariant W1).
         cwd=resolve_service_cwd(settings),
         env=env,
         port=port,

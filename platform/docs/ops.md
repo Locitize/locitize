@@ -1,4 +1,4 @@
-# LOCITIZE production ops (install / health / boot / GPU)
+# locitize production ops (install / health / boot / GPU)
 
 Keep listeners on `127.0.0.1`.
 

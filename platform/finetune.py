@@ -112,7 +112,7 @@ _WARNING_FILE = "finetune_warning.txt"
 # degrades to an honest (if less specific) warning instead of silence.
 _WARNING_FALLBACK = (
     "A training container may still be running in your container runtime. "
-    "LOCITIZE cannot stop a container it did not start; check your container list."
+    "locitize cannot stop a container it did not start; check your container list."
 )
 
 # root path string -> (monotonic timestamp, ScanResult).

@@ -36,7 +36,7 @@ from memory import ConversationMemory
 def _state_with_system() -> ConversationState:
     """A session seeded with a leading system message (M7.3)."""
     state = ConversationState(session_id="test-session")
-    state.append("system", "You are LOCITIZE.")
+    state.append("system", "You are locitize.")
     return state
 
 
@@ -144,7 +144,7 @@ def test_assistant_loop_strips_markdown_before_speaking_and_display():
     # Spoken text has no markdown markers.
     assert tts.spoken == [("This is very important.", "am_michael")]
     # Displayed reply is stripped.
-    assert lines == ["LOCITIZE: This is very important."]
+    assert lines == ["locitize: This is very important."]
     # Stored assistant history keeps the original (unfiltered) reply.
     assert state.messages[-1].content == "This is **very** important."
 
@@ -965,7 +965,7 @@ def test_assistant_loop_recall_command_injects_memory(tmp_path):
     stt = FakeSttSource(["/recall 27B"])
     llm = FakeStreamingLlm(["should-not-run"])
     state = ConversationState(session_id="new-session")
-    state.append("system", "You are LOCITIZE.")
+    state.append("system", "You are locitize.")
     loop = AssistantLoop(stt, llm, None, state, memory=memory, recall_limit=5)
 
     reply, _ = loop.run_turn("/recall 27B")

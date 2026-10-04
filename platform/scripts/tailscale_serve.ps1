@@ -100,7 +100,7 @@ $owuiRoot = "https://$magic/"
 $owuiAlt = "https://${magic}:4443/"
 $portalPhone = "https://${magic}:8443/"
 
-Write-Host "LOCITIZE Tailscale Serve"
+Write-Host "locitize Tailscale Serve"
 Write-Host "MagicDNS: $magic"
 Write-Host "Mode:     tailnet only (no Funnel)"
 Write-Host ""

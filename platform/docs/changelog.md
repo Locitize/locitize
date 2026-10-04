@@ -1,4 +1,4 @@
-# LOCITIZE Platform Changelog
+# locitize Platform Changelog
 
 ## 0.2.0-beta.1 - unified desktop candidate - 2026-09-07
 
@@ -25,7 +25,7 @@
 ## Phone URL on Chat when Tailscale Serve is already configured - 2026-09-04
 
 **Status:** Implemented. Discovery is a local `tailscale serve status --json`
-read. LOCITIZE still binds loopback only; it does not start Serve, Funnel, or
+read. locitize still binds loopback only; it does not start Serve, Funnel, or
 a LAN listener.
 
 - **Chat page:** when Serve already proxies Open WebUI, the Chat card shows
@@ -49,7 +49,7 @@ a LAN listener.
 - **Desktop:** Talk states are visible; voices show as Heart/Bella not `af_heart`;
   Vision shows the image and accepts a drop; Memory lists recent on first visit;
   Settings uses human labels; Chat names the running model; sidebar chip is
-  LOCITIZE; Offload GPU hides on Talk. Voice Setup has Off/Balanced/Strong for
+  locitize; Offload GPU hides on Talk. Voice Setup has Off/Balanced/Strong for
   Open WebUI noise suppression and rebinds the live processor.
 - **Watch my screen** is a Vision panel (goal + Start/Stop) over the existing
   second-eye loop. Refuses while Talk is live.
@@ -87,8 +87,8 @@ criteria passed on the reference machine.
 
 **Status:** Working end to end on the reference machine and covered by the full suite.
 
-- **Open WebUI TTS persistence fixed:** Open WebUI 0.11.1 reads the provider-specific `audio.tts.openai.api_key`; LOCITIZE had persisted its non-secret local placeholder under the unrelated generic TTS key. Startup reconciliation now writes the key OpenAI-compatible TTS actually reads.
-- **Live browser proof:** Open WebUI captured two microphone turns, the LOCITIZE router sent them through whisper.cpp, GPT-OSS answered both, and Kokoro speech requests returned HTTP 200. The Call overlay remained active with mute, interruption and end-call controls.
+- **Open WebUI TTS persistence fixed:** Open WebUI 0.11.1 reads the provider-specific `audio.tts.openai.api_key`; locitize had persisted its non-secret local placeholder under the unrelated generic TTS key. Startup reconciliation now writes the key OpenAI-compatible TTS actually reads.
+- **Live browser proof:** Open WebUI captured two microphone turns, the locitize router sent them through whisper.cpp, GPT-OSS answered both, and Kokoro speech requests returned HTTP 200. The Call overlay remained active with mute, interruption and end-call controls.
 - **Direct pipeline proof:** Kokoro produced a 189 KB WAV in 0.19 seconds, whisper.cpp transcribed it in 0.42 seconds, GPT-OSS answered a verification prompt in 2.85 seconds, and Kokoro rendered that reply in 0.12 seconds.
 - **Phone-safe turn-taking:** voice interruption defaults off so speaker echo cannot stop and resubmit the assistant's own speech. Headset users can opt into interruption in their personal Open WebUI interface settings.
 - **Mobile playback repair:** Open WebUI Call Mode now plays the fetched TTS `Audio` object directly instead of copying it into a gesture-locked shared element. A mobile autoplay rejection is retried on the next tap/key gesture, and ending the call resolves any pending playback instead of wedging later replies. The managed PWA version changes with the patched bundle so phones fetch the repair.
@@ -100,14 +100,14 @@ criteria passed on the reference machine.
 
 **Owner correction:** "Open WebUI should be taking preference" means its live picker selection, not a saved global model default.
 
-- **No saved default:** LOCITIZE clears `launcher.default_model` through its targeted settings writer and removes Open WebUI's `ui.default_models` row during startup reconciliation.
+- **No saved default:** locitize clears `launcher.default_model` through its targeted settings writer and removes Open WebUI's `ui.default_models` row during startup reconciliation.
 - **Request authority:** the existing router switches on the first request after an in-page model choice. Merely opening Open WebUI never starts or replaces a model.
 
 ## The voice engine's footprint, and the fit margin, are constants - 2026-09-03
 
 **Status:** Implemented, measured on the reference machine (RTX 5070 Ti 16 GB, CUDA torch, llama.cpp b10701), suite green.
 
-**Owner rules:** "do not affect my tok/s"; "have LOCITIZE load as much to the GPU". The measured fit margin shipped this morning with a 256 MiB safety was swept in one-layer steps against the dense 27B with 1580 MB held by other processes: 64 layers 4.6 tok/s, 63 layers 6.7 (646 MB paged), 62 layers 27-29 (536 MB paged), 61 layers 25, 60 layers 26 with 158 MB shared (zero paging, card full), 59 layers 24. The 256 safety chose the 62-layer row: fast because what got paged was cold KV cache, and one layer from a crawl.
+**Owner rules:** "do not affect my tok/s"; "have locitize load as much to the GPU". The measured fit margin shipped this morning with a 256 MiB safety was swept in one-layer steps against the dense 27B with 1580 MB held by other processes: 64 layers 4.6 tok/s, 63 layers 6.7 (646 MB paged), 62 layers 27-29 (536 MB paged), 61 layers 25, 60 layers 26 with 158 MB shared (zero paging, card full), 59 layers 24. The 256 safety chose the 62-layer row: fast because what got paged was cold KV cache, and one layer from a crawl.
 
 - **Kokoro's video memory is bounded and pre-reserved (kokoro_server.py):** torch's caching allocator keeps every block an utterance needed - measured 594 MB after loading, 1026 MB after one sentence, 1842 MB after a six-sentence paragraph handed over as one chunk, 2422 MB after a 1000-character sentence - and on Windows that growth does not fail, it pages the language model through system RAM, permanently: the 27B at 29 tok/s beside an idle Kokoro ran 4.8 tok/s after Kokoro spoke one paragraph and still 4.8 twenty-five seconds after Kokoro had shrunk again. This is the mechanism behind "it chatted, then it did not". Text is now split into sentences and a sentence over 160 characters at its commas, then words (30 sentences rendered one at a time peaked where one did: 1094 MB; 155 characters 1192, 200 characters 1426), and the engine renders one 160-character sentence before `/health` says ready, so the footprint the launcher measures when it fits the model is the footprint Kokoro keeps. Releasing the cache after each utterance was measured and rejected (idle 900 MB, but every sentence spikes back and the model fitted against the idle number pays). Side effect: the first spoken sentence of a call no longer pays the 1s first render. The CPU build is unaffected except for the warm-up.
 - **FIT_SAFETY_MIB 256 -> 1024, with the arithmetic on the record (gpu_ledger.py):** dedicated memory never passed ~14100 MB in the sweep - with 1580 MB held elsewhere the card's usable ceiling is ~15.7 GB of 16.3, the rest Windows keeps - and fit's own tally ran a constant ~290 MiB under the process's real footprint (the CUDA context and library workspaces). ~600 + ~290 - ~150 (fit's own launch-time allocations, already in its reading) + one layer of slack for what the desktop allocates during a session = 920, rounded to fit's own default. The measured correction for other processes stays: that is the number fit cannot see. Live after the restart (Kokoro warmed at 1214 MB, 1847 MB held by other processes, fit target 1491): the 27B loads 13420 MB on the GPU with 158 MB shared - zero paging - at 21.4-21.9 tok/s; a six-sentence paragraph, a 1000-character run-on sentence and 600 characters without punctuation through Kokoro took it to 1282 MB and left the model at 158 MB shared and 21.4-21.6 tok/s. The MoE rows gain from the same margin: the 35B loads with 280 MB shared instead of 904 (105-112 tok/s), gpt-oss 220 (118-120 tok/s).
@@ -158,7 +158,7 @@ criteria passed on the reference machine.
 
 **Status:** Implemented and locally verified; the llama.cpp release fetch is wired but has not yet been exercised against a live GitHub release on this machine.
 
-**The gap this closes:** a new user could download a model in-app but had nothing to run it with. `paths.llama_cpp` shipped empty, nothing detected or installed it, and `LOCITIZE.bat` on a fresh clone died with a `ModuleNotFoundError` before drawing a window. The shipped comment "the first-run setup fills them in" described a setup that did not exist.
+**The gap this closes:** a new user could download a model in-app but had nothing to run it with. `paths.llama_cpp` shipped empty, nothing detected or installed it, and `locitize.bat` on a fresh clone died with a `ModuleNotFoundError` before drawing a window. The shipped comment "the first-run setup fills them in" described a setup that did not exist.
 
 - **Feature-first onboarding** (`setup_plan.py`): nine capabilities the user actually picks from ("Talk to it", "Hear it back", "Watch my screen") resolve onto deduplicated requirements. Selecting a feature selects what it is useless without - Watch my screen ticks vision and voice_out visibly, so nobody is charged for an unseen download. Pure: no tkinter, no subprocess, no network, no filesystem.
 - **Real totals before consent**: every requirement carries its measured size, so the confirm screen states "9 items to install, 1.2 GB to download" rather than "this may take a while". Items already present cost zero and are listed as `[have]`.
@@ -166,7 +166,7 @@ criteria passed on the reference machine.
 - **Machine detection** (`setup_env.py`): stdlib-only at module scope by construction - it runs before yaml exists, so it cannot import `config.py`. Detection is deliberately pessimistic: it answers "definitely already here?" and returns False when it cannot tell, because a wrong True leaves a broken install claiming to be finished. Finds an existing `llama-server.exe` on PATH and in plausible locations, turning a 360 MB download into a one-line config write.
 - **llama.cpp acquisition**: the release asset is chosen by scoring the release's actual file list, not by composing a filename from a template, because upstream has renamed these more than once. A CUDA build is never handed to a machine with no NVIDIA driver; a CPU build is an accepted fallback on a GPU machine. The publisher digest is enforced when GitHub declares one; when it does not, the download proceeds only on the explicit unverified rung with a ticked consent box. Downloads go through `modelhub.download_verified` - no second downloader was added.
 - **Path write-back** (`write_settings_paths`): the step that actually closes the gap. Runs through the venv interpreter via a yaml round-trip rather than string surgery on a file the user hand-maintains.
-- **Fail-open gate**: `LOCITIZE.bat` diverts to the wizard only when `setup_wizard.py` is present and the venv or PySide6 is missing. A checkout without the wizard launches normally rather than being diverted into a setup that cannot run. `LOCITIZE.bat --setup` forces it, so features can be added later.
+- **Fail-open gate**: `locitize.bat` diverts to the wizard only when `setup_wizard.py` is present and the venv or PySide6 is missing. A checkout without the wizard launches normally rather than being diverted into a setup that cannot run. `locitize.bat --setup` forces it, so features can be added later.
 - Archive extraction refuses any member that escapes the destination; winget installs stay user-scope; fetched binaries land under the data root, never the install directory.
 
 **Verification:** complete suite passes with 1,154 tests and 2 skips, up from 1,151 (41 new). Wizard widget tree smoke-tested through all four screens. `setup_env` and `setup_wizard` both import cleanly on the bare system interpreter with no venv active, which is the bootstrap claim. The first draft hardcoded one machine's own model folder into the binary search list and `scripts/verify_no_owner_paths.py` refused it - candidates are now derived from the environment only.
@@ -329,7 +329,7 @@ criteria passed on the reference machine.
 
 **What's new:**
 
-- **Whisper-server as a managed service**  -  whisper-server is now an LOCITIZE service under the same lifecycle guarantees as llama.cpp (readiness probe, port policy 8091, clean shutdown, no orphans via ServiceManager + atexit).
+- **Whisper-server as a managed service**  -  whisper-server is now an locitize service under the same lifecycle guarantees as llama.cpp (readiness probe, port policy 8091, clean shutdown, no orphans via ServiceManager + atexit).
 - **Real speech-to-text transcription** (`--transcribe <audio-file> --json`)  -  Send a WAV/MP3 to the running whisper-server (starts it if needed, stops it after to restore prior state) and receive a structured JSON transcript. Real CUDA ggml-large-v3-turbo transcription proven on real audio.
 - **Smoke-start whisper-server** (`--smoke-start-whisper --json`)  -  Start whisper-server, confirm TCP readiness on port 8091, cleanly shut it down. JSON outcome, exit 0 only if ready + clean.
 - **Whisper-stream microphone lifecycle** (`--smoke-listen --duration N --json`)  -  Start whisper-stream.exe (SDL2 mic capture) as a managed service, hold for N seconds, stop cleanly. Tests the lifecycle only (no content claim).
@@ -384,7 +384,7 @@ criteria passed on the reference machine.
 
 **What's new (M4 GUI command center):**
 
-- **GUI command center** (`python launcher.py --gui` or `LOCITIZE GUI.bat`)  -  Native Tkinter window with five visual control panels for model management, real-time metrics, and voice transcription.
+- **GUI command center** (`python launcher.py --gui` or `locitize GUI.bat`)  -  Native Tkinter window with five visual control panels for model management, real-time metrics, and voice transcription.
 - **Model list and control panel**  -  Select, start, switch between, and stop models. Chat button opens the running model's web interface.
 - **Model settings editor**  -  Edit gpu_layers and context_size per-model with real-time validation. Save persists to models.yaml with byte-identical round-trip guarantee.
 - **Live metrics monitor**  -  Real-time tokens/second and KV-cache usage (%) when a model is running and the binary supports `/metrics` endpoint. Honest degradation when metrics unavailable.
@@ -457,7 +457,7 @@ criteria passed on the reference machine.
 - **Kokoro TTS managed service** (`kokoro_server.py`, port 8092)  -  Local CPU-based text-to-speech using real torch KokoroEngine. Service binds loopback-only 127.0.0.1, loads voice models on demand, synthesizes real 16-bit PCM mono wav files, and shuts down cleanly with no orphans via ServiceManager + atexit.
 - **TTS synthesis** (`--speak "text" --json`, `--voice <voice_name>`)  -  Synthesize any text to speech and play via system audio. 8 distinct Kokoro voices (am_michael, af_bella, am_adam, bf_emma, etc.). Real CPU synthesis on Windows, proven on RTX 5070 Ti with 20+ second startup and real winsound playback.
 - **Audition voices** (`--audition`)  -  Iterate through all available voices, synthesizing a sample sentence in each and playing each one. Lets the owner hear all voice options before an assistant session.
-- **End-to-end synthesis validation** (AC13)  -  Real 4.55-second 16-bit PCM mono wav (218,444 bytes) synthesized for "LOCITIZE on-machine neural intelligence system online." Three voices produce distinct output (verified by md5/duration/byte count), proving voice selection genuinely changes synthesis.
+- **End-to-end synthesis validation** (AC13)  -  Real 4.55-second 16-bit PCM mono wav (218,444 bytes) synthesized for "locitize on-machine neural intelligence system online." Three voices produce distinct output (verified by md5/duration/byte count), proving voice selection genuinely changes synthesis.
 
 **What's new (M7 - Assistant Loop):**
 

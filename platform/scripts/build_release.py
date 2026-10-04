@@ -81,10 +81,10 @@ def build(output: Path, make_zip=True):
     compiler = Path(os.environ["WINDIR"]) / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
     subprocess.run([str(compiler), "/nologo", "/target:winexe", "/reference:System.Windows.Forms.dll",
                     f"/win32icon:{ROOT / 'platform' / 'assets' / 'locitize_launcher.ico'}",
-                    f"/out:{output / 'LOCITIZE.exe'}", str(ROOT / "platform" / "scripts" / "LocitizeLauncher.cs")], check=True)
-    shutil.copy2(ROOT / "platform" / "scripts" / "install_release.ps1", output / "Install LOCITIZE.ps1")
-    (output / "Install LOCITIZE.bat").write_text(
-        '@echo off\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install LOCITIZE.ps1"\nif errorlevel 1 pause\n', encoding="ascii")
+                    f"/out:{output / 'locitize.exe'}", str(ROOT / "platform" / "scripts" / "LocitizeLauncher.cs")], check=True)
+    shutil.copy2(ROOT / "platform" / "scripts" / "install_release.ps1", output / "Install locitize.ps1")
+    (output / "Install locitize.bat").write_text(
+        '@echo off\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install locitize.ps1"\nif errorlevel 1 pause\n', encoding="ascii")
     entry = (
         'Option Explicit\nDim shell, fso, root, command\n'
         'Set shell = CreateObject("WScript.Shell")\n'
@@ -93,8 +93,8 @@ def build(output: Path, make_zip=True):
         'command = """" & root & "\\runtime\\pythonw.exe"" -B -E -s """ & root & "\\platform\\release_entry.py"""\n'
         'shell.Run command, 0, False\n'
     )
-    (output / "LOCITIZE.vbs").write_text(entry, encoding="ascii")
-    (output / "Start LOCITIZE.bat").write_text(
+    (output / "locitize.vbs").write_text(entry, encoding="ascii")
+    (output / "Start locitize.bat").write_text(
         '@echo off\n"%~dp0runtime\\python.exe" -B -E -s "%~dp0platform\\release_entry.py" %*\n', encoding="ascii")
     manifest = {"version": VERSION, "channel": "unsigned-beta", "python": sys.version.split()[0],
                 "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
@@ -119,7 +119,7 @@ def build(output: Path, make_zip=True):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, default=ROOT / "dist" / f"LOCITIZE-{VERSION}")
+    parser.add_argument("--output", type=Path, default=ROOT / "dist" / f"locitize-{VERSION}")
     parser.add_argument("--no-zip", action="store_true")
     args = parser.parse_args()
     result = build(args.output, not args.no_zip)

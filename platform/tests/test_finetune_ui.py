@@ -556,11 +556,11 @@ def test_finetune_launcher_terminal_beats_desktop():
 
 
 def test_finetune_only_one_launcher_shortcut_remains():
-    """The five extra .bat shortcuts are gone; LOCITIZE.bat is the single door."""
+    """The five extra .bat shortcuts are gone; locitize.bat is the single door."""
     platform_dir = Path(__file__).resolve().parent.parent
     bats = sorted(p.name for p in platform_dir.glob("*.bat"))
-    assert bats == ["LOCITIZE.bat"]
-    assert "--desktop" in (platform_dir / "LOCITIZE.bat").read_text(encoding="utf-8")
+    assert bats == ["locitize.bat"]
+    assert "--desktop" in (platform_dir / "locitize.bat").read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #

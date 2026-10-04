@@ -35,6 +35,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -456,6 +457,42 @@ def create_venv(target: Path | str, base_python: str | None = None) -> StepResul
     return StepResult("venv", True, f"created {path}")
 
 
+# uv installs the same packages from the same index as pip, an order of
+# magnitude faster (measured on a cold cache: Open WebUI 286s with pip, 27s
+# with uv). It is pinned like Open WebUI, installed once into the platform venv
+# with pip, and used only for plain PyPI sets: a set that passes its own index
+# flags (the CUDA torch set) resolves differently under uv, so pip keeps those.
+# Any uv failure falls back to pip, so uv can only make setup faster.
+UV_VERSION = "0.12.23"
+# The wizard runs install chains in parallel; only one may bootstrap uv.
+_UV_LOCK = threading.Lock()
+
+
+def _uv_exe() -> Path | None:
+    """The uv inside the platform venv, installing it there first if needed."""
+    venv_python = venv_python_path()
+    if not venv_python.is_file():
+        return None
+    uv = venv_python.parent / ("uv.exe" if os.name == "nt" else "uv")
+    with _UV_LOCK:
+        if not uv.is_file():
+            _bootstrap_uv(venv_python)
+    return uv if uv.is_file() else None
+
+
+def _bootstrap_uv(venv_python: Path) -> None:
+    """Install the pinned uv into the platform venv with pip. Best-effort."""
+    try:
+        subprocess.run(
+            [str(venv_python), "-m", "pip", "install", "--disable-pip-version-check",
+             "--quiet", f"uv=={UV_VERSION}"],
+            capture_output=True, text=True, timeout=300, check=False,
+            creationflags=_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+
+
 def pip_install(
     python_exe: Path | str,
     packages: Sequence[str],
@@ -466,11 +503,41 @@ def pip_install(
 
     Streamed rather than captured: a 2.6 GB Open WebUI resolve is silent for
     minutes, and a progress window with nothing in it reads as a hang.
+
+    Uses uv when the set is plain PyPI packages (see UV_VERSION), falling back
+    to pip if uv is unavailable or fails.
     """
     exe = Path(python_exe)
     if not exe.is_file():
         return StepResult("pip", False, f"interpreter not found: {exe}")
+    if not any(str(p).startswith("-") for p in packages):
+        uv = _uv_exe()
+        if uv is not None:
+            # --compile-bytecode matches pip: without it the first launch pays
+            # for compiling every module (measured: Open WebUI's first start
+            # went from 31s to 83s).
+            argv = [str(uv), "pip", "install", "--compile-bytecode",
+                    "--python", str(exe), *packages]
+            code, tail = _run_streamed(argv, on_output, timeout)
+            if code == 0:
+                return StepResult("pip", True, f"installed {len(packages)} requirement(s)")
+            if on_output:
+                on_output("uv could not install this set; retrying with pip")
     argv = [str(exe), "-m", "pip", "install", "--disable-pip-version-check", *packages]
+    code, tail = _run_streamed(argv, on_output, timeout)
+    if code is None:
+        return StepResult("pip", False, tail[-1] if tail else "pip timed out")
+    if code != 0:
+        return StepResult("pip", False, "pip failed: " + " | ".join(tail[-6:]))
+    return StepResult("pip", True, f"installed {len(packages)} requirement(s)")
+
+
+def _run_streamed(
+    argv: list[str],
+    on_output: Callable[[str], None] | None,
+    timeout: int,
+) -> tuple[int | None, list[str]]:
+    """Run an installer, streaming each line; (exit code or None, last lines)."""
     try:
         proc = subprocess.Popen(
             argv,
@@ -481,7 +548,7 @@ def pip_install(
             creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return StepResult("pip", False, f"could not start pip: {exc}")
+        return 1, [f"could not start {Path(argv[0]).name}: {exc}"]
 
     tail: list[str] = []
     assert proc.stdout is not None
@@ -492,13 +559,10 @@ def pip_install(
         if on_output:
             on_output(text)
     try:
-        code = proc.wait(timeout=timeout)
+        return proc.wait(timeout=timeout), tail
     except subprocess.TimeoutExpired:
         proc.kill()
-        return StepResult("pip", False, "pip timed out")
-    if code != 0:
-        return StepResult("pip", False, "pip failed: " + " | ".join(tail[-6:]))
-    return StepResult("pip", True, f"installed {len(packages)} requirement(s)")
+        return None, tail + [f"{Path(argv[0]).name} timed out"]
 
 
 def winget_install(package_id: str, timeout: int = 900) -> StepResult:
@@ -1162,23 +1226,23 @@ def enable_openwebui_via_venv(
 
 
 def create_desktop_shortcut() -> StepResult:
-    """Create (or refresh) a Desktop shortcut to LOCITIZE.vbs (M17.12).
+    """Create (or refresh) a Desktop shortcut to locitize.vbs (M17.12).
 
-    LOCITIZE.vbs is the official no-console launcher; a Desktop shortcut to it
+    locitize.vbs is the official no-console launcher; a Desktop shortcut to it
     means the everyday way in never flashes a black console. Built via PowerShell
     + WScript.Shell.CreateShortcut (no third-party dependency). The shortcut
     targets wscript.exe with the .vbs as its argument - the robust form - so it
     launches exactly as a double-click on the .vbs would. Best-effort: any
     failure (no PowerShell, a locked Desktop) is a non-fatal skip, never a setup
-    failure, because a missing shortcut costs nothing (LOCITIZE.vbs still works).
+    failure, because a missing shortcut costs nothing (locitize.vbs still works).
     """
-    vbs = BASE_DIR / "LOCITIZE.vbs"
+    vbs = BASE_DIR / "locitize.vbs"
     from runtime_layout import bundled_python
-    native = BASE_DIR.parent / "LOCITIZE.exe"
+    native = BASE_DIR.parent / "locitize.exe"
     packaged = bundled_python(BASE_DIR) is not None and native.is_file()
     if not packaged and not vbs.is_file():
         return StepResult(
-            "shortcut", True, "no LOCITIZE.vbs to link (skipped)", skipped=True
+            "shortcut", True, "no locitize.vbs to link (skipped)", skipped=True
         )
     # Single-quoted PS strings: backslashes are literal, so a Windows path needs
     # no escaping; a stray single quote is doubled to stay inside the literal.
@@ -1202,12 +1266,12 @@ def create_desktop_shortcut() -> StepResult:
         icon_line = "$s.IconLocation = '" + ico_ps + ",0'; "
     script = (
         "$w = New-Object -ComObject WScript.Shell; "
-        "$lnk = Join-Path $w.SpecialFolders('Desktop') 'LOCITIZE.lnk'; "
+        "$lnk = Join-Path $w.SpecialFolders('Desktop') 'locitize.lnk'; "
         "$s = $w.CreateShortcut($lnk); "
         + target_lines +
         "$s.WorkingDirectory = '" + dir_ps + "'; "
         + icon_line +
-        "$s.Description = 'Launch LOCITIZE'; "
+        "$s.Description = 'Launch locitize'; "
         "$s.Save()"
     )
     rc, out = _run(
@@ -1217,10 +1281,10 @@ def create_desktop_shortcut() -> StepResult:
     if rc != 0:
         return StepResult(
             "shortcut", False,
-            f"could not create desktop shortcut (LOCITIZE.vbs still works): "
+            f"could not create desktop shortcut (locitize.vbs still works): "
             f"{out[-160:].strip()}",
         )
-    return StepResult("shortcut", True, "desktop shortcut to LOCITIZE created")
+    return StepResult("shortcut", True, "desktop shortcut to locitize created")
 
 
 def seed_data_root(
@@ -1398,8 +1462,8 @@ def ensure_model_store(say: Callable[[str], None] | None = None) -> StepResult:
         if not readme.exists():
             readme.write_text(
                 "This folder is your machine's shared model store, created by "
-                "LOCITIZE.\n\nPut GGUF model files here and every local-AI tool "
-                "on this machine can use them from one place. LOCITIZE scans "
+                "locitize.\n\nPut GGUF model files here and every local-AI tool "
+                "on this machine can use them from one place. locitize scans "
                 "this folder when importing models and links its downloads "
                 "into it (links share bytes - nothing is ever duplicated).\n",
                 encoding="utf-8",

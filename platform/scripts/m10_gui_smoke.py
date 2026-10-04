@@ -112,7 +112,7 @@ def main() -> int:
     gc.result_q.put(Result("assistant_started", True, {"port": 8080}))
     gc.result_q.put(Result("assistant_state", True, {"state": "idle"}))
     gc.result_q.put(Result("assistant_user", True, {"text": "what is the capital of France"}))
-    gc.result_q.put(Result("assistant_reply", True, {"line": "LOCITIZE: Paris."}))
+    gc.result_q.put(Result("assistant_reply", True, {"line": "locitize: Paris."}))
     app._drain()  # the pump's drain applies every queued Result on the UI thread
 
     # Talk is now enabled (session live + idle); the conversation view shows the turn.
@@ -120,7 +120,7 @@ def main() -> int:
     assert str(app._talk_btn["state"]) == "normal"
     text = app._conversation.get("1.0", "end")
     assert "You: what is the capital of Kenya" in text
-    assert "LOCITIZE: Paris." in text
+    assert "locitize: Paris." in text
     print("[2] pump rendered a You/LOCITIZE turn; Talk enabled while live+idle")
 
     # Speaking state disables Talk; back to idle re-enables it (M10.3 state machine).

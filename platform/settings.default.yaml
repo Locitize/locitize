@@ -1,13 +1,13 @@
-﻿# LOCITIZE platform settings - SHIPPED TEMPLATE (Architecture M14.2.2, DEC-M14-4).
+﻿# locitize platform settings - SHIPPED TEMPLATE (Architecture M14.2.2, DEC-M14-4).
 #
 # This file is the tracked template. It is never read at runtime and never
-# edited by you. On first run LOCITIZE copies it to your data root as settings.yaml
+# edited by you. On first run locitize copies it to your data root as settings.yaml
 # and that copy is the live file:
 #
 #   1. %LOCITIZE_DATA_DIR%            if the environment variable is set
 #   2. <install dir>/locitize-data/   if that directory exists (portable / dev mode;
 #                                  creating the folder is the entire opt-in)
-#   3. %LOCALAPPDATA%\LOCITIZE        otherwise (the normal install default)
+#   3. %LOCALAPPDATA%\locitize        otherwise (the normal install default)
 #
 # LOCALAPPDATA, not APPDATA: this tree holds logs, transcripts, chat databases,
 # fetched binaries, GGUF files and training outputs - tens of gigabytes of
@@ -27,7 +27,7 @@
 version: 2
 
 paths:
-  # Absolute paths to the external binaries and weights LOCITIZE supervises. All
+  # Absolute paths to the external binaries and weights locitize supervises. All
   # empty by default; the first-run setup fills them in, or you can.
   llama_cpp: ""        # llama-server.exe            or LOCITIZE_LLAMACPP_PATH
   whisper: ""          # whisper-server.exe          or LOCITIZE_WHISPER_PATH
@@ -83,12 +83,12 @@ proxy:
 secure_proxy:
   # Optional Caddy TLS proxy so chat opens at https://locitize.local with a padlock.
   #
-  # OFF by default, deliberately (M14.2.6). Turning this on lets LOCITIZE install
+  # OFF by default, deliberately (M14.2.6). Turning this on lets locitize install
   # software with winget, write a proxy config, start a listener on 443, and add
   # a root certificate to your current-user certificate store. None of that may
   # ever happen to someone who merely started the app, so it is opt-in and stays
   # opt-in. The hosts-file line (locitize.local -> 127.0.0.1) is the one elevated
-  # step LOCITIZE never performs itself; it reports a remedy instead.
+  # step locitize never performs itself; it reports a remedy instead.
   enabled: false
   hostname: "locitize.local"
   caddy_path: ""             # empty = auto-discover on PATH / winget packages
@@ -117,14 +117,14 @@ tts:
   enabled: true                    # false -> kokoro health probe WARNING, TTS off
   voice: "am_michael"              # must name an on-disk voice .pt (see paths.kokoro_voices)
   speed: 1.0                       # Kokoro speech-rate multiplier (> 0)
-  sample_sentence: "Hello, I am LOCITIZE. This is how this voice sounds."  # spoken by --audition
+  sample_sentence: "Hello, I am locitize. This is how this voice sounds."  # spoken by --audition
   autoplay: true                   # speak() plays via winsound; false = synthesize-only
   reply_lead_silence_ms: 120       # pad before the first word so the device can spin up;
                                    # raise to 800-1500 for a sleeping Bluetooth speaker
 
 assistant:
   # Built-in voice-assistant loop. Latency is MEASURED per turn, not promised.
-  system_prompt: "You are LOCITIZE, a concise local voice assistant."
+  system_prompt: "You are locitize, a concise local voice assistant."
   response_reserve_tokens: 512   # ctx tokens kept free for the reply (must be > 0)
   max_history_turns: 20          # hard cap on retained turns before the ctx-budget trim
   speak_per_sentence: true       # stream + speak each sentence; false = wait-for-complete
@@ -165,13 +165,13 @@ launcher:
   default_model: ""
 
 chat:
-  # Chat-UI chooser. LOCITIZE manages chat applications; it never rebuilds chat.
+  # Chat-UI chooser. locitize manages chat applications; it never rebuilds chat.
   # preferred_ui is the persisted default the Chat button/menu uses:
   #   ask       -> present the choice each time (llama.cpp built-in vs Open WebUI)
   #   llamacpp  -> always open the built-in llama.cpp web UI (zero setup)
   #   openwebui -> always open the managed Open WebUI service (rich chat, history)
   # Default is openwebui (owner decision 2026-08-31): the rich chat is the
-  # experience LOCITIZE leads with. The chooser degrades HONESTLY when it
+  # experience locitize leads with. The chooser degrades HONESTLY when it
   # is not installed - the built-in llama.cpp UI opens with the remedy
   # named - and offers to start it when installed but not yet running.
   preferred_ui: openwebui
@@ -182,7 +182,7 @@ chat_harness:
   # project folder the same way those CLIs walk any other repo. last_project_dir
   # is the folder the picker's browse dialog defaults to (remembered across
   # launches); "" means never launched one yet, so the dialog opens with no
-  # default. Each harness CLI must already be installed and on PATH -- LOCITIZE
+  # default. Each harness CLI must already be installed and on PATH -- locitize
   # never installs one for you; a missing CLI just greys out that option.
   last_project_dir: ""
 
@@ -190,12 +190,12 @@ openwebui:
   # Open WebUI as an optional managed loopback chat service, installed into a
   # dedicated venv so its heavy, version-fragile deps never touch the platform
   # venv. It is pointed at the running llama.cpp server (OpenAI-compatible
-  # backend) and supervised by the same lifecycle as every other LOCITIZE service.
+  # backend) and supervised by the same lifecycle as every other locitize service.
   #
   # false in this template: it is separately licensed third-party software, so
   # it is only switched on once setup has installed it. The wizard (box ticked
   # by default) and agent_setup.py (unless --no-openwebui) install it and set
-  # this to true; starting LOCITIZE never installs it as a side effect.
+  # this to true; starting locitize never installs it as a side effect.
   enabled: false
   venv: ".webui-venv"           # dedicated venv dir under the data root
   data_dir: "webui-data"        # under the data root; private like memory/
@@ -233,19 +233,19 @@ models_hub:
   # The Models page's "Get models" section: browse a shipped catalog, search
   # HuggingFace, and download one verified .gguf into your data root.
   #
-  # LOCITIZE contacts huggingface.co ONLY when you press Search, select a
+  # locitize contacts huggingface.co ONLY when you press Search, select a
   # repository, or confirm a download. Never at startup, never on a timer,
   # never in the background. Set enabled: false and no network call is
   # reachable from this feature at all.
   #
   # No HuggingFace account is used or supported. Models behind a licence you
   # must accept return an honest "download it in your browser and Register it"
-  # message instead - LOCITIZE stores no credentials of any kind.
+  # message instead - locitize stores no credentials of any kind.
   enabled: true
   # Settable here and nowhere else (DEC-M14-10): the environment override was
-  # removed, because a key that decides WHO LOCITIZE talks to must be changed in a
+  # removed, because a key that decides WHO locitize talks to must be changed in a
   # file you own and can audit. A value naming a host outside allowed_hosts is
-  # still refused, so pointing LOCITIZE at a mirror takes two deliberate edits.
+  # still refused, so pointing locitize at a mirror takes two deliberate edits.
   api_base: "https://huggingface.co"
   # Host allowlist, re-checked on EVERY redirect hop. A host matches when it
   # equals an entry or is a subdomain of one (real downloads redirect to

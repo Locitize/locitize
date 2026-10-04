@@ -1,10 +1,10 @@
-"""Invariant W1: at runtime, LOCITIZE writes nothing beneath the install directory.
+"""Invariant W1: at runtime, locitize writes nothing beneath the install directory.
 
 WHAT THIS IS (DEC-M14-9, Architecture M14.2.3.1)
 ------------------------------------------------
 Every byte the user owns - settings, models, transcripts, logs, the Open WebUI
 chat database, reports, the generated Caddyfile - lives under the data root. The
-install tree holds the program and nothing else, and is read-only once LOCITIZE is
+install tree holds the program and nothing else, and is read-only once locitize is
 running. That is what makes "back up one folder" true, a `Program Files` install
 possible, and a reinstall safe.
 
@@ -35,7 +35,7 @@ W1-S3  `.base_dir` must not be passed into a directory resolver (a callee whose
        with the install directory is itself the defect.
 
 W1-S4  A write to a RELATIVE path - one whose leading component is a string
-       literal with no absolute anchor. This rule exists because LOCITIZE.bat line 9
+       literal with no absolute anchor. This rule exists because locitize.bat line 9
        does `cd /d "%~dp0"`, so the process working directory IS the install
        directory: a relative write mentions no `base_dir` and would sail past
        S1-S3 while landing squarely in the install tree (review round 6,
@@ -52,7 +52,7 @@ WHAT IS NOT A FINDING
 ---------------------
 Reading from the install tree is the whole point of an install tree: the shipped
 docs path the launcher prints, the free-space probe on the install drive, the
-venv interpreters LOCITIZE launches children from, and config's copy of a shipped
+venv interpreters locitize launches children from, and config's copy of a shipped
 *.default.yaml template all compose install paths and none of them writes there.
 Install-time code (scripts/, setup) is excluded by path, per M14.2.3.1.
 
@@ -665,7 +665,7 @@ def scan_source(source: str, module: str, tainted_calls: set[str] | None = None)
 
             # W1-S4 first, because it is the rule that needs no taint: a write to
             # a bare relative path lands wherever the process happens to be, and
-            # LOCITIZE.bat cd's into the install directory. Checked before the
+            # locitize.bat cd's into the install directory. Checked before the
             # taint-based rules because those `continue` past the rest of the
             # loop body for the shapes they recognise.
             for target in write_targets(inner):
@@ -676,7 +676,7 @@ def scan_source(source: str, module: str, tainted_calls: set[str] | None = None)
                             module,
                             inner.lineno,
                             f"{name}() writes to the relative path "
-                            f"{ast.unparse(target)}; LOCITIZE's working directory "
+                            f"{ast.unparse(target)}; locitize's working directory "
                             f"is the install directory, so this lands in the "
                             f"install tree - anchor it to settings.data_dir",
                         )

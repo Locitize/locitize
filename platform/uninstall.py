@@ -28,7 +28,7 @@ to delete the folder for a complete removal), model files anywhere else on the
 machine, and anything outside the paths above. LOCITIZE's own running services
 are stopped first; nothing belonging to another program is ever terminated.
 
-Entry points: `LOCITIZE.bat --uninstall`, or Settings > Uninstall in the app.
+Entry points: `locitize.bat --uninstall`, or Settings > Uninstall in the app.
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ def resolve_data_root() -> Path:
 
 
 def desktop_shortcut() -> Path | None:
-    """The Desktop LOCITIZE.lnk, honouring OneDrive redirection. Best-effort."""
+    """The Desktop locitize.lnk, honouring OneDrive redirection. Best-effort."""
     try:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command",
@@ -95,7 +95,7 @@ def desktop_shortcut() -> Path | None:
         )
         desktop = (proc.stdout or "").strip()
         if desktop:
-            return Path(desktop) / "LOCITIZE.lnk"
+            return Path(desktop) / "locitize.lnk"
     except (OSError, subprocess.SubprocessError):
         pass
     return None
@@ -210,14 +210,14 @@ def run_gui() -> int:
     import setup_wizard  # stdlib-only, brings the shared dark theme
 
     root_win = tk.Tk()
-    root_win.title("Uninstall LOCITIZE")
+    root_win.title("Uninstall locitize")
     setup_wizard._apply_theme(root_win)
     setup_wizard._brand_window(root_win)
     root_win.geometry("640x520")
 
     frame = ttk.Frame(root_win, padding=14)
     frame.pack(fill="both", expand=True)
-    ttk.Label(frame, text="Uninstall LOCITIZE",
+    ttk.Label(frame, text="Uninstall locitize",
               font=("Segoe UI", 16, "bold")).pack(anchor="w")
     ttk.Label(
         frame,
@@ -243,7 +243,7 @@ def run_gui() -> int:
             for p in keep:
                 listing.insert("end", f"  + {p}\n")
         if not delete:
-            listing.insert("end", "\nNothing to remove - LOCITIZE is not installed.\n")
+            listing.insert("end", "\nNothing to remove - locitize is not installed.\n")
         listing.configure(state="disabled")
 
     ttk.Checkbutton(
@@ -262,12 +262,12 @@ def run_gui() -> int:
         delete, _keep = uninstall_plan(keep_models=keep_var.get())
         stopped = stop_locitize_processes(resolve_data_root(), REPO_DIR)
         if stopped:
-            status.configure(text=f"stopped {stopped} running LOCITIZE process(es)...")
+            status.configure(text=f"stopped {stopped} running locitize process(es)...")
             root_win.update_idletasks()
         failures = execute(delete, say=lambda _t: None)
         if failures:
             status.configure(
-                text="Some items could not be removed (close LOCITIZE and any "
+                text="Some items could not be removed (close locitize and any "
                      "terminals in these folders, then run uninstall again): "
                      + failures[0]
             )
@@ -275,7 +275,7 @@ def run_gui() -> int:
             return
         outcome["code"] = 0
         status.configure(
-            text="Done. To remove LOCITIZE completely, delete this folder: "
+            text="Done. To remove locitize completely, delete this folder: "
                  f"{REPO_DIR}"
         )
         refresh_listing()
@@ -303,7 +303,7 @@ def main() -> int:
             print(f"  kept    {p}")
         print("uninstall " + ("complete" if not failures else
                               f"finished with {len(failures)} failure(s)"))
-        print(f"To remove LOCITIZE completely, delete: {REPO_DIR}")
+        print(f"To remove locitize completely, delete: {REPO_DIR}")
         return 0 if not failures else 1
     try:
         return run_gui()

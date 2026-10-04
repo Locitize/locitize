@@ -25,14 +25,14 @@ $forward = @($args)
 if ($Terminal) {
     $mode = @("--terminal")
 } else {
-    # Production default matches LOCITIZE.bat
+    # Production default matches locitize.bat
     $mode = @("--desktop")
     $Desktop = $true
 }
 
 Push-Location $platformDir
 try {
-    Write-Host "Starting LOCITIZE via $py $($mode -join ' ') ..."
+    Write-Host "Starting locitize via $py $($mode -join ' ') ..."
     & $py launcher.py @mode @forward
     exit $LASTEXITCODE
 }

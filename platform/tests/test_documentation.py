@@ -10,7 +10,7 @@ def test_first_append_writes_header_and_entry(tmp_path):
     journal = DevelopmentJournal(path)
     journal.append(JournalEntry.now(completed="started", issues="none"))
     text = path.read_text(encoding="utf-8")
-    assert text.startswith("# LOCITIZE Development Journal")
+    assert text.startswith("# locitize Development Journal")
     assert "- Completed: started" in text
 
 
@@ -24,7 +24,7 @@ def test_second_append_preserves_prior_entry(tmp_path):
     assert "- Completed: first" in text
     assert "- Completed: second" in text
     # Header appears exactly once.
-    assert text.count("# LOCITIZE Development Journal") == 1
+    assert text.count("# locitize Development Journal") == 1
 
 
 def test_empty_fields_render_as_none(tmp_path):

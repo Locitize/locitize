@@ -81,13 +81,13 @@ def render_markdown(
     """The whole report as one markdown document."""
     lines: list[str] = []
     vram_text = f"{vram_total_mb / 1024:.0f} GB" if vram_total_mb else "unknown"
-    lines.append("# LOCITIZE RTX compatibility report")
+    lines.append("# locitize RTX compatibility report")
     lines.append("")
     lines.append(f"- **GPU:** {gpu_name or 'none detected'} ({vram_text} VRAM)")
     lines.append(f"- **Generated:** {generated_on}")
     lines.append(
         "- **Method:** every figure below was MEASURED on this machine by "
-        "LOCITIZE - real llama.cpp generation runs, never estimated. Context is "
+        "locitize - real llama.cpp generation runs, never estimated. Context is "
         "the largest window that held >=85% of baseline throughput."
     )
     lines.append("")
@@ -119,7 +119,7 @@ def render_markdown(
             )
             lines.append("")
     lines.append(
-        "_Generated locally by LOCITIZE. Nothing was transmitted; sharing this "
+        "_Generated locally by locitize. Nothing was transmitted; sharing this "
         "file is your call._"
     )
     lines.append("")

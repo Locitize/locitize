@@ -298,9 +298,21 @@ class SetupWizard:
             lines.append(f"llama.cpp    : {found or 'not found - will be downloaded'}")
             venv = "present" if self._state.get("platform_venv") else "will be created"
             lines.append(f"Python venv  : {venv}")
-            ready = sum(1 for ok in self._state.values() if ok)
+            # Name what is already here rather than "3 of 19 components",
+            # which read like a step counter and said nothing about which.
+            present = [
+                setup_plan.REQUIREMENTS[key].label
+                for key, ok in self._state.items()
+                if ok and key in setup_plan.REQUIREMENTS
+            ]
             lines.append("")
-            lines.append(f"{ready} of {len(self._state)} components already present.")
+            if present:
+                lines.append("Already on this PC (will be skipped):")
+                lines.extend(f"  - {label}" for label in present)
+            else:
+                lines.append("Nothing installed yet - this is a fresh setup.")
+            lines.append("")
+            lines.append("Next, choose which features to install.")
             for note in self._machine.notes:
                 lines.append("")
                 lines.append(note)
@@ -514,7 +526,7 @@ class SetupWizard:
         start.pack(side="right")
         ttk.Button(nav, text="Back", command=self._show_features).pack(side="right", padx=6)
         if plan.nothing_to_do:
-            start.configure(text="Launch LOCITIZE", command=self._launch)
+            start.configure(text="Launch locitize", command=self._launch)
 
     # -- screen 4 ---------------------------------------------------------
 
@@ -535,7 +547,7 @@ class SetupWizard:
         nav = ttk.Frame(body)
         nav.pack(fill="x")
         launch = ttk.Button(
-            nav, text="Launch LOCITIZE", state="disabled", command=self._launch,
+            nav, text="Launch locitize", state="disabled", command=self._launch,
             style="Accent.TButton",
         )
         launch.pack(side="right")
@@ -706,7 +718,7 @@ class SetupWizard:
             elif venv_exe.is_file() and setup_env.find_llama_server():
                 say(
                     "-- Measuring the best context for each model on your GPU"
-                    " (capped at ~15 minutes; resumable via LOCITIZE.vbs --setup)"
+                    " (capped at ~15 minutes; resumable via locitize.vbs --setup)"
                 )
                 # M18.17: a hard time budget keeps first-run setup bounded. The
                 # measurement is resumable by design, so a big model library
@@ -714,7 +726,7 @@ class SetupWizard:
                 measured = setup_env.measure_contexts(venv_exe, say, budget_s=900)
                 say(f"   {'ok' if measured.ok else 'note'}: {measured.message}")
 
-            # M17.12: drop a Desktop shortcut to LOCITIZE.vbs, the no-console
+            # M17.12: drop a Desktop shortcut to locitize.vbs, the no-console
             # launcher, so the everyday way in never flashes a black console
             # window. Best-effort: a failure here never fails setup.
             say("-- Creating a Desktop shortcut (no-console launcher)")
@@ -736,7 +748,7 @@ class SetupWizard:
         self._launch_ok = not essential_failed and setup_env.venv_python_path().is_file()
         total = _fmt_duration(time.monotonic() - install_started)
         if not failures:
-            summary = f"Setup complete in {total}. LOCITIZE is ready."
+            summary = f"Setup complete in {total}. locitize is ready."
         elif essential_failed:
             summary = (
                 f"Setup could not finish after {total}: " + ", ".join(failures) + ". "
@@ -745,7 +757,7 @@ class SetupWizard:
         else:
             summary = (
                 f"Setup finished in {total} with optional items skipped: " + ", ".join(failures)
-                + ". LOCITIZE will start; those features stay off until installed."
+                + ". locitize will start; those features stay off until installed."
             )
         self._events.put(("done", summary))
 
@@ -971,7 +983,7 @@ class SetupWizard:
 def needs_setup() -> bool:
     """True when a bare launch would fail, i.e. the venv or its GUI deps are absent.
 
-    This is the LOCITIZE.bat gate. It stays cheap and stdlib-only: one file check
+    This is the locitize.bat gate. It stays cheap and stdlib-only: one file check
     plus one import probe, so a normal start pays almost nothing for it.
     """
     exe = setup_env.venv_python_path()
@@ -986,8 +998,8 @@ def run() -> int:
         root = tk.Tk()
     except tk.TclError as exc:
         message = (
-            f"LOCITIZE setup could not open a window ({exc}). "
-            f"Run 'LOCITIZE.bat --terminal' to set up from the terminal."
+            f"locitize setup could not open a window ({exc}). "
+            f"Run 'locitize.bat --terminal' to set up from the terminal."
         )
         sys.stderr.write(message + "\n")
         # The launcher hides the console, so stderr alone could go unseen.

@@ -581,7 +581,7 @@ def resolve_results_dir(settings: Any) -> Path:
 
 
 RESULTS_MD_HEADER = (
-    "# LOCITIZE Benchmark Results\n\n"
+    "# locitize Benchmark Results\n\n"
     "Scores are the fraction of deterministic local checks passed (exact-match /\n"
     "keyword / numeric), NOT an LLM-judged rating. Speeds are from the server's own\n"
     "/completion timings (p50 of N runs).\n"
@@ -891,7 +891,7 @@ class BenchmarkRunner:
         if not self._port_is_free(port):
             raise BenchmarkConflictError(
                 f"a model appears to be running on port {port}; stop it or close "
-                f"LOCITIZE before benchmarking (the benchmark will not co-load a second "
+                f"locitize before benchmarking (the benchmark will not co-load a second "
                 f"model on the 16GB card)."
             )
         self._assert_headroom()

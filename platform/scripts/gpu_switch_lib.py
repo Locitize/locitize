@@ -81,7 +81,7 @@ def _apply(want_cuda: bool, tag: str = "") -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="LOCITIZE llama.cpp CUDA/CPU switch")
+    parser = argparse.ArgumentParser(description="locitize llama.cpp CUDA/CPU switch")
     parser.add_argument("--target", choices=("cuda", "cpu"), required=True)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--tag", default="")

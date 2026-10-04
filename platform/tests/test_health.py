@@ -289,7 +289,7 @@ def test_vram_held_by_our_own_model_is_counted_as_available():
     result = probe.run()
     assert result.status is HealthStatus.PASS
     assert result.data["effective_free_mb"] == 14996  # 1996 free + 13000 ours
-    assert "held by LOCITIZE" in result.detail
+    assert "held by locitize" in result.detail
 
 
 def test_a_running_server_with_unmeasurable_vram_still_passes():
@@ -376,7 +376,7 @@ def test_a_port_served_by_our_own_model_is_not_a_conflict():
     assert result.status is HealthStatus.PASS
     assert result.data["ours"] == ["llama_cpp:8080"]
     assert result.data["blocked"] == []
-    assert "served by LOCITIZE" in result.detail
+    assert "served by locitize" in result.detail
 
 
 def test_a_port_taken_by_a_foreign_process_still_warns():

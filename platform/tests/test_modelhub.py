@@ -2028,12 +2028,12 @@ def register_failure_message(monkeypatch, tmp_path, exc):
         # registry_write_errors suite proves that against a real read-only file
         # rather than by injection.
         _registry_write_error(
-            "LOCITIZE could not write your model list at models.yaml: Access is "
+            "locitize could not write your model list at models.yaml: Access is "
             "denied. Close any program that has the file open, check that it is "
             "not marked read-only, then try again."
         ),
         _registry_write_error(
-            "LOCITIZE could not update your model list because models.yaml has no "
+            "locitize could not update your model list because models.yaml has no "
             "top-level 'models:' section to write into, and it refuses to guess "
             "where the list should start. Open that file, add a 'models:' line, "
             "then try again."

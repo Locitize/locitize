@@ -1,7 +1,7 @@
-# LOCITIZE model registry - SHIPPED TEMPLATE (Architecture M14.2.2, DEC-M14-4).
+# locitize model registry - SHIPPED TEMPLATE (Architecture M14.2.2, DEC-M14-4).
 #
 # This file is the tracked template. It is never read at runtime. On first run
-# LOCITIZE copies it to your data root as models.yaml, and that copy is the live
+# locitize copies it to your data root as models.yaml, and that copy is the live
 # registry (see settings.default.yaml's header for how the data root is found).
 #
 # It ships with ZERO model rows, on purpose. A registry row is a claim that a
@@ -12,7 +12,7 @@
 #
 # How to add a model (any one of these):
 #   - run the first-run setup and point it at a model file;
-#   - use the Register action in the LOCITIZE window;
+#   - use the Register action in the locitize window;
 #   - or copy the commented example below into the `models:` list and edit it.
 #
 # No secrets: `location` is a filesystem path only, never a URL with a token.

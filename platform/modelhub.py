@@ -175,7 +175,7 @@ VERIFICATION_LABELS = {
 # The V-NONE consent text. Kept as a constant so the GUI, the CLI and the tests
 # all show the user the same sentence.
 UNVERIFIED_CONSENT_TEXT = (
-    "HuggingFace did not publish a checksum for this file. LOCITIZE will download "
+    "HuggingFace did not publish a checksum for this file. locitize will download "
     "it and record the checksum it computed, but it cannot verify the file is "
     "the one the publisher intended."
 )
@@ -187,8 +187,8 @@ UNVERIFIED_CONSENT_TEXT = (
 GATED_MESSAGE = (
     "HuggingFace refused this repository for an anonymous request. It is either "
     "gated behind a licence you must accept on huggingface.co, or it does not "
-    "exist. LOCITIZE does not store HuggingFace credentials. If it is gated, "
-    "download the file in your browser and point LOCITIZE at it with Register."
+    "exist. locitize does not store HuggingFace credentials. If it is gated, "
+    "download the file in your browser and point locitize at it with Register."
 )
 
 RATE_LIMIT_MESSAGE = (
@@ -200,7 +200,7 @@ FIT_DISCLAIMER = (
     "KV cache settings, and whatever else is using the GPU."
 )
 
-FIT_UNKNOWN_TEXT = "No NVIDIA GPU detected - LOCITIZE cannot estimate the fit."
+FIT_UNKNOWN_TEXT = "No NVIDIA GPU detected - locitize cannot estimate the fit."
 
 MULTI_GPU_CAVEAT = (
     "You have more than one GPU. This estimate uses your largest single card, "
@@ -260,7 +260,7 @@ def validate_filename(filename: Any) -> str:
     text = str(filename or "").strip()
     if not FILENAME_RE.match(text):
         raise ValueError(
-            f"'{text}' is not a downloadable model file name; LOCITIZE downloads "
+            f"'{text}' is not a downloadable model file name; locitize downloads "
             f"only plain .gguf names with no folder part"
         )
     return text
@@ -1132,7 +1132,7 @@ def download_verified(
             False,
             path=dest_path,
             error=(
-                f"a file already exists at {dest_path}. LOCITIZE will not overwrite "
+                f"a file already exists at {dest_path}. locitize will not overwrite "
                 f"it. Use the existing file (Register it), or move it aside first."
             ),
         )
@@ -1856,7 +1856,7 @@ class Downloader:
             raise HubError(
                 "offline",
                 f"Could not reach huggingface.co: {exc}. The list below is "
-                f"LOCITIZE's built-in catalog; downloads still need a connection.",
+                f"locitize's built-in catalog; downloads still need a connection.",
             ) from exc
         except ValueError as exc:
             raise HubError(

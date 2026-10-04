@@ -236,7 +236,7 @@ class TtsConfig:
     enabled: bool = True
     voice: str = "am_michael"
     speed: float = 1.0
-    sample_sentence: str = "Hello, I am LOCITIZE. This is how this voice sounds."
+    sample_sentence: str = "Hello, I am locitize. This is how this voice sounds."
     autoplay: bool = True
     # Leading silence (ms) prepended to the FIRST clip of a spoken reply so the
     # audio device can spin up without clipping the first phoneme. 120 ms is
@@ -269,7 +269,7 @@ class AssistantConfig:
     assistant.HalfDuplexGate.overlaps_speaking). None hold secrets.
     """
 
-    system_prompt: str = "You are LOCITIZE, a concise local voice assistant."
+    system_prompt: str = "You are locitize, a concise local voice assistant."
     response_reserve_tokens: int = 512
     max_history_turns: int = 20
     speak_per_sentence: bool = True
@@ -1689,8 +1689,8 @@ def _edit_registry(
 
     if not path.is_file():
         raise RegistryWriteError(
-            f"LOCITIZE could not update your model list because the file "
-            f"{path} is missing. Restart LOCITIZE to have it recreated from the "
+            f"locitize could not update your model list because the file "
+            f"{path} is missing. Restart locitize to have it recreated from the "
             f"shipped template, or restore it from your backup, then try again."
         )
 
@@ -1703,7 +1703,7 @@ def _edit_registry(
     section_start, _section_end = _locate_top_section(lines, "models")
     if section_start is None:
         raise RegistryWriteError(
-            f"LOCITIZE could not update your model list because {path} has no "
+            f"locitize could not update your model list because {path} has no "
             f"top-level 'models:' section to write into, and it refuses to "
             f"guess where the list should start. Open that file, add a "
             f"'models:' line, then try again."
@@ -1726,7 +1726,7 @@ def _registry_os_message(path: Path, exc: OSError, verb: str) -> str:
     """
     cause = (exc.strerror or "the file could not be opened").strip().rstrip(".")
     return (
-        f"LOCITIZE could not {verb} your model list at {path}: {cause}. Close any "
+        f"locitize could not {verb} your model list at {path}: {cause}. Close any "
         f"program that has the file open, check that it is not marked "
         f"read-only, then try again."
     )
@@ -2200,7 +2200,7 @@ def write_model_tuning(
     for arg in cleaned:
         if not arg or any(ch in arg for ch in '"\n#,[]'):
             raise ValueError(
-                f"server_args entry {arg!r} contains a character LOCITIZE will "
+                f"server_args entry {arg!r} contains a character locitize will "
                 f"not write into models.yaml; edit this model's server_args by "
                 f"hand instead"
             )

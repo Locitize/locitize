@@ -330,7 +330,7 @@ def test_append_log_preserves_previous_session_evidence(tmp_path):
     text = log_file.read_text(encoding="ascii")
     # Original evidence survived and two dated banners were written.
     assert "previous session trace" in text
-    assert text.count("LOCITIZE service start whisper_server") == 2
+    assert text.count("locitize service start whisper_server") == 2
 
 
 def test_truncating_log_default_starts_empty(tmp_path):

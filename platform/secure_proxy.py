@@ -149,7 +149,7 @@ def resolve_caddyfile_path(settings: Settings) -> Path:
 def _caddyfile_body(hostname: str, upstream_port: int) -> str:
     return (
         "\n\n"
-        "# LOCITIZE secure proxy (managed by secure_proxy.py; regenerated if deleted)\n"
+        "# locitize secure proxy (managed by secure_proxy.py; regenerated if deleted)\n"
         f"# https://{hostname}/ -> 127.0.0.1:{upstream_port} (Open WebUI)\n"
         "# bind 127.0.0.1 keeps both listeners loopback-only; nothing on the LAN.\n"
         f"{hostname} {{\n"

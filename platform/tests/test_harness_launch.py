@@ -501,7 +501,7 @@ def test_install_claude_code_not_found_after_install_says_restart(monkeypatch):
     monkeypatch.setattr(hl, "detect_executable_fresh", lambda h: None)
     ok, message = hl.install_claude_code()
     assert ok is False
-    assert "restart LOCITIZE" in message
+    assert "restart locitize" in message
 
 
 def test_install_codex_success(monkeypatch):

@@ -154,8 +154,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     def _send_no_model(self) -> None:
         """Friendly 503 when no model is running (the proxy has nothing to target)."""
         page = (
-            b"<html><body><h1>LOCITIZE</h1>"
-            b"<p>No model is running. Start one in the LOCITIZE command center, "
+            b"<html><body><h1>locitize</h1>"
+            b"<p>No model is running. Start one in the locitize command center, "
             b"then reload this page.</p></body></html>"
         )
         self.send_response(503, "no model running")
@@ -199,7 +199,7 @@ class ReverseProxy:
             server = ThreadingHTTPServer(("127.0.0.1", port), _ProxyHandler)
         except PermissionError as exc:
             raise PermissionError(
-                f"binding port {port} needs Administrator; run LOCITIZE elevated and "
+                f"binding port {port} needs Administrator; run locitize elevated and "
                 f"the scripts/enable_locitize_local.ps1 opt-in, or use the default "
                 f"loopback port {self._config.port}"
             ) from exc

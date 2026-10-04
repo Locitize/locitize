@@ -530,7 +530,7 @@ class _KokoroHandler(BaseHTTPRequestHandler):
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="kokoro_server", description="LOCITIZE Kokoro TTS runner")
+    parser = argparse.ArgumentParser(prog="kokoro_server", description="locitize Kokoro TTS runner")
     parser.add_argument("--host", default=_LOOPBACK_HOST)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--model", required=True, help="path to kokoro-v1_0.pth")

@@ -27,7 +27,7 @@ $ErrorActionPreference = "Stop"
 $platformDir = Split-Path -Parent $PSScriptRoot
 $repoRoot = Split-Path -Parent $platformDir
 
-Write-Host "LOCITIZE install/update"
+Write-Host "locitize install/update"
 Write-Host "  DEV_ROOT     = $repoRoot"
 Write-Host "  platform     = $platformDir"
 if ($env:LOCITIZE_DATA_DIR) {
@@ -104,7 +104,7 @@ if (-not $SkipHealth) {
     & (Join-Path $PSScriptRoot "health.ps1")
     $healthCode = $LASTEXITCODE
     if ($healthCode -ne 0) {
-        Write-Warning "stack health reported failures (exit $healthCode). Start desktop via LOCITIZE.bat if services are down."
+        Write-Warning "stack health reported failures (exit $healthCode). Start desktop via locitize.bat if services are down."
         exit $healthCode
     }
 }

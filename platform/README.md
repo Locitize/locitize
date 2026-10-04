@@ -1,8 +1,8 @@
-﻿# LOCITIZE Platform - Developer Guide
+﻿# locitize Platform - Developer Guide
 
 **Download it. Locitize it. Talk to it.**
 
-LOCITIZE is a Windows-first desktop for local models, coding sessions, chat,
+locitize is a Windows-first desktop for local models, coding sessions, chat,
 voice, vision and fine-tuning. Local inference keeps model requests on this
 computer; external tools and optional installers retain their own network access.
 See ../SECURITY.md for the actual boundary.
@@ -14,7 +14,7 @@ historical module walkthroughs below describe the existing platform foundation.
 
 How it works, in four steps:
 1. **Download** - grab a model from Hugging Face (or import GGUFs you already have) with progress and resume.
-2. **Locitize** - LOCITIZE registers it, verifies it, and wires it into your local model server.
+2. **Locitize** - locitize registers it, verifies it, and wires it into your local model server.
 3. **Run** - one click starts the local server; everything stays on this machine.
 4. **Launch** - the chat/voice UI opens against it immediately.
 
@@ -28,7 +28,7 @@ The platform has since grown; each addition documents itself where it lives:
   the right llama.cpp build for the GPU (digest-verified from GitHub, cudart
   paired automatically), whisper.cpp + weights, Kokoro voices, and the local
   models you already have, registered ready-to-run. On finish it drops a
-  Desktop shortcut to `LOCITIZE.vbs`. Re-run setup with `LOCITIZE.vbs --setup`.
+  Desktop shortcut to `locitize.vbs`. Re-run setup with `locitize.vbs --setup`.
   See `setup_plan.py` / `setup_env.py` / `setup_wizard.py`.
 - **Get models (M14.14)** - catalog + HuggingFace search + verified download
   on the Models page, host-allowlisted on every redirect hop, including
@@ -156,7 +156,7 @@ Flags:
 - `--gpu-layers <N>` - GPU layers to offload (optional; default: model's gpu_layers).
   `-1` or `999` means "as many as fit": llama-server's `--fit` measures free VRAM at
   load and keeps the rest on the CPU; on Windows that reading cannot see other
-  processes, so LOCITIZE measures what they hold at each launch and passes the
+  processes, so locitize measures what they hold at each launch and passes the
   corrected margin as `--fit-target` (a row's own `--fit-target` in `server_args`
   wins). Any other number is passed through as-is.
 - `--json` - Output structured JSON. Besides the outcome it carries `tokens_per_second`
@@ -182,8 +182,8 @@ The launcher always cleans up: process exits, VRAM released, no listener left on
 python launcher.py --gui
 ```
 
-Opens the PySide6 LOCITIZE Desktop (the same window as `--desktop` /
-`LOCITIZE.vbs`): Models, Fine-tune, Talk, Voice Setup, Vision, Memory, Chat,
+Opens the PySide6 locitize Desktop (the same window as `--desktop` /
+`locitize.vbs`): Models, Fine-tune, Talk, Voice Setup, Vision, Memory, Chat,
 and Settings pages. Closing the window cleanly stops every managed service; no
 orphaned processes remain.
 
@@ -227,7 +227,7 @@ Exit 0 on success, exit 1 on failure.
 
 The router filters Open WebUI microphone and Call-mode uploads locally before
 forwarding a 16 kHz mono WAV to whisper-server. Configure the preset in the
-data-root `settings.yaml` and restart LOCITIZE:
+data-root `settings.yaml` and restart locitize:
 
 ```yaml
 speech:
@@ -350,7 +350,7 @@ Exit 0 on success, exit 1 on error.
 ### Text-to-speech synthesis (M6+)
 
 ```bash
-python launcher.py --speak "LOCITIZE on-machine neural intelligence system online." --json
+python launcher.py --speak "locitize on-machine neural intelligence system online." --json
 ```
 
 Synthesize text to speech using Kokoro TTS and play it via the system audio device. Real 16-bit PCM mono WAV synthesis on CPU.
@@ -364,7 +364,7 @@ Synthesize text to speech using Kokoro TTS and play it via the system audio devi
 
 ```json
 {
-  "text": "LOCITIZE on-machine neural intelligence system online.",
+  "text": "locitize on-machine neural intelligence system online.",
   "voice": "am_michael",
   "wav_path": "logs/tts_speak.wav",
   "wav_bytes": 218444,
@@ -437,7 +437,7 @@ Exit 0 on success, exit 1 on error (file not found, model error).
 python launcher.py --desktop
 ```
 
-The unified entry point (what `LOCITIZE.vbs` launches). Eight pages: Models,
+The unified entry point (what `locitize.vbs` launches). Eight pages: Models,
 Fine-tune, Talk, Voice Setup, Vision, Memory, Chat, and Settings. The Models
 page carries the model table, lifecycle controls, the Get models search, and
 live RAM/VRAM meters; Settings includes per-model launch values plus a
@@ -468,7 +468,7 @@ The repo ships only templates: `settings.default.yaml` and
 `models.default.yaml` (which deliberately contains zero model rows). On first
 run they are copied into the data root as `settings.yaml` / `models.yaml`,
 which then belong to the user. The data root is `LOCITIZE_DATA_DIR` if set,
-else `platform/locitize-data/` when it exists, else `%LOCALAPPDATA%\LOCITIZE`.
+else `platform/locitize-data/` when it exists, else `%LOCALAPPDATA%\locitize`.
 Never edit the live YAMLs by string surgery from code - use the chokepoint
 writers in `config.py` / `setup_env.py`.
 

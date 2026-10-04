@@ -1,6 +1,6 @@
-# LOCITIZE - agent guide
+# locitize - agent guide
 
-You are an AI agent asked to set up, run, or work on LOCITIZE for a user.
+You are an AI agent asked to set up, run, or work on locitize for a user.
 This file is your runbook. Everything here is executable as written, on Windows.
 
 ## What this is
@@ -9,7 +9,7 @@ A Windows-first local AI platform: it serves the user's own GGUF models through
 llama.cpp (OpenAI-compatible, loopback-only), with voice (whisper.cpp in,
 Kokoro out), vision, a fine-tune studio, optional Open WebUI chat, and a Qt
 desktop that manages it all. Nothing leaves the machine unless the user asks;
-the egress ledger records LOCITIZE's own outbound connections (installers,
+the egress ledger records locitize's own outbound connections (installers,
 Open WebUI and launched coding tools make their own - see SECURITY.md).
 
 - Requirements: Windows 10/11, Python 3.11+, ~2 GB disk for the toolchain.
@@ -17,17 +17,17 @@ Open WebUI and launched coding tools make their own - see SECURITY.md).
 - Layout: everything lives under `platform/`. User data (settings.yaml,
   models.yaml, downloaded binaries, logs) lives in a data root: the
   `LOCITIZE_DATA_DIR` env var if set, else `platform/locitize-data/` when that
-  directory exists, else `%LOCALAPPDATA%\LOCITIZE` (the fresh-install default).
+  directory exists, else `%LOCALAPPDATA%\locitize` (the fresh-install default).
   The install tree is never written at runtime.
 
 ## Set it up for the user
 
 **Preferred: the guided wizard (user clicks, you supervise).**
-Tell the user to double-click `platform\LOCITIZE.vbs`. On a fresh machine it
+Tell the user to double-click `platform\locitize.vbs`. On a fresh machine it
 opens the setup wizard, which installs the venv and dependencies, downloads the
 right llama.cpp build for the GPU (digest-verified), finds the GGUF models the
 user already has on disk and registers them, measures each model's best context
-on the actual GPU, and drops a Desktop shortcut. `LOCITIZE.vbs --setup` reopens
+on the actual GPU, and drops a Desktop shortcut. `locitize.vbs --setup` reopens
 the wizard later to add features.
 
 **Headless (you do it; no GUI):** three commands from the repository root.
@@ -45,7 +45,7 @@ already on the machine (hardlinked, never copied), and installs and enables
 Open WebUI as the chat app (separately licensed; skip it with
 `--no-openwebui`). It is idempotent - re-run it any time; existing pieces are
 detected and skipped. Other optional features (voice, vision, fine-tune
-studio) are added later via `LOCITIZE.vbs --setup`.
+studio) are added later via `locitize.vbs --setup`.
 
 ## Verify the setup
 
@@ -71,11 +71,11 @@ cd platform && ..\.venv\Scripts\python scripts\acceptance.py
 
 ## Run it
 
-- Desktop app (what the user wants): `platform\LOCITIZE.vbs` (no console) or
-  `platform\LOCITIZE.bat` (visible console, for debugging).
+- Desktop app (what the user wants): `platform\locitize.vbs` (no console) or
+  `platform\locitize.bat` (visible console, for debugging).
 - Everything is also CLI-driven via `platform\launcher.py`: `--health`,
   `--benchmark --model <id>`, `--gpu` / `--gpu-free` (see what holds VRAM, free
-  LOCITIZE's own), `--rtx-report` (measured per-GPU compatibility matrix),
+  locitize's own), `--rtx-report` (measured per-GPU compatibility matrix),
   `--egress` (the privacy ledger).
 
 ## Rules when changing code

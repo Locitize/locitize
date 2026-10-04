@@ -1,6 +1,6 @@
 # Chat applications and local coding
 
-The native Sessions page manages coding histories inside LOCITIZE. Its New coding
+The native Sessions page manages coding histories inside locitize. Its New coding
 session and Resume with local model actions select a project and model, wait for
 readiness, then launch Codex, Claude Code or OpenCode using per-process settings.
 The Chat page uses the same configuration builder. Neither launch path rewrites
@@ -8,18 +8,18 @@ global Codex/OpenCode settings. CLI permissions remain enabled. Resume original
 retains the tool's original backend, which may be remote.
 
 Local coding terminals reserve the selected model until Release model is clicked
-on Sessions. Keep LOCITIZE running while using them. Open WebUI's request-selected
+on Sessions. Keep locitize running while using them. Open WebUI's request-selected
 model continues to control routing when no conflicting reservation exists.
 
 Codex override reference: https://developers.openai.com/codex/config-advanced/
 OpenCode inline config reference: https://opencode.ai/docs/config/
 
-LOCITIZE manages chat applications; it never rebuilds chat. There are two chat UIs:
+locitize manages chat applications; it never rebuilds chat. There are two chat UIs:
 
 - **llama.cpp web UI** - the built-in interface the running model already serves.
   Zero setup, always available whenever a model is running.
 - **Open WebUI** - a richer chat application (conversation history, uploads,
-  multi-model) that LOCITIZE installs into a dedicated venv, points at the running
+  multi-model) that locitize installs into a dedicated venv, points at the running
   llama.cpp server, starts, and stops as a managed loopback service.
 
 The **chat-UI chooser** decides which one to open. It runs from the Chat button in
@@ -108,7 +108,7 @@ python scripts/verify_chat_roundtrip.py --json
 python scripts/verify_chat_persistence.py --json
 ```
 
-## Voice calls (Open WebUI Call mode on LOCITIZE speech)
+## Voice calls (Open WebUI Call mode on locitize speech)
 
 With `router.enabled: true` and `router.audio: true`, Open WebUI's microphone,
 read-aloud and Call buttons run entirely on this machine: the router serves
@@ -154,12 +154,12 @@ Five things decide whether that feels like a conversation:
 
 - `openwebui.call_silence_ms` (settings.yaml). Open WebUI waits a fixed two
   seconds of silence before it sends what it heard; that literal lives in the
-  compiled bundle, not a setting, so LOCITIZE rewrites it at Open WebUI start
+  compiled bundle, not a setting, so locitize rewrites it at Open WebUI start
   when this value is anything but 2000 (`webui.reconcile_call_silence`). 1000
   is conversational; below ~700 the recorder cuts you off at a breath. Setting
   2000 restores the upstream bundle. A pip upgrade of Open WebUI resets it,
   which is why the rewrite runs at every start.
-- Voice interruption. LOCITIZE seeds Open WebUI's admin default for "Allow
+- Voice interruption. locitize seeds Open WebUI's admin default for "Allow
   Voice Interruption in Call" on, so speaking over the reply stops it. The
   browser already requests echoCancellation. Phone-speaker bleed can still
   false-trigger; a headset is the reliable path. Set
@@ -168,11 +168,11 @@ Five things decide whether that feels like a conversation:
   AudioContext whenever Call mode re-arms the recorder but does not close the
   previous one. Mobile browsers eventually exhaust their live audio-context
   allowance: the already-open call then stops detecting speech while Whisper
-  and every backend process remain healthy. LOCITIZE closes the previous
+  and every backend process remain healthy. locitize closes the previous
   analyser context before creating its replacement, preventing per-turn
   AudioContext accumulation.
 - Mobile playback. Open WebUI 0.11.1 copies generated speech into a shared audio
-  element that mobile browsers can reject under autoplay policy. LOCITIZE's
+  element that mobile browsers can reject under autoplay policy. locitize's
   startup reconciliation plays the already-fetched audio clip directly. If a
   browser still requires activation, the next tap or key press retries playback
   synchronously and unlocks later replies. Ending the call also settles pending
@@ -197,7 +197,7 @@ Five things decide whether that feels like a conversation:
   think. To make a model never think, give its models.yaml row
   `reasoning: {enabled: false}`. Reasoning blocks are stripped from what is
   spoken either way.
-- The model the chat is on. No global model default is saved in LOCITIZE or Open
+- The model the chat is on. No global model default is saved in locitize or Open
   WebUI. The model picker carried by each Open WebUI request is authoritative;
   the router starts or switches to that model on the first request. Switching to
   a model that is not loaded takes 4.5-6.8s for gemma-4-e2b and 9-17s for the 27B
@@ -207,7 +207,7 @@ Five things decide whether that feels like a conversation:
   through system RAM, `/health` says ok, the picker says switched, and the
   reply crawls - the owner's "when I switch models Open WebUI does not chat"
   (2026-09-03: a 27B at 5 tok/s, 100s before the first token of a hello).
-  LOCITIZE's `gpu_layers: 999` used to become `--n-gpu-layers 999`, which
+  locitize's `gpu_layers: 999` used to become `--n-gpu-layers 999`, which
   turns off llama-server's own `--fit`; it now becomes `-1`, so llama-server
   measures free VRAM at load and keeps whole layers on the CPU instead of
   letting the driver page them. Whether a model overflows depends on what
@@ -219,7 +219,7 @@ Five things decide whether that feels like a conversation:
   models that fit whole are unchanged (gpt-oss-20b 150, gemma-4-26b 108,
   gemma-4-e2b 209). On Windows the free-memory figure fit works from does
   not see other processes (it read 14923 MiB free in thirteen loads while
-  the voice engine held 0, 594 and 948 MB), so LOCITIZE measures what they
+  the voice engine held 0, 594 and 948 MB), so locitize measures what they
   hold at every launch (`gpu_ledger.fit_budget`, 0.4s): what the engine will
   see (`llama-server --list-devices`) against what the card really has
   (nvidia-smi), plus a 1024 MiB safety, passed as `--fit-target`;

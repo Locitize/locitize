@@ -695,7 +695,7 @@ def test_reconcile_writes_the_audio_rows(tmp_path):
     _audio_db(tmp_path)
     settings = _settings_with_router(tmp_path)
     message = reconcile_persisted_audio(settings)
-    assert "LOCITIZE speech services" in message
+    assert "locitize speech services" in message
 
     conn = sqlite3.connect(str(tmp_path / "webui-data" / "webui.db"))
     got = dict(conn.execute("select key, value from config"))

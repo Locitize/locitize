@@ -18,7 +18,7 @@ function Resolve-LocitizePython {
 $py = Resolve-LocitizePython
 Push-Location $platformDir
 try {
-    Write-Host "Freeing LOCITIZE GPU holders (launcher --gpu-free) ..."
+    Write-Host "Freeing locitize GPU holders (launcher --gpu-free) ..."
     & $py launcher.py --gpu-free
 } catch {
     Write-Warning "gpu-free: $_"

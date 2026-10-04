@@ -685,7 +685,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._logged_first_paint = False
 
         _log_launch("MainWindow.__init__ start")
-        self.setWindowTitle("LOCITIZE Desktop")
+        self.setWindowTitle("locitize Desktop")
         self.setMinimumSize(960, 680)
         self.resize(1180, 780)
         self._build_shell()
@@ -844,7 +844,7 @@ class MainWindow(QtWidgets.QMainWindow):
         from release_info import VERSION, diagnostics
 
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("LOCITIZE " + VERSION)
+        dialog.setWindowTitle("locitize " + VERSION)
         layout = QtWidgets.QVBoxLayout(dialog)
         text = QtWidgets.QPlainTextEdit()
         text.setReadOnly(True)
@@ -897,8 +897,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._header_offload_btn = QtWidgets.QPushButton("Offload GPU")
         self._header_offload_btn.setObjectName("headerOffloadButton")
         self._header_offload_btn.setToolTip(
-            "Free GPU memory held by LOCITIZE: stop the running model and clear "
-            "any leftover LOCITIZE servers (a crashed session or a measurement "
+            "Free GPU memory held by locitize: stop the running model and clear "
+            "any leftover locitize servers (a crashed session or a measurement "
             "probe). Other apps are shown in the result but never touched."
         )
         self._header_offload_btn.clicked.connect(self._on_offload_gpu)
@@ -915,7 +915,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Owner request 2026-08-21: was plain "muted" caption text; the same
         # raised-chip badge as the header's status pills, so the sidebar picks
         # up the same visual language instead of looking bare above the nav list.
-        caption = QtWidgets.QLabel("LOCITIZE")
+        caption = QtWidgets.QLabel("locitize")
         caption.setObjectName("sidebarChip")
         caption.setContentsMargins(0, 0, 0, 0)
         caption_row = QtWidgets.QHBoxLayout()
@@ -1320,7 +1320,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # outside the panel (was a sectionTitle + blurb inside it).
         col, body = self._titled_panel(
             "Get models",
-            "Search huggingface.co for a model. LOCITIZE "
+            "Search huggingface.co for a model. locitize "
             "contacts huggingface.co only when you press Search, pick a "
             "repository, or confirm a download - never on its own.",
         )
@@ -1421,7 +1421,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # The honest disabled state: say which setting turns it back on, and
             # make every control that could reach the network unusable.
             self._hub_status.setText(
-                "Model downloading is off. Re-run setup (LOCITIZE.vbs --setup) "
+                "Model downloading is off. Re-run setup (locitize.vbs --setup) "
                 "or enable it in your settings file to turn it on."
             )
             for widget in (
@@ -2236,11 +2236,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # M18.16 (owner request): uninstalling must be as easy as installing.
         # Opens the stdlib uninstaller in its own window; it offers to keep the
         # user's model files and stops LOCITIZE's own services first.
-        self._uninstall_btn = QtWidgets.QPushButton("Uninstall LOCITIZE...")
+        self._uninstall_btn = QtWidgets.QPushButton("Uninstall locitize...")
         self._uninstall_btn.setObjectName("dangerButton")
         self._uninstall_btn.setToolTip(
             "Remove what setup installed (with the option to keep your model "
-            "files). Opens a separate window; LOCITIZE will close."
+            "files). Opens a separate window; locitize will close."
         )
         self._uninstall_btn.clicked.connect(self._on_uninstall)
         wizard_row.addWidget(self._uninstall_btn)
@@ -2251,7 +2251,7 @@ class MainWindow(QtWidgets.QMainWindow):
         clis_title.setObjectName("sectionTitle")
         features_body.addWidget(clis_title)
         clis_hint = QtWidgets.QLabel(
-            "Terminal harnesses LOCITIZE can launch against your running model. "
+            "Terminal harnesses locitize can launch against your running model. "
             "Install any of them right here."
         )
         clis_hint.setObjectName("muted")
@@ -2723,7 +2723,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._on_stop()
             return
         self._model_status.setText(
-            "offloading GPU: stopping LOCITIZE's own servers ..."
+            "offloading GPU: stopping locitize's own servers ..."
         )
         self._gc.request_free_gpu()
 
@@ -2739,9 +2739,9 @@ class MainWindow(QtWidgets.QMainWindow):
         others = payload.get("others") or []
         vram = payload.get("vram_free_mb")
         parts = [
-            f"freed {freed} LOCITIZE server(s)"
+            f"freed {freed} locitize server(s)"
             if freed
-            else "no LOCITIZE servers were holding the GPU"
+            else "no locitize servers were holding the GPU"
         ]
         if vram is not None:
             parts.append(f"{vram:.0f} MB VRAM free")
@@ -2813,7 +2813,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self,
             "Auto-tune context",
             f"Auto-tune the context window for '{model['id']}'?\n\n"
-            f"LOCITIZE will read the model's native context from its file, then "
+            f"locitize will read the model's native context from its file, then "
             f"start it several times at different context sizes to find the "
             f"largest one this machine can actually load, and finally benchmark "
             f"it at that size to measure its real speed (tokens per second). "
@@ -2971,7 +2971,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Queue the fixed voice sample in the selected on-disk voice."""
         voice = selected_voice_id(self._voice_combo)
         self._tts_status.setText(f"speaking test in {voice_display_name(voice)} ...")
-        self._gc.request_speak("LOCITIZE voice test. This is the selected voice.", voice)
+        self._gc.request_speak("locitize voice test. This is the selected voice.", voice)
 
     def _on_audition(self):
         """Queue an audition of every voice known to the controller."""
@@ -3344,7 +3344,7 @@ class MainWindow(QtWidgets.QMainWindow):
             entry.get("verification_label", ""),
             "",
             "This model's license is an agreement between you and its "
-            "publisher. LOCITIZE does not redistribute it."
+            "publisher. locitize does not redistribute it."
             + (f" Publisher's license: {repo.get('license_tag')}."
                if repo.get("license_tag") else ""),
         ]
@@ -3511,7 +3511,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hub_status.setText(
             f"{len(rows)} downloadable files in {result.payload.get('repo_id', '')}."
             if rows
-            else "That repository has no single-file .gguf LOCITIZE can download."
+            else "That repository has no single-file .gguf locitize can download."
         )
 
     def _fill_hub_repos(self, items):
@@ -4173,7 +4173,7 @@ class MainWindow(QtWidgets.QMainWindow):
             offer.setWindowTitle("Rich chat UI available")
             offer.setIcon(QtWidgets.QMessageBox.Icon.Information)
             offer.setText(
-                "The built-in chat just opened. LOCITIZE also supports Open "
+                "The built-in chat just opened. locitize also supports Open "
                 "WebUI - conversation history, uploads, web search - but it is "
                 "not installed yet.\n\nInstall it from the setup wizard? (One "
                 "checkbox; about 2.6 GB. Chat keeps working either way.)"
@@ -4198,7 +4198,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # The URL is controller-supplied; plain text keeps it literal.
             plain_message_box(
                 self,
-                "LOCITIZE chat",
+                "locitize chat",
                 f"Open this in your browser:\n{url}",
                 icon=QtWidgets.QMessageBox.Icon.Information,
             ).exec()
@@ -4401,8 +4401,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if bundled_python():
             QtWidgets.QMessageBox.information(
                 self, "Remove this beta",
-                "Close LOCITIZE, then remove this version's installation folder and its shortcuts. "
-                "Keep the separate LOCITIZE data folder to preserve models, histories and session notes. "
+                "Close locitize, then remove this version's installation folder and its shortcuts. "
+                "Keep the separate locitize data folder to preserve models, histories and session notes. "
                 "A registered Windows uninstaller is planned for the production release.")
             return
         script = Path(__file__).resolve().parent / "uninstall.py"
@@ -4411,8 +4411,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         answer = QtWidgets.QMessageBox.warning(
             self,
-            "Uninstall LOCITIZE",
-            "The uninstall window will open next, and LOCITIZE will close so "
+            "Uninstall locitize",
+            "The uninstall window will open next, and locitize will close so "
             "its files can be removed. Continue?",
             QtWidgets.QMessageBox.StandardButton.Yes
             | QtWidgets.QMessageBox.StandardButton.Cancel,
@@ -4441,13 +4441,13 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         import subprocess  # noqa: PLC0415 - only needed for this launch
 
-        bat = Path(__file__).resolve().parent / "LOCITIZE.bat"
+        bat = Path(__file__).resolve().parent / "locitize.bat"
         from runtime_layout import bundled_python
         if bundled_python():
             try:
                 subprocess.Popen([sys.executable, str(bat.with_name("setup_wizard.py"))],
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                self._feature_state_note.setText("Setup wizard opened. Restart LOCITIZE after adding features.")
+                self._feature_state_note.setText("Setup wizard opened. Restart locitize after adding features.")
             except OSError as exc:
                 self._edit_error.setText(f"Could not open setup: {exc}")
             return
@@ -4462,7 +4462,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             self._feature_state_note.setText(
-                "setup wizard opened in its own window; restart LOCITIZE after "
+                "setup wizard opened in its own window; restart locitize after "
                 "installing to use new features"
             )
         except OSError as exc:
@@ -4716,8 +4716,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._closed:
             if getattr(self._gc, "_local_session_launches", 0):
                 answer = plain_message_box(
-                    self, "Close LOCITIZE?",
-                    "Coding terminals launched with LOCITIZE may still use its model. Closing stops the model server. Keep LOCITIZE open to continue working.",
+                    self, "Close locitize?",
+                    "Coding terminals launched with locitize may still use its model. Closing stops the model server. Keep locitize open to continue working.",
                     icon=QtWidgets.QMessageBox.Icon.Warning,
                     buttons=QtWidgets.QMessageBox.StandardButton.Close | QtWidgets.QMessageBox.StandardButton.Cancel,
                     default=QtWidgets.QMessageBox.StandardButton.Cancel,
@@ -4761,7 +4761,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # as markup.
         plain_message_box(
             self,
-            "Your LOCITIZE data moved to one folder",
+            "Your locitize data moved to one folder",
             text,
             icon=QtWidgets.QMessageBox.Icon.Information,
             buttons=QtWidgets.QMessageBox.StandardButton.Ok,
@@ -4805,7 +4805,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(dialog)
         layout.addWidget(
             QtWidgets.QLabel(
-                "LOCITIZE can launch your local models inside these coding tools.\n"
+                "locitize can launch your local models inside these coding tools.\n"
                 "The ones below aren't installed yet. Nothing is installed until\n"
                 "you check a box AND click OK - each one runs the exact command\n"
                 "shown beneath it:"
@@ -4885,7 +4885,7 @@ def _raise_existing_window():
     try:
         import ctypes
 
-        hwnd = ctypes.windll.user32.FindWindowW(None, "LOCITIZE Desktop")
+        hwnd = ctypes.windll.user32.FindWindowW(None, "locitize Desktop")
         if hwnd:
             # SW_RESTORE unconditionally would un-maximize a window that was
             # already maximized (confirmed live: it dropped a maximized
@@ -4918,7 +4918,7 @@ def run(controller, health="unknown"):
         return 0
     _log_launch("lock acquired")
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    app.setApplicationName("LOCITIZE Desktop")
+    app.setApplicationName("locitize Desktop")
     app.setStyleSheet(APP_STYLE)
     _log_launch("QApplication ready, stylesheet applied")
     # Owner request 2026-08-21: the real mark for the title bar and taskbar,

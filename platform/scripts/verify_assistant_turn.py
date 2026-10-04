@@ -107,8 +107,8 @@ def run_turn() -> dict:
     launcher_final: dict | None = None
     for line in stdout.splitlines():
         line = line.strip()
-        if line.startswith("LOCITIZE:"):
-            reply = line[len("LOCITIZE:"):].strip()
+        if line.startswith("locitize:"):
+            reply = line[len("locitize:"):].strip()
         elif line.startswith("TIMINGS "):
             try:
                 timings = json.loads(line[len("TIMINGS "):])

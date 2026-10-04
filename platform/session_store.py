@@ -32,7 +32,7 @@ class SessionStore:
         version = db.execute("PRAGMA user_version").fetchone()[0]
         if version not in (0, SCHEMA_VERSION):
             db.close()
-            raise ValueError("Session data was created by a newer LOCITIZE. Update the app.")
+            raise ValueError("Session data was created by a newer locitize. Update the app.")
         db.execute("CREATE TABLE IF NOT EXISTS annotations "
                    "(provider TEXT NOT NULL, id TEXT NOT NULL, metadata TEXT NOT NULL, "
                    "PRIMARY KEY(provider,id))")

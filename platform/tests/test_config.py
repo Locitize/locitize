@@ -365,7 +365,7 @@ from config import write_model_fields  # noqa: E402
 # A realistic two-model fixture with comments and quoted values on the exact
 # lines write_model_fields must edit, so the comment-preservation claim is tested
 # against a file shaped like the shipped models.yaml.
-_MODELS_WITH_COMMENTS = """# LOCITIZE model registry (owner-maintained).
+_MODELS_WITH_COMMENTS = """# locitize model registry (owner-maintained).
 version: 1
 models:
   - id: qwen3-14b
@@ -412,7 +412,7 @@ def test_write_model_fields_preserves_inline_comments(tmp_path):
     assert "context_size: 4096                        # trailing comment must survive" in text
     assert "gpu_layers: 5                             # -1 = all layers" in text
     # The header comment and the other model are untouched.
-    assert "# LOCITIZE model registry (owner-maintained)." in text
+    assert "# locitize model registry (owner-maintained)." in text
     assert "gpu_layers: 20" in text  # second model unchanged
 
 

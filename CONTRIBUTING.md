@@ -1,6 +1,6 @@
 # Contributing
 
-LOCITIZE is small on dependencies and heavy on discipline. The test suite
+locitize is small on dependencies and heavy on discipline. The test suite
 and its gates are the contract; if they pass, your change fits.
 
 ## Setup

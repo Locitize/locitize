@@ -435,9 +435,9 @@ def check_ship_set(root: Path = PLATFORM_DIR) -> ShipSetResult:
                     "`launcher.py --help` fails in the tracked-only tree:\n"
                     + (helped.stderr.strip() or helped.stdout.strip())
                 )
-            elif "LOCITIZE" not in helped.stdout:
+            elif "locitize" not in helped.stdout.lower():
                 result.problems.append(
-                    "`launcher.py --help` ran but printed no LOCITIZE usage text"
+                    "`launcher.py --help` ran but printed no locitize usage text"
                 )
 
     return result

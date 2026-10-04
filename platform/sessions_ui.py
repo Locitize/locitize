@@ -324,7 +324,7 @@ class SessionsPage(QtWidgets.QWidget):
 
     def local_launch(self, session):
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Continue with LOCITIZE" if session else "New coding session")
+        dialog.setWindowTitle("Continue with locitize" if session else "New coding session")
         form = QtWidgets.QFormLayout(dialog)
         provider = QtWidgets.QComboBox()
         for key in LOCAL_PROVIDERS:
@@ -351,7 +351,7 @@ class SessionsPage(QtWidgets.QWidget):
         form.addRow("Local model", models)
         form.addRow("Project", folder)
         form.addRow("", browse)
-        notice = QtWidgets.QLabel("The selected model will start before the terminal opens. The coding tool retains its own permissions and network behavior. Keep LOCITIZE open while working.")
+        notice = QtWidgets.QLabel("The selected model will start before the terminal opens. The coding tool retains its own permissions and network behavior. Keep locitize open while working.")
         notice.setWordWrap(True)
         form.addRow(notice)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
@@ -403,7 +403,7 @@ class SessionsPage(QtWidgets.QWidget):
         if result.ok and result.payload.get("released"):
             self.status.setText("Model reservation released. Existing terminals are still open; their model can now be switched.")
             return
-        self.status.setText(result.payload.get("warning") or "Coding terminal opened. Keep LOCITIZE running while this session uses its model." if result.ok else result.error or "Launch failed")
+        self.status.setText(result.payload.get("warning") or "Coding terminal opened. Keep locitize running while this session uses its model." if result.ok else result.error or "Launch failed")
 
     def release_model(self):
         from gui_controller import Command

@@ -1157,7 +1157,7 @@ class AssistantLoop:
         # cheap by design (substring scan, no embeddings).
         recall = self._maybe_recall(utterance)
         if recall is not None:
-            self._emit(f"LOCITIZE: {recall}")
+            self._emit(f"locitize: {recall}")
             return recall, timings
 
         self._state.append("user", utterance)
@@ -1213,7 +1213,7 @@ class AssistantLoop:
             # Display the plain-text form (D-M7-2) so --assistant shows clean prose,
             # not raw markdown. The unfiltered reply is what is kept in state/memory
             # so history and recall stay faithful to what the model actually produced.
-            self._emit(f"LOCITIZE: {self._text_filter(reply)}")
+            self._emit(f"locitize: {self._text_filter(reply)}")
         if self._on_timings is not None:
             self._on_timings(timings)
         return reply, timings
@@ -1239,7 +1239,7 @@ class AssistantLoop:
             except LlmError as exc:
                 # Honest surfaced failure -- never a fabricated reply (M7.2).
                 remedy = f" ({exc.remedy})" if exc.remedy else ""
-                self._emit(f"LOCITIZE: [llm unavailable: {exc}{remedy}]")
+                self._emit(f"locitize: [llm unavailable: {exc}{remedy}]")
         return 0
 
     def _speak(self, text: str) -> None:

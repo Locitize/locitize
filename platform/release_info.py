@@ -8,7 +8,7 @@ VERSION = "0.2.0-beta.1"
 
 
 def diagnostics():
-    lines = [f"LOCITIZE {VERSION}", f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+    lines = [f"locitize {VERSION}", f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
              f"Platform: {sys.platform}", "Session discovery: local files only (7 providers)"]
     for name in ("PySide6", "PyYAML", "psutil", "Pillow"):
         try:

@@ -179,7 +179,7 @@ def test_hub_ui_offline_keeps_the_catalog_and_shows_the_reason(qapp):
             "hub_search", False,
             {"ok": False, "items": [], "query": "qwen",
              "reason": "Could not reach huggingface.co: no route. The list below "
-                       "is LOCITIZE's built-in catalog; downloads still need a "
+                       "is locitize's built-in catalog; downloads still need a "
                        "connection."},
             error="offline",
         )

@@ -837,7 +837,7 @@ def autotune_model_context(
         result.architecture = header.architecture
         result.detail = (
             f"This model's GGUF header carries no "
-            f"'{header.architecture}.context_length' value, so LOCITIZE cannot "
+            f"'{header.architecture}.context_length' value, so locitize cannot "
             f"tell what window it was trained for. Set context_size by hand."
         )
         return result

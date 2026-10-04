@@ -626,7 +626,7 @@ class VramProbe:
         # WARNING only when even RECLAIMING our own model would not fit the
         # largest one plus headroom - that is a real constraint the owner can
         # act on. Being full of our own model is not.
-        held = f" ({ours:.0f}MB of it held by LOCITIZE)" if ours else ""
+        held = f" ({ours:.0f}MB of it held by locitize)" if ours else ""
         if effective_free < largest + self._headroom:
             return HealthResult(
                 self.name,
@@ -638,9 +638,9 @@ class VramProbe:
             )
         if ours or ours_running:
             extra = (
-                f"plus {ours:.0f}MB held by LOCITIZE"
+                f"plus {ours:.0f}MB held by locitize"
                 if ours
-                else "the rest held by LOCITIZE's own model"
+                else "the rest held by locitize's own model"
             )
             return HealthResult(
                 self.name,
@@ -803,7 +803,7 @@ class PortsProbe:
                 served = ", ".join(ours)
                 detail = (
                     f"{len(self._ports)} reserved ports available; "
-                    f"{served} served by LOCITIZE"
+                    f"{served} served by locitize"
                 )
             return HealthResult(self.name, HealthStatus.PASS, detail, None, data)
         # Ports being occupied is a WARNING under the default 'auto' policy: the
@@ -1108,7 +1108,7 @@ def check_stack_liveness(
                     name,
                     HealthStatus.FAIL,
                     f"127.0.0.1:{port} not listening",
-                    f"start LOCITIZE (llama -> router -> OWUI); portal separately on :{PORTAL_DEFAULT_PORT}",
+                    f"start locitize (llama -> router -> OWUI); portal separately on :{PORTAL_DEFAULT_PORT}",
                     data,
                 )
             )
@@ -1135,7 +1135,7 @@ def check_stack_liveness(
 
 def format_stack_health_table(report: HealthReport) -> str:
     """Human-readable PASS/FAIL lines for scripts/health.ps1 and --stack-health."""
-    lines = ["LOCITIZE stack health", "-" * 40]
+    lines = ["locitize stack health", "-" * 40]
     for r in report.results:
         mark = "PASS" if r.status is HealthStatus.PASS else "FAIL"
         lines.append(f"[{mark}] {r.name}: {r.detail}")
@@ -1233,14 +1233,14 @@ class HealthChecker:
         )
 
         # Binary probes; voice depends on whisper + kokoro results.
-        # Voice is optional (added later via LOCITIZE.vbs --setup), so a whisper
+        # Voice is optional (added later via locitize.vbs --setup), so a whisper
         # that was never set up is a WARNING; a configured path that is missing
         # stays a FAIL.
         whisper = BinaryProbe(
             "whisper",
             p.binary,
             s.paths.whisper,
-            "set whisper path in settings.yaml (or add voice via LOCITIZE.vbs --setup)",
+            "set whisper path in settings.yaml (or add voice via locitize.vbs --setup)",
             unconfigured_status=HealthStatus.WARNING,
         ).run()
         llama = BinaryProbe(

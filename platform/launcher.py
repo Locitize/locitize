@@ -139,13 +139,13 @@ def _venv_has_pyside6(venv_python: Path) -> bool:
 def _desktop_missing_remedy(current: str, venv: Path | None) -> str:
     venv_hint = str(venv) if venv is not None else r"<repo>\.venv\Scripts\python.exe"
     return (
-        "[XX] LOCITIZE Desktop requires PySide6 in the project .venv.\n"
+        "[XX] locitize Desktop requires PySide6 in the project .venv.\n"
         f"  Current interpreter: {current}\n"
         f"  Expected venv python: {venv_hint}\n"
-        "  Fix: run LOCITIZE.bat  (uses .venv automatically), or:\n"
+        "  Fix: run locitize.bat  (uses .venv automatically), or:\n"
         f"    {venv_hint} launcher.py --desktop\n"
         "  Or install:  .venv\\Scripts\\pip install PySide6\n"
-        "  Terminal menu (no Qt):  LOCITIZE.bat --terminal"
+        "  Terminal menu (no Qt):  locitize.bat --terminal"
     )
 
 
@@ -194,7 +194,7 @@ def ensure_desktop_interpreter(out_fn=print) -> int | None:
 # The platform banner. Fixed ASCII header (no emojis / smart typography).
 BANNER = r"""
 ================================================================
-   LOCITIZE - Download it. Locitize it. Talk to it.
+   locitize - Download it. Locitize it. Talk to it.
    Local AI platform
 ================================================================
 """.strip(
@@ -334,9 +334,9 @@ class Launcher:
         if outcome.deferred:
             labels = ", ".join(item.label for item in outcome.deferred)
             message = (
-                f"LOCITIZE could not copy {labels} yet because Open WebUI is "
+                f"locitize could not copy {labels} yet because Open WebUI is "
                 "running and its database must not be copied while it is open. "
-                "Nothing was lost: close Open WebUI and start LOCITIZE again, and "
+                "Nothing was lost: close Open WebUI and start locitize again, and "
                 "the copy will finish then."
             )
             log.info("data migration deferred: %s", message)
@@ -345,10 +345,10 @@ class Launcher:
             # Rule 5: a partial failure is announced with both real paths and a
             # next step, and is NOT marked as done.
             message = (
-                "Some of your existing LOCITIZE data could not be copied into the "
+                "Some of your existing locitize data could not be copied into the "
                 f"data folder: {'; '.join(outcome.errors)}. Nothing was deleted "
-                "- the originals are still in the LOCITIZE folder. Close anything "
-                "using those files and start LOCITIZE again to retry."
+                "- the originals are still in the locitize folder. Close anything "
+                "using those files and start locitize again to retry."
             )
             log.warning("data migration incomplete: %s", message)
             self._out(message)
@@ -490,7 +490,7 @@ class Launcher:
             manager.stop_all()
             self._out(
                 f"[XX] could not start the GUI ({exc}); Tkinter may be unavailable. "
-                f"Use LOCITIZE.bat for the terminal menu."
+                f"Use locitize.bat for the terminal menu."
             )
             return 2
         try:
@@ -598,23 +598,23 @@ class Launcher:
             # desktop helper is a code/install fault and must not be misdiagnosed.
             if exc.name == "PySide6" or (exc.name or "").startswith("PySide6."):
                 self._out(
-                    f"[XX] could not start LOCITIZE Desktop ({exc}); PySide6 is not "
+                    f"[XX] could not start locitize Desktop ({exc}); PySide6 is not "
                     f"installed. Run 'pip install -r requirements.txt', or run "
-                    f"'LOCITIZE.bat --terminal' for the terminal menu."
+                    f"'locitize.bat --terminal' for the terminal menu."
                 )
             else:
                 self._out(
-                    f"[XX] could not load LOCITIZE Desktop ({exc}); missing module "
-                    f"'{exc.name or 'unknown'}'. Repair the LOCITIZE installation or "
-                    f"run 'LOCITIZE.bat --terminal' for the terminal menu."
+                    f"[XX] could not load locitize Desktop ({exc}); missing module "
+                    f"'{exc.name or 'unknown'}'. Repair the locitize installation or "
+                    f"run 'locitize.bat --terminal' for the terminal menu."
                 )
             return 2
         except Exception as exc:  # noqa: BLE001 - clean up and report import fault
             manager.stop_all()
             self._out(
-                f"[XX] could not load LOCITIZE Desktop "
-                f"({type(exc).__name__}: {exc}). Repair the LOCITIZE installation or "
-                f"run 'LOCITIZE.bat --terminal' for the terminal menu."
+                f"[XX] could not load locitize Desktop "
+                f"({type(exc).__name__}: {exc}). Repair the locitize installation or "
+                f"run 'locitize.bat --terminal' for the terminal menu."
             )
             return 2
         try:
@@ -1755,7 +1755,7 @@ class Launcher:
             if runner is not None:
                 runner(settings, models)
             else:
-                self._out("  Starting the LOCITIZE voice assistant...")
+                self._out("  Starting the locitize voice assistant...")
                 self._assistant(
                     settings,
                     models,
@@ -1925,7 +1925,7 @@ class Launcher:
         # M12: Qt is the canonical desktop. The hidden Tk flag remains for exactly
         # one rollback milestone and still uses the proven legacy entry point.
         # M13 precedence rule: --terminal beats --desktop/--gui/--gui-tk, so
-        # `LOCITIZE.bat --terminal` reaches the menu even though the shortcut itself
+        # `locitize.bat --terminal` reaches the menu even though the shortcut itself
         # passes --desktop. Checked before the window branches, never after.
         if not args.terminal:
             if args.gui_tk:
@@ -2161,11 +2161,11 @@ class Launcher:
             self._out("no NVIDIA GPU detected (or nvidia-smi unavailable).")
         self._out(gpu_ledger.summarize(procs))
         for p in procs:
-            tag = "LOCITIZE" if p.is_locitize else "other"
+            tag = "locitize" if p.is_locitize else "other"
             mem = f"{p.used_mb:.0f} MB" if p.used_mb is not None else "  (n/a)"
             self._out(f"  [{tag:8}] pid {p.pid:>7}  {mem:>9}  {p.short_name()}")
         if any(p.is_locitize for p in procs):
-            self._out("run 'LOCITIZE.bat --gpu-free' to free LOCITIZE's own.")
+            self._out("run 'locitize.bat --gpu-free' to free locitize's own.")
         return 0
 
     def _gpu_free(self, settings: Any, as_json: bool) -> int:
@@ -2188,9 +2188,9 @@ class Launcher:
             self._out(json.dumps({"freed": freed, "results": results}))
             return 0
         if not pids:
-            self._out("nothing to free: LOCITIZE has no servers holding the GPU.")
+            self._out("nothing to free: locitize has no servers holding the GPU.")
             return 0
-        self._out(f"freed {len(freed)} of {len(pids)} LOCITIZE server(s): {freed}")
+        self._out(f"freed {len(freed)} of {len(pids)} locitize server(s): {freed}")
         stuck = [pid for pid, ok in results.items() if not ok]
         if stuck:
             self._out(f"could not stop (already gone, or needs elevation): {stuck}")
@@ -2588,7 +2588,7 @@ class Launcher:
             if not self._confirm_clean(manager):
                 self._out(
                     "[XX] warning: a benchmark process may still be running - run "
-                    "'LOCITIZE.bat --gpu' to see it, or --gpu-free to clear it."
+                    "'locitize.bat --gpu' to see it, or --gpu-free to clear it."
                 )
                 exit_code = 1
 
@@ -3826,7 +3826,7 @@ class Launcher:
         if not as_json:
             mode = "text" if text else "voice"
             self._out(
-                f"LOCITIZE assistant ready ({mode} mode, model {target_id}"
+                f"locitize assistant ready ({mode} mode, model {target_id}"
                 f"{'' if speaking else ', text-only'}). "
                 f"{'Type a prompt; quit/EOF to end.' if text else 'Speak; Ctrl-C to interrupt, twice to quit.'}"
             )
@@ -4388,7 +4388,7 @@ def _safe_filename(name: str) -> str:
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     """Parse the non-interactive flags (Architecture section 3)."""
     parser = argparse.ArgumentParser(
-        prog="launcher", description="LOCITIZE platform launcher"
+        prog="launcher", description="locitize platform launcher"
     )
     parser.add_argument(
         "--health", action="store_true", help="run the health ladder and exit"
@@ -4425,7 +4425,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--gpu",
         action="store_true",
         help="show what is holding the GPU right now: total/used/free VRAM and "
-        "every process on the card, marking which are LOCITIZE's own",
+        "every process on the card, marking which are locitize's own",
     )
     parser.add_argument(
         "--rtx-report",
@@ -4437,7 +4437,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--gpu-free",
         action="store_true",
-        help="free the GPU memory held by LOCITIZE's OWN servers (a crashed "
+        help="free the GPU memory held by locitize's OWN servers (a crashed "
         "session or a measurement probe left running). Never touches another "
         "app's processes",
     )
@@ -4657,21 +4657,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=None,
         help="with --second-eye: exit cleanly (stopping the vision model and "
         "Kokoro) once PATH exists on disk, checked once per loop iteration. The "
-        "reliable way to stop this from another process; a background LOCITIZE "
+        "reliable way to stop this from another process; a background locitize "
         "process has no console, so Ctrl+C cannot reach it",
     )
     parser.add_argument(
         "--gui",
         action="store_true",
-        help="launch the PySide6 LOCITIZE Desktop command center instead of the "
+        help="launch the PySide6 locitize Desktop command center instead of the "
         "terminal menu",
     )
     parser.add_argument(
         "--desktop",
         action="store_true",
-        help="launch the native PySide6 LOCITIZE Desktop command center",
+        help="launch the native PySide6 locitize Desktop command center",
     )
-    # M13: LOCITIZE.bat now carries an implicit --desktop, so the terminal menu needs
+    # M13: locitize.bat now carries an implicit --desktop, so the terminal menu needs
     # its own explicit flag to stay reachable from that one remaining shortcut.
     # Bare `python launcher.py` still opens the menu, unchanged.
     parser.add_argument(

@@ -46,7 +46,7 @@ def _rules(source: str) -> set[str]:
 # literal one.
 _DRIVE = "C" + ":/"
 
-# Shapes the rule claims it can PROVE are unanchored. LOCITIZE.bat does
+# Shapes the rule claims it can PROVE are unanchored. locitize.bat does
 # `cd /d "%~dp0"`, so every one of these lands in the install directory.
 UNANCHORED = {
     "bare-literal": 'def g():\n    open("crash.txt", "w")\n',

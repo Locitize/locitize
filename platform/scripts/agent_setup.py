@@ -1,7 +1,7 @@
 """Headless setup for AI agents (M18.3): the wizard's work, no GUI.
 
 The setup wizard is a tkinter window a person clicks through. An AI agent
-setting LOCITIZE up for a user has no mouse - so this script performs the same
+setting locitize up for a user has no mouse - so this script performs the same
 core sequence headlessly, reusing the exact setup_env/config functions the
 wizard calls (never a parallel implementation):
 
@@ -17,7 +17,7 @@ wizard calls (never a parallel implementation):
 
 It then makes sure the shared model store folder exists and installs the
 claude-local shim (claude-local.cmd/.ps1 in ~/.local/bin), which runs Claude
-Code against the model LOCITIZE is serving.
+Code against the model locitize is serving.
 
 Run it from the platform venv AFTER `pip install -r requirements.txt`:
 
@@ -28,7 +28,7 @@ is always safe. Exit 0 = usable install (a machine with no models still exits 0
 - models can be imported or downloaded later); exit 1 = a hard step failed.
 
 Other optional features (voice, vision, fine-tune studio) stay wizard/
-user-driven - add them later with LOCITIZE.vbs --setup. ASCII only.
+user-driven - add them later with locitize.vbs --setup. ASCII only.
 """
 
 from __future__ import annotations
@@ -153,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     say(f"model store: {store.message}")
     shim = setup_env.install_claude_local(say)
     say(f"claude-local: {shim.message}")
-    say("Launch the desktop with: LOCITIZE.vbs")
+    say("Launch the desktop with: locitize.vbs")
     return 0 if failed == 0 else 1
 
 

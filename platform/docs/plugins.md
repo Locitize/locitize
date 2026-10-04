@@ -1,6 +1,6 @@
-# LOCITIZE Plugin Contract (frozen at M8)
+# locitize Plugin Contract (frozen at M8)
 
-LOCITIZE applications are plugins registered in a small in-process registry
+locitize applications are plugins registered in a small in-process registry
 (`plugins.py`, Architecture section 6 and M8.4). This document is the frozen
 third-party contract: what a plugin module must expose so a future
 directory-scan discovery mechanism can load it without any interface change.
@@ -54,7 +54,7 @@ no global state. Its fields:
    injected `service_manager`, which owns lifecycle and guarantees no orphan is
    left on exit. Do not call `subprocess`/`Popen` yourself.
 3. **Loopback-only networking.** Any HTTP a plugin makes stays on `127.0.0.1`
-   (SEC-1). LOCITIZE exposes nothing beyond loopback.
+   (SEC-1). locitize exposes nothing beyond loopback.
 4. **No secrets in code or config artifacts.** Secrets, if ever needed, come from
    environment variables, never committed files.
 5. **`launch()` returns.** A long-running interactive loop must still return

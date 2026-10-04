@@ -25,8 +25,8 @@ foreach ($p in 8080..8099) {
 }
 
 if (-not $port) {
-    Write-Host "No LOCITIZE model is running."
-    Write-Host "Start one on the Models page (or LOCITIZE.vbs), then run claude-local again."
+    Write-Host "No locitize model is running."
+    Write-Host "Start one on the Models page (or locitize.vbs), then run claude-local again."
     exit 1
 }
 

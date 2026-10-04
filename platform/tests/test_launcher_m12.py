@@ -51,11 +51,11 @@ def test_m12_gui_flags_route_to_the_expected_view(monkeypatch, flag, expected):
 def test_gui_shortcut_prefers_repository_venv_and_routes_to_qt():
     """The single shortcut resolves the Qt venv before any fallback.
 
-    M13 collapsed the five launcher shortcuts into LOCITIZE.bat, which now carries
+    M13 collapsed the five launcher shortcuts into locitize.bat, which now carries
     the implicit --desktop, so this M12 guarantee (venv resolution order, Qt not
     Tk) is asserted against that one remaining file.
     """
-    shortcut = Path(__file__).parents[1] / "LOCITIZE.bat"
+    shortcut = Path(__file__).parents[1] / "locitize.bat"
     text = shortcut.read_text(encoding="utf-8").lower()
 
     parent_venv = 'if exist "..\\.venv\\scripts\\python.exe"'
@@ -66,10 +66,10 @@ def test_gui_shortcut_prefers_repository_venv_and_routes_to_qt():
     assert "tkinter" not in text
 
 
-@pytest.mark.skipif(os.name != "nt", reason="LOCITIZE.bat is Windows-only")
+@pytest.mark.skipif(os.name != "nt", reason="locitize.bat is Windows-only")
 def test_gui_shortcut_executes_parent_venv_python_with_gui_flag(tmp_path):
     """A hermetic batch launch records the chosen executable and never opens Qt."""
-    source = Path(__file__).parents[1] / "LOCITIZE.bat"
+    source = Path(__file__).parents[1] / "locitize.bat"
     platform_dir = tmp_path / "platform"
     scripts_dir = tmp_path / ".venv" / "Scripts"
     platform_dir.mkdir()
@@ -274,21 +274,21 @@ def test_run_desktop_import_failures_are_accurate_and_clean(
     output = "\n".join(lines)
     assert expected in output
     assert forbidden not in output
-    # D-M13-4: bare LOCITIZE.bat now implies --desktop, so the remedy must name the
+    # D-M13-4: bare locitize.bat now implies --desktop, so the remedy must name the
     # flag that actually reaches the terminal menu, not the thing that just failed.
-    assert "LOCITIZE.bat --terminal" in output
-    assert "use LOCITIZE.bat for the terminal menu" not in output
+    assert "locitize.bat --terminal" in output
+    assert "use locitize.bat for the terminal menu" not in output
 
 
 def test_vbs_launcher_ships_and_delegates_to_the_bat():
-    """M17.12: the official no-console launcher exists next to LOCITIZE.bat,
+    """M17.12: the official no-console launcher exists next to locitize.bat,
     delegates to it, and hides the console for the desktop AND the setup
     wizard; only --terminal / --uninstall (keyboard input) stay visible, and a
     missing Python is explained in a dialog instead of the hidden console."""
-    vbs = Path(__file__).parents[1] / "LOCITIZE.vbs"
+    vbs = Path(__file__).parents[1] / "locitize.vbs"
     assert vbs.is_file()
     text = vbs.read_text(encoding="utf-8")
-    assert "LOCITIZE.bat" in text          # reuses all batch launch logic
+    assert "locitize.bat" in text          # reuses all batch launch logic
     assert "shell.Run" in text             # launches via WScript.Shell.Run
     assert "style = 0" in text
     assert "style = 1" in text
@@ -297,11 +297,11 @@ def test_vbs_launcher_ships_and_delegates_to_the_bat():
 
 
 def test_create_desktop_shortcut_skips_when_vbs_absent(tmp_path, monkeypatch):
-    """Best-effort: no LOCITIZE.vbs to link -> a skipped success, never a failure
+    """Best-effort: no locitize.vbs to link -> a skipped success, never a failure
     that would break setup (a missing shortcut costs nothing)."""
     import setup_env
 
-    monkeypatch.setattr(setup_env, "BASE_DIR", tmp_path)  # no LOCITIZE.vbs here
+    monkeypatch.setattr(setup_env, "BASE_DIR", tmp_path)  # no locitize.vbs here
     result = setup_env.create_desktop_shortcut()
     assert result.ok and result.skipped
 
@@ -383,7 +383,7 @@ def test_ensure_desktop_interpreter_fails_loud_when_venv_missing(monkeypatch, tm
     assert calls == []
     joined = "\n".join(lines)
     assert "PySide6" in joined
-    assert "LOCITIZE.bat --terminal" in joined
+    assert "locitize.bat --terminal" in joined
     assert "Current interpreter:" in joined
 
 

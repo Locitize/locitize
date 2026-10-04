@@ -1,6 +1,6 @@
 # Third-party software
 
-LOCITIZE's own code is licensed as described in [LICENSE](LICENSE). The desktop
+locitize's own code is licensed as described in [LICENSE](LICENSE). The desktop
 beta bundles Python, PySide6/Qt, shiboken6, PyYAML, psutil and Pillow from the build
 environment. Their distribution metadata and license files accompany the package.
 Session readers derived from Session Portal are vendored under session_core,
@@ -11,7 +11,7 @@ This inventory is not completed legal clearance for public distribution. The
 release gate includes the Qt license/source obligations and dependency review.
 See https://doc.qt.io/qt-6/licensing.html and https://docs.openwebui.com/license/.
 
-| Component | Role in LOCITIZE | Obtained | Upstream license (see upstream) |
+| Component | Role in locitize | Obtained | Upstream license (see upstream) |
 |---|---|---|---|
 | llama.cpp (`llama-server`) | Model serving engine (the built-in inference backend) | Downloaded at setup from the official GitHub releases, digest-verified | MIT |
 | whisper.cpp | Speech-to-text | Downloaded at setup from the official GitHub releases | MIT |
@@ -25,7 +25,7 @@ See https://doc.qt.io/qt-6/licensing.html and https://docs.openwebui.com/license
 | Pillow | Image handling (vision fixtures, icons) | Installed via pip | MIT-CMU |
 | torch (CPU build) | Kokoro text-to-speech runtime | Installed via pip (pinned CPU wheel) | BSD-3-Clause |
 | kokoro (pip package) | Text-to-speech engine code | Installed via pip (pulls its own stack) | Apache-2.0 |
-| Model weights (GGUF files) | The models a user runs | Chosen and downloaded by the user (their own files, or via Hugging Face search they explicitly initiate) | Each model's own license; LOCITIZE ships **no** model weights and no model list |
+| Model weights (GGUF files) | The models a user runs | Chosen and downloaded by the user (their own files, or via Hugging Face search they explicitly initiate) | Each model's own license; locitize ships **no** model weights and no model list |
 
 Principles this repository holds to:
 
@@ -35,9 +35,9 @@ Principles this repository holds to:
 - **Isolation.** Heavy third-party stacks (Open WebUI, the fine-tune studio) live
   in dedicated virtual environments so their dependency trees never mix with the
   platform's.
-- **No bundled weights.** LOCITIZE ships no models and names no models; users
+- **No bundled weights.** locitize ships no models and names no models; users
   bring their own or download what they choose, under those models' licenses.
-- **Attribution stands.** Nothing in LOCITIZE removes or obscures any upstream
+- **Attribution stands.** Nothing in locitize removes or obscures any upstream
   project's name, license, or notices.
 
 If you believe any entry here is inaccurate or incomplete, please open an issue.
