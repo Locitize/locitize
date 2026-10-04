@@ -104,17 +104,18 @@ Example: `https://<host>.<tailnet>.ts.net/` and `:4443` → OWUI; `:8443` → Po
 | Env | Value |
 |-----|-------|
 | `WEBUI_URL` | Root HTTPS `https://<magicdns>` (no port). `LOCITIZE_WEBUI_URL` overrides it; without Tailscale it falls back to `http://127.0.0.1:<openwebui port>`. `:4443` is alt Serve only, not WEBUI_URL |
-| `WEBUI_AUTH` | `False` (single-user default; Open WebUI listens on loopback only) |
+| `WEBUI_AUTH` | `False` (single-user default). Safe only while Open WebUI is reachable from this PC alone: browsers are limited by `CORS_ALLOW_ORIGIN`, but once Tailscale Serve maps it, every tailnet device is an Open WebUI admin and can run code on this PC (Tools/Functions). `tailscale_serve.ps1` therefore needs `-AllowNoLogin`. |
+| `CORS_ALLOW_ORIGIN` | `WEBUI_URL` plus the loopback addresses only (never `*`) |
 | `ENABLE_LOGIN_FORM` | `False` |
 | `DATA_DIR` | `<data root>/webui-data` (portable: `platform/locitize-data/webui-data`) |
 | `OPENAI_API_BASE_URL(S)` | Router `http://127.0.0.1:8093/v1` when `router.enabled`, else llama.cpp `:8080/v1` |
 | `WEBUI_SESSION_COOKIE_SECURE` / `WEBUI_AUTH_COOKIE_SECURE` | `True` (Serve HTTPS) |
 | `WEBUI_*_COOKIE_SAME_SITE` | `lax` |
-| `FORWARDED_ALLOW_IPS` | `*` (trust Tailscale Serve X-Forwarded-*) |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1` (Tailscale Serve proxies from loopback) |
 
 **Auth-off signin:** with `WEBUI_AUTH=False`, Open WebUI authenticates as `admin@localhost` / password literal `admin`. The row in `webui.db` must hold a bcrypt hash of the literal string `admin` (not another password). Reset the hash if sign-in fails after auth-off.
 
-**Auto-update:** every _start_openwebui runs python -m pip install -U open-webui in the launcher .webui-venv (junction-safe). Fail-soft: log and start previous install on error.
+**No auto-update:** Open WebUI is installed at the version pinned in `setup_env.OPENWEBUI_VERSION` and is never upgraded on start. Bump the pin deliberately (after review) and re-run setup to upgrade.
 
 **Single process:** start path kills duplicate `open-webui` PIDs so only one listener owns `:8096`.
 

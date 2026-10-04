@@ -1190,7 +1190,10 @@ def openwebui_package_version(settings: Settings) -> str | None:
 
 
 def upgrade_openwebui(settings: Settings, *, timeout_s: int = 600) -> str:
-    """Upgrade open-webui to latest in the venv the launcher actually runs.
+    """Install the pinned open-webui version in the venv the launcher runs.
+
+    Explicit action only - never called on a normal start. Installs
+    setup_env.OPENWEBUI_VERSION (a reviewed pin), not whatever PyPI calls latest.
 
     Uses that venv's `python -m pip install -U open-webui` so a checkout and
     any system-drive junction to it resolve to the same site-packages the child uses.
@@ -1204,15 +1207,19 @@ def upgrade_openwebui(settings: Settings, *, timeout_s: int = 600) -> str:
     py = webui_venv_python(settings)
     if not py.is_file():
         return (
-            f"Open WebUI auto-update skipped: venv python missing at {py}"
+            f"Open WebUI pinned install skipped: venv python missing at {py}"
         )
     # Unlock Scripts/open-webui.exe before pip rewrites it.
-    ensure_single_openwebui_processes(settings.ports.openwebui, force=True)
-    before = openwebui_package_version(settings) or "unknown"
     venv_root = py.parent.parent
+    ensure_single_openwebui_processes(
+        settings.ports.openwebui, force=True, venv_dir=venv_root
+    )
+    before = openwebui_package_version(settings) or "unknown"
+    from setup_env import OPENWEBUI_VERSION
+
     try:
         proc = subprocess.run(
-            [str(py), "-m", "pip", "install", "-U", "open-webui"],
+            [str(py), "-m", "pip", "install", f"open-webui=={OPENWEBUI_VERSION}"],
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -1221,12 +1228,12 @@ def upgrade_openwebui(settings: Settings, *, timeout_s: int = 600) -> str:
         )
     except subprocess.TimeoutExpired:
         return (
-            f"Open WebUI auto-update timed out after {timeout_s}s "
+            f"Open WebUI pinned install timed out after {timeout_s}s "
             f"(was {before}); starting previous install from {venv_root}"
         )
     except OSError as exc:
         return (
-            f"Open WebUI auto-update failed to launch pip ({exc}); "
+            f"Open WebUI pinned install failed to launch pip ({exc}); "
             f"starting previous install {before} from {venv_root}"
         )
     after = openwebui_package_version(settings) or before
@@ -1237,7 +1244,7 @@ def upgrade_openwebui(settings: Settings, *, timeout_s: int = 600) -> str:
         if proc.returncode != 0:
             note = " (pip warned; package version advanced)"
         return (
-            f"Open WebUI auto-update: {before} -> {after} in {venv_root}{note}"
+            f"Open WebUI pinned install: {before} -> {after} in {venv_root}{note}"
         )
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()
@@ -1246,10 +1253,10 @@ def upgrade_openwebui(settings: Settings, *, timeout_s: int = 600) -> str:
             f"exit {proc.returncode}",
         )
         return (
-            f"Open WebUI auto-update FAILED ({detail}); "
+            f"Open WebUI pinned install FAILED ({detail}); "
             f"keeping {before} at {venv_root}"
         )
-    return f"Open WebUI auto-update: already latest ({after}) in {venv_root}"
+    return f"Open WebUI pinned install: already latest ({after}) in {venv_root}"
 
 
 
@@ -1302,25 +1309,40 @@ def wait_openwebui_healthy(
         time.sleep(poll_s)
 
 
-def ensure_single_openwebui_processes(port: int, *, force: bool = False) -> str:
+def ensure_single_openwebui_processes(
+    port: int, *, force: bool = False, venv_dir: Path | str | None = None
+) -> str:
     """Kill duplicate Open WebUI processes so only one can own the loopback port.
 
     Returns a short human line for the launcher log. Uses psutil (already a
-    platform dependency). Matches by console-script name / open_webui module.
-    Never touches unrelated PIDs. ``port`` is logged for operators only.
+    platform dependency). Only processes running from LOCITIZE's own
+    ``venv_dir`` (the .webui-venv) are candidates, so a user's separate Open
+    WebUI install, a Docker container or an editor open on an open-webui
+    checkout is never touched. Without ``venv_dir`` nothing is killed.
+    ``port`` is logged for operators only.
     """
+    if venv_dir is None:
+        return "Open WebUI process check skipped (no LOCITIZE venv given)"
     try:
         import psutil
     except ImportError:
         return "Open WebUI process check skipped (psutil unavailable)"
 
+    root = os.path.normcase(os.path.abspath(str(venv_dir))).rstrip("\/") + os.sep
     markers = ("open-webui", "open_webui", "open-webui.exe")
     matched: list = []
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+    for proc in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
         try:
             name = (proc.info.get("name") or "").lower()
-            cmdline = " ".join(proc.info.get("cmdline") or []).lower()
-            if any(m in name for m in markers) or any(m in cmdline for m in markers):
+            argv = proc.info.get("cmdline") or []
+            cmdline = " ".join(argv).lower()
+            if not (any(m in name for m in markers) or any(m in cmdline for m in markers)):
+                continue
+            paths = [proc.info.get("exe") or ""] + list(argv[:2])
+            if any(
+                p and os.path.normcase(os.path.abspath(p)).startswith(root)
+                for p in paths
+            ):
                 matched.append(proc)
         except (psutil.Error, PermissionError):
             continue
@@ -1442,7 +1464,13 @@ def _build_openwebui_env(settings: Settings, data_dir: Path) -> dict[str, str]:
       WebUI address when Tailscale is unavailable. :4443 remains an alt Serve URL but is not WEBUI_URL.
     - ENABLE_LOGIN_FORM=False  : hide login form (pairs with WEBUI_AUTH=False).
     - WEBUI_*_COOKIE_SECURE=True + SameSite=lax : required behind Serve HTTPS.
-    - FORWARDED_ALLOW_IPS=*    : trust X-Forwarded-* from Tailscale Serve.
+    - FORWARDED_ALLOW_IPS      : 127.0.0.1 - Tailscale Serve proxies from loopback,
+                                 so nothing else is trusted to forward headers.
+    - CORS_ALLOW_ORIGIN        : only Open WebUI's own addresses. Its default is
+                                 "*" with credentials, which with auth off would
+                                 let any website a user visits sign in as admin.
+    - ENABLE_COMMUNITY_SHARING / ENABLE_VERSION_UPDATE_CHECK = False: no chat
+                                 sharing to openwebui.com, no update ping.
     - RAG_EMBEDDING_ENGINE / *_AUTOMATIC_UPDATE / OFFLINE : disable the first-run
       sentence-transformers embedding download when disable_embedding_fetch is true
       (the default), so no model is fetched over the network without owner approval.
@@ -1488,7 +1516,19 @@ def _build_openwebui_env(settings: Settings, data_dir: Path) -> dict[str, str]:
     env["WEBUI_AUTH_COOKIE_SAME_SITE"] = "lax"
     env["WEBUI_SESSION_COOKIE_SECURE"] = "True"
     env["WEBUI_AUTH_COOKIE_SECURE"] = "True"
-    env["FORWARDED_ALLOW_IPS"] = "*"
+    env["FORWARDED_ALLOW_IPS"] = "127.0.0.1"
+    # Browsers may only call Open WebUI from Open WebUI's own pages. With auth
+    # off, the upstream default ("*" plus credentials) would let any website
+    # obtain an admin session from a page the user merely visits.
+    owui_port = int(settings.ports.openwebui)
+    origins = [
+        env["WEBUI_URL"],
+        f"http://127.0.0.1:{owui_port}",
+        f"http://localhost:{owui_port}",
+    ]
+    env["CORS_ALLOW_ORIGIN"] = ";".join(dict.fromkeys(origins))
+    env["ENABLE_COMMUNITY_SHARING"] = "False"
+    env["ENABLE_VERSION_UPDATE_CHECK"] = "False"
     if settings.openwebui.disable_embedding_fetch:
         # Suppress the first-run RAG embedding-model network download (Permission
         # Matrix section 9). Confirmed against open-webui 0.10.2 env.py/config.py:

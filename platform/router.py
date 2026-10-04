@@ -49,6 +49,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 import audio_api
+from local_guard import foreign_request_reason
 from audio_filter import AudioFilterResult
 
 # The router only ever forwards to loopback; hardcoded so no config value can
@@ -1023,6 +1024,14 @@ class _RouterHandler(BaseHTTPRequestHandler):
 
     def _handle(self, method: str) -> None:
         router = self.server.router  # type: ignore[attr-defined]
+        refused = foreign_request_reason(
+            self.headers.get("Host"),
+            self.headers.get("Origin"),
+            self.server.server_address[1],
+        )
+        if refused:
+            self._send_json(403, {"error": {"message": refused, "type": "forbidden"}})
+            return
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
 
         if method == "GET" and path in MODEL_LIST_PATHS:

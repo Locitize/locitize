@@ -40,6 +40,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from local_guard import foreign_request_reason
+
 # Kokoro renders at a fixed 24 kHz mono; the wav header must match exactly or the
 # audio plays back at the wrong pitch/speed. Single-sourced here.
 _SAMPLE_RATE_HZ = 24000
@@ -300,10 +302,13 @@ class KokoroEngine:
     def voice_path(self, voice: str) -> Path:
         """Resolve a voice NAME (e.g. 'am_michael') to its on-disk .pt file.
 
-        The name is used only as a filename stem under the configured voices dir,
-        so it cannot escape that directory (a stray path separator would simply
-        fail to resolve to a real .pt and be rejected by synthesize()).
+        Only a plain name is accepted (letters, digits, underscore). Anything
+        else - '..', a drive letter, or a //host/share path that Windows would
+        open over the network (leaking the user's login hash) - is refused
+        before the filesystem is touched.
         """
+        if not _VOICE_NAME.fullmatch(voice or ""):
+            raise ValueError(f"invalid voice name: {voice!r}")
         return self._voices_dir / f"{voice}.pt"
 
     def _render_chunks(self, text: str, voice: str, speed: float):
@@ -380,6 +385,10 @@ def _encode_wav(pcm_bytes: bytes) -> bytes:
     return buffer.getvalue()
 
 
+_VOICE_NAME = re.compile(r"[A-Za-z0-9_]{1,64}")
+_MAX_BODY_BYTES = 1_000_000
+
+
 class _KokoroHandler(BaseHTTPRequestHandler):
     """HTTP handler for /health and /synthesize. The engine is on the server."""
 
@@ -406,6 +415,12 @@ class _KokoroHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802 - required BaseHTTPRequestHandler name
+        refused = foreign_request_reason(
+            self.headers.get("Host"), self.headers.get("Origin"), self.server.server_address[1]
+        )
+        if refused:
+            self._send_json(403, {"error": refused})
+            return
         route = self.path.split("?", 1)[0]
         if route not in ("/synthesize", "/synthesize/stream"):
             self._send_json(404, {"error": "not found"})
@@ -437,10 +452,19 @@ class _KokoroHandler(BaseHTTPRequestHandler):
 
     def _read_synthesize_payload(self) -> tuple[str, str, float] | None:
         """Parse the shared synthesize JSON body, or send a 4xx and return None."""
+        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip()
+        if content_type.lower() != "application/json":
+            # A browser can only send a no-preflight cross-site POST as
+            # text/plain or a form, so requiring JSON closes that door too.
+            self._send_json(415, {"error": "Content-Type must be application/json"})
+            return None
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
+        if length > _MAX_BODY_BYTES:
+            self._send_json(413, {"error": "request body too large"})
+            return None
         raw = self.rfile.read(length) if length > 0 else b""
         try:
             payload = json.loads(raw.decode("utf-8")) if raw else {}

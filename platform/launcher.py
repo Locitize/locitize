@@ -1603,26 +1603,26 @@ class Launcher:
         # caches this config and writes it back on shutdown.
         from webui import (
             ensure_single_openwebui_processes,
-            upgrade_openwebui,
             reconcile_call_audio_context,
             reconcile_call_audio_playback,
             reconcile_call_barge_in,
             reconcile_call_silence,
             reconcile_default_model,
-            reconcile_tools_and_web_search,
             reconcile_frontend_version,
             reconcile_persisted_audio,
             reconcile_persisted_backend,
             reconcile_voice_interruption,
             wait_loopback_port_free,
             wait_openwebui_healthy,
+            webui_venv_python,
         )
 
-        # Always pip -U open-webui in the real .webui-venv before start.
-        # upgrade_openwebui force-stops OWUI first (unlock open-webui.exe) and fail-softs.
-        self._out(f"  {upgrade_openwebui(settings)}")
+        # No automatic upgrade at start: Open WebUI is installed at the version
+        # setup pins (setup_env.OPENWEBUI_VERSION); upgrading is an explicit
+        # setup action, never a silent download on every launch.
+        webui_venv = webui_venv_python(settings).parent.parent
         self._out(
-            f"  {ensure_single_openwebui_processes(settings.ports.openwebui)}"
+            f"  {ensure_single_openwebui_processes(settings.ports.openwebui, venv_dir=webui_venv)}"
         )
         self._out(f"  {reconcile_persisted_backend(settings)}")
         # Same seed-vs-database trap for the mic and read-aloud buttons: the
@@ -1644,9 +1644,7 @@ class Launcher:
         # No global model default is persisted. The model picker carried by each
         # Open WebUI request is authoritative through the router.
         self._out(f"  {reconcile_default_model(settings)}")
-        self._out(f"  {reconcile_tools_and_web_search(settings)}")
-        # upgrade_openwebui force-stops OWUI (including "already latest"). Do NOT
-        # early-return on TCP ready: a dying post-kill listener races that check
+        # Do NOT early-return on TCP ready: a dying post-kill listener races that check
         # and skips start, leaving :8096 dead (local refuse + Serve 502). Always
         # (re)start on the Serve port, then confirm /health.
         port = int(settings.ports.openwebui)
@@ -1654,7 +1652,7 @@ class Launcher:
             # Last-chance unlock so PortAllocator does not auto-reassign off :8096
             # (Serve still maps HTTPS -> 127.0.0.1:8096).
             self._out(
-                f"  {ensure_single_openwebui_processes(port, force=True)}"
+                f"  {ensure_single_openwebui_processes(port, force=True, venv_dir=webui_venv)}"
             )
             wait_loopback_port_free(port, timeout_s=10.0)
         manager = getattr(self, "_service_manager", None)
@@ -3587,6 +3585,12 @@ class Launcher:
             vision_manager.stop_all()
             if tts_started_by_us and tts_controller is not None:
                 tts_controller.stop()
+            # The judged frame is a full screenshot; it exists only to hand to
+            # the vision model and must not outlive the session on disk.
+            try:
+                (log_dir / "second_eye_frame.png").unlink(missing_ok=True)
+            except OSError:
+                pass
         self._out(
             f"[second-eye] stopped. judged {judged_count} frame(s), "
             f"spoke {corrections_count} correction(s)."

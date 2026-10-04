@@ -447,8 +447,9 @@ def test_voice_vision_memory_benchmark_and_settings_bindings(qapp):
     )
     assert window._memory_result.toPlainText() == "memory index unavailable"
 
-    window._benchmark_btn.click()
-    assert fake.calls[-1] == ("request_benchmark", "local-chat")
+    # Benchmark has no button of its own any more (Auto-tune runs it), but its
+    # results still update the row and status line.
+    assert not hasattr(window, "_benchmark_btn")
     window._apply(
         gui_controller.Result(
             "benchmark",
@@ -823,13 +824,15 @@ def test_autotune_summary_reports_the_real_numbers(qapp):
                 "yarn_applied": True,
                 "rope_scale": 2,
                 "trials": [{}, {}, {}, {}, {}, {}],
+                "tokens_per_second": 48.25,
             },
         )
     )
     window._drain()
     text = window._autotune_status.text()
-    for expected in ("131072", "196608", "212992", "extended 2x", "16384"):
+    for expected in ("131072", "196608", "212992", "extended 2x", "16384", "48.2 tokens/s"):
         assert expected in text
+    assert window._model_status.text() == "auto-tune finished: context 196608, 48.2 tokens/s"
     window.deleteLater()
     app.processEvents()
 

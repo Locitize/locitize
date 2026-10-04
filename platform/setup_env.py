@@ -402,6 +402,11 @@ def choose_asset(names: Iterable[str], want_cuda: bool) -> str:
 # Execution
 # ---------------------------------------------------------------------------
 
+# Open WebUI is installed at a reviewed version, never "whatever is latest":
+# it is separately licensed third-party software with a large dependency tree,
+# and a new release reaches users only when this pin is bumped deliberately.
+OPENWEBUI_VERSION = "0.11.4"
+
 # Pip sets per requirement key. Kept here, next to the executor that installs
 # them, rather than in requirements.txt: the wizard installs a SUBSET chosen by
 # feature, which is the entire difference from `pip install -r requirements.txt`.
@@ -428,7 +433,7 @@ PIP_SETS: dict[str, tuple[str, ...]] = {
         "--extra-index-url", "https://pypi.org/simple",
         "torch==2.11.0+cu128", "kokoro>=0.9.4",
     ),
-    "webui_pip": ("open-webui",),
+    "webui_pip": (f"open-webui=={OPENWEBUI_VERSION}",),
     "finetune_pip": ("streamlit>=1.30", "pypdf>=4.0"),
 }
 
@@ -939,6 +944,7 @@ def fetch_hf_file(
 def install_whisper(
     bin_dir: Path | str,
     say: Callable[[str], None] | None = None,
+    confirm_unverified: bool = False,
 ) -> tuple[StepResult, dict[str, str]]:
     """whisper.cpp server binary from GitHub releases. Returns (result, paths).
 
@@ -990,7 +996,9 @@ def install_whisper(
     archive = target / str(chosen["name"])
     fetched = fetch_release_zip(
         str(chosen.get("browser_download_url", "")), archive, sha or None,
-        confirm_unverified=not sha,
+        # No published digest means no check at all: that needs the user's
+        # explicit consent, exactly like llama.cpp - never implied.
+        confirm_unverified=confirm_unverified,
     )
     if not fetched.ok:
         return StepResult("whisper_bin", False, fetched.message), {}

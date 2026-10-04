@@ -1,11 +1,15 @@
 """The privacy ledger: a verifiable record of every outbound connection (M17.1).
 
 LOCITIZE's headline promise is that nothing leaves your machine unless you asked
-it to. This module lets the product PROVE that instead of merely asserting it.
+it to. This module records the outbound connections LOCITIZE's own app makes,
+so that promise can be checked rather than merely asserted.
 
-Every outbound request in the whole codebase passes through one function -
-modelhub.open_checked (the T2 allowlist chokepoint) - so recording egress in
-exactly one place captures all of it by construction. Each record is host,
+What it covers: every request the running app makes through
+modelhub.open_checked (the T2 allowlist chokepoint) - model search, model and
+component downloads, release checks. What it does NOT cover, because those
+requests are made by other programs: pip/winget installs, the setup wizard's
+own process, Open WebUI (including its optional web search), the fine-tune
+studio, and coding tools launched from LOCITIZE (see SECURITY.md). Each record is host,
 UTC timestamp, and the reason the connection happened ("hub-search",
 "download", "llama.cpp-release"), appended to a JSONL in the data root. Nothing
 about the request body or response is logged - the ledger proves WHEN and TO
@@ -131,7 +135,10 @@ def summarize(data_root: Path | str, limit: int = 20) -> EgressSummary:
 def render_line(summary: EgressSummary) -> str:
     """One honest sentence for a status chip."""
     if summary.total == 0:
-        return "0 outbound connections recorded - nothing has left this machine."
+        return (
+            "0 outbound connections recorded by LOCITIZE's own downloads "
+            "(installers, Open WebUI and coding tools are not covered)."
+        )
     hosts = ", ".join(sorted(summary.hosts))
     noun = "connection" if summary.total == 1 else "connections"
     return f"{summary.total} outbound {noun} recorded ({hosts})."

@@ -33,7 +33,11 @@ def test_fresh_machine_reads_zero(tmp_path):
     egress_log.configure(tmp_path)
     s = egress_log.summarize(tmp_path)
     assert s.total == 0
-    assert "nothing has left this machine" in egress_log.render_line(s)
+    line = egress_log.render_line(s)
+    assert line.startswith("0 outbound connections recorded")
+    # Honest scope: it never claims the whole machine is silent.
+    assert "nothing has left this machine" not in line
+    assert "not covered" in line
 
 
 def test_render_line_names_hosts(tmp_path):

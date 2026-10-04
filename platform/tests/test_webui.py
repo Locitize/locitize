@@ -231,7 +231,14 @@ def test_openwebui_spec_backend_and_data_env(tmp_path):
     assert spec.env["WEBUI_AUTH_COOKIE_SAME_SITE"] == "lax"
     assert spec.env["WEBUI_SESSION_COOKIE_SECURE"] == "True"
     assert spec.env["WEBUI_AUTH_COOKIE_SECURE"] == "True"
-    assert spec.env["FORWARDED_ALLOW_IPS"] == "*"
+    # Only loopback (Tailscale Serve) may forward headers, and browsers may call
+    # Open WebUI only from its own pages - never "*" while auth is off.
+    assert spec.env["FORWARDED_ALLOW_IPS"] == "127.0.0.1"
+    origins = spec.env["CORS_ALLOW_ORIGIN"].split(";")
+    assert "*" not in origins
+    assert spec.env["WEBUI_URL"] in origins
+    assert spec.env["ENABLE_COMMUNITY_SHARING"] == "False"
+    assert spec.env["ENABLE_VERSION_UPDATE_CHECK"] == "False"
     # DATA_DIR stays under the user's data root and never escapes it, and it is
     # NOT under the install tree (DEC-M14-9: it is the user's chat database).
     data_dir = Path(spec.env["DATA_DIR"]).resolve()
@@ -1207,25 +1214,59 @@ def test_reconcile_reports_a_missing_database_without_creating_one(tmp_path):
 
 
 
-def test_start_openwebui_always_restarts_after_upgrade_and_health_checks():
-    """upgrade force-stops OWUI (even when already latest); start must follow.
+def test_start_openwebui_never_upgrades_and_always_health_checks():
+    """A normal start installs nothing (no unpinned pip -U on every launch).
 
-    A TCP-ready early-return after force-kill races a dying :8096 listener and
-    leaves Serve 502. Source contract: upgrade -> start -> /health FAIL log.
+    A TCP-ready early-return after a kill races a dying :8096 listener and
+    leaves Serve 502. Source contract: start -> /health FAIL log, no upgrade.
     """
     import inspect
 
     import launcher
 
     src = inspect.getsource(launcher.Launcher._start_openwebui)
-    assert "upgrade_openwebui(settings)" in src
+    assert "upgrade_openwebui" not in src
+    assert "pip" not in src
     assert "controller.start()" in src
     assert "wait_openwebui_healthy(port" in src
     assert "Open WebUI FAIL" in src
     # Must not skip start on a brief post-kill TCP answer.
     assert "if self._openwebui_ready(settings):" not in src
-    assert src.index("upgrade_openwebui(settings)") < src.index("controller.start()")
     assert src.index("controller.start()") < src.index("wait_openwebui_healthy(port")
+
+
+def test_openwebui_process_check_only_targets_locitize_venv(tmp_path, monkeypatch):
+    """Another Open WebUI install (or an editor on a checkout) is never killed."""
+    import psutil
+
+    from webui import ensure_single_openwebui_processes
+
+    ours = tmp_path / ".webui-venv"
+    killed = []
+
+    class FakeProc:
+        def __init__(self, pid, exe, cmdline):
+            self.pid = pid
+            self.info = {"pid": pid, "name": "python.exe", "exe": exe, "cmdline": cmdline}
+
+        def terminate(self):
+            killed.append(self.pid)
+
+        def wait(self, timeout=None):
+            return 0
+
+    procs = [
+        FakeProc(1, str(ours / "Scripts" / "python.exe"),
+                 [str(ours / "Scripts" / "open-webui.exe"), "serve"]),
+        FakeProc(2, str(tmp_path / "other" / "python.exe"), ["open-webui", "serve"]),
+        FakeProc(3, str(tmp_path / "Code.exe"), ["code", str(tmp_path / "open-webui")]),
+    ]
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter(procs))
+    ensure_single_openwebui_processes(8096, force=True, venv_dir=ours)
+    assert killed == [1]
+    killed.clear()
+    assert "skipped" in ensure_single_openwebui_processes(8096, force=True)
+    assert killed == []
 
 
 def test_wait_openwebui_healthy_false_when_nothing_listens():

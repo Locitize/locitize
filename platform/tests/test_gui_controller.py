@@ -1308,6 +1308,65 @@ models:
     assert registry.get("model-a").context_size == 32768 * 4
 
 
+def test_autotune_then_benchmarks_at_the_tuned_context(tmp_path):
+    """Auto-tune and benchmark are one action: the speed is measured AFTER the
+    new context is written, so it is the speed at the setting the model will use."""
+    import json as _json
+    import struct
+
+    import autotune as autotune_module
+
+    def gstr(text):
+        raw = text.encode("utf-8")
+        return struct.pack("<Q", len(raw)) + raw
+
+    kvs = (
+        gstr("general.architecture") + struct.pack("<I", 8) + gstr("qwen3")
+        + gstr("qwen3.context_length") + struct.pack("<I", 4) + struct.pack("<I", 32768)
+    )
+    weights = tmp_path / "model-a.gguf"
+    weights.write_bytes(
+        b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + struct.pack("<Q", 2)
+        + kvs + bytes(32)
+    )
+    gc, registry = _real_gui_controller(
+        tmp_path,
+        f"""version: 1
+models:
+  - id: model-a
+    name: "Model A"
+    location: {_json.dumps(str(weights))}
+    context_size: 8192
+    gpu_layers: -1
+    status: installed
+    server_args: ["--parallel", "1"]
+""",
+    )
+    seen_context = []
+
+    def benchmark(model_id):
+        seen_context.append(registry.get(model_id).context_size)
+        return True, "61.5 tok/s", 61.5
+
+    gc._benchmark_fn = benchmark
+    original = autotune_module.run_smoke_trial
+    autotune_module.run_smoke_trial = lambda mid, ctx, **kw: autotune_module.Trial(ctx, True)
+    try:
+        gc._do_autotune_context("model-a")
+    finally:
+        autotune_module.run_smoke_trial = original
+
+    results = []
+    while not gc.result_q.empty():
+        results.append(gc.result_q.get_nowait())
+    kinds = [r.kind for r in results]
+    assert seen_context == [32768 * 4]  # benchmarked at the tuned context
+    assert kinds.index("benchmark") < kinds.index("autotune")
+    final = next(r for r in results if r.kind == "autotune")
+    assert final.ok and final.payload["tokens_per_second"] == 61.5
+    assert not gc.autotune_in_progress()
+
+
 def _real_gui_controller(tmp_path, yaml_text):
     """Build a GuiController over a REAL Config-loaded registry (not FakeRegistry),
     so _do_delete_model's actual config.remove_model_entry + filesystem calls run

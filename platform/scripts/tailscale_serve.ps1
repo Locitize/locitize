@@ -10,20 +10,31 @@
 
   Locitize keeps the root URL. Agent Portal has its own port. Do NOT put Portal on :443.
   OWUI boot env (WEBUI_URL=https://<magicdns> root, WEBUI_AUTH=False, cookies Secure,
-  ENABLE_LOGIN_FORM=False, FORWARDED_ALLOW_IPS=*, DATA_DIR) is set by
+  ENABLE_LOGIN_FORM=False, FORWARDED_ALLOW_IPS=127.0.0.1, DATA_DIR) is set by
   platform/webui.py _build_openwebui_env on every launcher start — not by this script.
   Does NOT bind 0.0.0.0 or open Windows firewall. Does NOT enable Funnel.
+
+  SECURITY: Open WebUI runs with no login. Serving it makes EVERY device on your
+  tailnet (including shared nodes) an Open WebUI admin, and an Open WebUI admin
+  can run code on this PC through Tools/Functions. Applying the map therefore
+  requires -AllowNoLogin. Restrict access with tailnet ACLs, and never share this
+  machine's node with people you would not give your PC to.
 
 .PARAMETER StatusOnly
   Print current serve status and probe URLs; do not change config.
 
 .PARAMETER Reset
   Clear all serve handlers first, then apply the Locitize map.
+
+.PARAMETER AllowNoLogin
+  Required to apply the map: confirms you accept that every tailnet device gets
+  admin access to Open WebUI (see SECURITY above).
 #>
 [CmdletBinding()]
 param(
   [switch]$StatusOnly,
-  [switch]$Reset
+  [switch]$Reset,
+  [switch]$AllowNoLogin
 )
 
 $ErrorActionPreference = "Stop"
@@ -93,6 +104,13 @@ Write-Host "LOCITIZE Tailscale Serve"
 Write-Host "MagicDNS: $magic"
 Write-Host "Mode:     tailnet only (no Funnel)"
 Write-Host ""
+
+if (-not $StatusOnly -and -not $AllowNoLogin) {
+  Write-Warning ("Open WebUI has no login. Serving it gives every device on your tailnet " +
+    "admin access, which can run code on this PC. Re-run with -AllowNoLogin to accept " +
+    "that, and restrict the tailnet with ACLs.")
+  exit 1
+}
 
 if (-not $StatusOnly) {
   Set-LocitizeServe -MagicDns $magic

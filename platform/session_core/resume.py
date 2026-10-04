@@ -8,6 +8,7 @@ touching providers.
 """
 from __future__ import annotations
 
+import base64
 import shutil
 import subprocess
 from pathlib import Path
@@ -71,8 +72,26 @@ def has_windows_terminal() -> bool:
 
 
 # -- PowerShell single-quoting (mirrors v1) ----------------------------------
+# PowerShell treats the typographic quotes U+2018..U+201B exactly like the
+# ASCII apostrophe, so each must be doubled too, or a folder named with one
+# (x + U+2019 + '; calc; ') would end the string early and run the rest.
+_PS_SINGLE_QUOTES = ("'", "\u2018", "\u2019", "\u201a", "\u201b")
+
+
 def ps_single_quote(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
+    for quote in _PS_SINGLE_QUOTES:
+        value = value.replace(quote, quote * 2)
+    return "'" + value + "'"
+
+
+def ps_encoded(command: str) -> str:
+    """The -EncodedCommand form of a PowerShell command (base64 UTF-16LE).
+
+    Passing the command encoded means no other parser sees it: Windows
+    Terminal splits its own command line on ';', which would otherwise turn
+    part of a folder name into a separate wt command.
+    """
+    return base64.b64encode(command.encode("utf-16-le")).decode("ascii")
 
 
 def _maximized_startupinfo():
@@ -94,7 +113,8 @@ def _start_powershell(cwd: str, command: str) -> subprocess.Popen:
     startup = f"Set-Location -LiteralPath {ps_single_quote(cwd)}; {command}"
     if has_windows_terminal():
         return subprocess.Popen(
-            ["wt", "--maximized", "-d", cwd, "powershell", "-NoExit", "-Command", startup],
+            ["wt", "--maximized", "-d", cwd, "powershell", "-NoExit",
+             "-EncodedCommand", ps_encoded(startup)],
             creationflags=CREATE_NO_WINDOW,
         )
 
@@ -102,7 +122,7 @@ def _start_powershell(cwd: str, command: str) -> subprocess.Popen:
     # `cmd /c start` behind CREATE_NO_WINDOW lets the child inherit a hidden,
     # console-less boundary, which interactive CLIs correctly reject.
     return subprocess.Popen(
-        ["powershell", "-NoExit", "-Command", startup],
+        ["powershell", "-NoExit", "-EncodedCommand", ps_encoded(startup)],
         cwd=cwd,
         creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
         startupinfo=_maximized_startupinfo(),

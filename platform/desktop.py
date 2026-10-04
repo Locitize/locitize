@@ -1177,9 +1177,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._chat_btn = QtWidgets.QPushButton("Chat")
         self._chat_btn.setToolTip("Open the chat UI for the running model")
         self._chat_btn.clicked.connect(self._on_chat)
-        self._benchmark_btn = QtWidgets.QPushButton("Benchmark")
-        self._benchmark_btn.setToolTip("Benchmark the selected model")
-        self._benchmark_btn.clicked.connect(self._on_benchmark)
         self._refresh_models_btn = QtWidgets.QPushButton("Refresh")
         self._refresh_models_btn.setToolTip(
             "Reload your model list so new downloads appear"
@@ -1209,19 +1206,21 @@ class MainWindow(QtWidgets.QMainWindow):
         # Opt-in per model on purpose - it performs several real model loads, so
         # it must be something the owner asks for, never a side effect of
         # selecting a row.
+        # Auto-tune and Benchmark are one action: tuning finds the context,
+        # then benchmarks the model at it, so the speed shown is the speed at
+        # the setting the model will actually run with.
         self._autotune_btn = QtWidgets.QPushButton("Auto-tune")
         self._autotune_btn.setToolTip(
-            "Read this model's native context from its GGUF header, find the "
-            "largest context that really loads on this machine, and write it "
-            "back with the right rope-scaling flags. Takes a few minutes and "
-            "starts the model several times."
+            "Find the largest context that really loads on this machine, write "
+            "it back with the right rope-scaling flags, then benchmark the model "
+            "at that context to measure its real tokens per second. Takes a few "
+            "minutes and starts the model several times."
         )
         self._autotune_btn.clicked.connect(self._on_autotune_context)
         for button in (
             self._start_btn,
             self._stop_btn,
             self._chat_btn,
-            self._benchmark_btn,
             self._autotune_btn,
             self._register_btn,
             self._delete_btn,
@@ -2613,7 +2612,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _refresh_model_exclusive_buttons(self):
         """Protect assistant-held models from Vision and benchmark switching."""
         model = self._selected_model()
-        self._benchmark_btn.setEnabled(not self._assistant_live and model is not None)
         # Register only applies to a discovered row; a registered row has nothing
         # to promote, so the control stays visibly disabled rather than dead.
         self._register_btn.setEnabled(
@@ -2794,16 +2792,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._model_status.setText("choosing an available chat interface...")
         self._gc.request_chat()
 
-    def _on_benchmark(self):
-        """Queue the selected model's single-configuration benchmark."""
-        model = self._selected_model()
-        if model is None:
-            self._model_status.setText("select a model to benchmark")
-            return
-        self._model_status.setText(f"benchmarking {model['id']}...")
-        self._benchmark_btn.setEnabled(False)
-        self._gc.request_benchmark(model["id"])
-
     def _on_autotune_context(self):
         """Ask for confirmation, then queue the selected model's context auto-tune.
 
@@ -2827,9 +2815,10 @@ class MainWindow(QtWidgets.QMainWindow):
             f"Auto-tune the context window for '{model['id']}'?\n\n"
             f"LOCITIZE will read the model's native context from its file, then "
             f"start it several times at different context sizes to find the "
-            f"largest one this machine can actually load. This takes a few "
-            f"minutes and uses the GPU throughout. The result is written back to "
-            f"models.yaml for this model only.",
+            f"largest one this machine can actually load, and finally benchmark "
+            f"it at that size to measure its real speed (tokens per second). "
+            f"This takes a few minutes and uses the GPU throughout. The context "
+            f"is written back to models.yaml for this model only.",
             QtWidgets.QMessageBox.StandardButton.Yes
             | QtWidgets.QMessageBox.StandardButton.No,
             QtWidgets.QMessageBox.StandardButton.No,
@@ -2911,13 +2900,21 @@ class MainWindow(QtWidgets.QMainWindow):
             f"largest that loaded: {chosen}"
             + (f", smallest that failed: {failure}" if failure else "")
         )
+        speed = result.payload.get("tokens_per_second")
+        if speed is not None:
+            measured = f" Measured speed at that context: {float(speed):.1f} tokens/s."
+            headline = f"context {chosen}, {float(speed):.1f} tokens/s"
+        else:
+            reason = result.payload.get("benchmark_error") or "not measured"
+            measured = f" Speed not measured ({reason})."
+            headline = f"context size now {chosen}"
         self._autotune_status.setText(
             f"auto-tune of {model_id} finished. Native context: {native}. "
             f"{ceiling}. {yarn}. context_size {previous} -> {chosen}, written to "
-            f"models.yaml after {len(trials)} real starts. Applies the next time "
-            f"this model starts."
+            f"models.yaml after {len(trials)} real starts.{measured} Applies the "
+            f"next time this model starts."
         )
-        self._model_status.setText(f"auto-tune finished: context size now {chosen}")
+        self._model_status.setText(f"auto-tune finished: {headline}")
         # The row's cached context_size is now stale; re-read the registry so the
         # page shows what is really on disk rather than what it showed before.
         self._on_refresh_models()
@@ -4061,7 +4058,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ):
             text = (
                 "this llama.cpp build does not report live speed; "
-                "Benchmark still measures it"
+                "Auto-tune still measures it"
             )
         else:
             text = gui_controller.format_monitor_line(

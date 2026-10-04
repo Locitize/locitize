@@ -817,7 +817,9 @@ class SetupWizard:
             return self._install_harnesses(say)
 
         if key == "whisper_bin":
-            result, paths = setup_env.install_whisper(self._machine.bin_dir, say)
+            result, paths = setup_env.install_whisper(
+                self._machine.bin_dir, say, confirm_unverified=self._unverified_ok
+            )
             discovered.update(paths)
             return result
 

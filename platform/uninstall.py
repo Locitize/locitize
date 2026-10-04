@@ -8,9 +8,14 @@ add - a real dialog, not a hunt through folders. Two rules shape this file:
    thing being deleted. It can never depend on them.
 2. THE USER'S MODELS ARE SACRED. Downloaded GGUFs and fine-tuned runs exist
    nowhere else on the machine (imports are hardlinks, but downloads and
-   training outputs are originals). "Keep my model files" is ON by default and
-   preserves <data root>/models and <data root>/finetune - everything else in
-   the data root (logs, config, binaries, chat state) is re-creatable by setup.
+   training outputs are originals). "Keep my files" is ON by default and
+   preserves <data root>/models, finetune, sessions, and the user's chats
+   (webui-data, memory) - everything else in the data root (logs, config,
+   binaries) is re-creatable by setup.
+3. ONLY LOCITIZE'S OWN DATA ROOT. The root comes from LOCITIZE_DATA_DIR when
+   set, so it is deleted only when it really is a LOCITIZE data root (it holds
+   the settings.yaml + models.yaml that setup seeds). A variable pointing at a
+   drive root or Documents leaves that folder untouched.
 
 What an uninstall removes:
 - the three virtual environments (.venv, .webui-venv, finetune-studio/.venv)
@@ -39,8 +44,30 @@ REPO_DIR = BASE_DIR.parent
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-# Data-root folders preserved by "Keep my model files".
-KEPT_DIRS = ("models", "finetune", "sessions")
+# Data-root folders preserved by "Keep my files": models and training runs,
+# session details, and chats (Open WebUI's database and conversation memory).
+KEPT_DIRS = ("models", "finetune", "sessions", "webui-data", "memory")
+
+
+def is_locitize_data_root(path: Path) -> bool:
+    """True for LOCITIZE's own default roots, or a folder setup seeded.
+
+    The defaults (%LOCALAPPDATA%/LOCITIZE and the portable locitize-data) are
+    LOCITIZE's by name. Any other folder - one named by LOCITIZE_DATA_DIR -
+    counts only when it holds the settings.yaml + models.yaml setup writes.
+    """
+    path = Path(path)
+    defaults = [BASE_DIR / "locitize-data"]
+    local = (os.environ.get("LOCALAPPDATA") or "").strip()
+    if local:
+        defaults.append(Path(local) / "LOCITIZE")
+    try:
+        resolved = path.resolve()
+        if any(resolved == d.resolve() for d in defaults):
+            return True
+    except OSError:
+        return False
+    return (path / "settings.yaml").is_file() and (path / "models.yaml").is_file()
 
 
 def resolve_data_root() -> Path:
@@ -96,7 +123,9 @@ def uninstall_plan(
         if venv.exists():
             delete.append(venv)
 
-    if root.exists():
+    if root.exists() and not is_locitize_data_root(root):
+        keep.append(root)  # not LOCITIZE's: never deleted, never emptied
+    elif root.exists():
         if keep_models:
             for child in sorted(root.iterdir()):
                 if child.name.lower() in KEPT_DIRS:
@@ -110,7 +139,9 @@ def uninstall_plan(
     if local:
         fallback = Path(local) / "LOCITIZE"
         if fallback.exists() and fallback.resolve() != root.resolve():
-            if keep_models and any((fallback / name).exists() for name in KEPT_DIRS):
+            if not is_locitize_data_root(fallback):
+                keep.append(fallback)
+            elif keep_models and any((fallback / name).exists() for name in KEPT_DIRS):
                 for child in sorted(fallback.iterdir()):
                     (keep if child.name.lower() in KEPT_DIRS else delete).append(child)
             else:
@@ -130,13 +161,14 @@ def stop_locitize_processes(data_root: Path, repo_dir: Path) -> int:
     install's venvs), the same ownership rule as the GPU ledger. Best-effort:
     a failure to stop something surfaces later as a locked-file message.
     """
-    prefixes = [str(data_root), str(repo_dir / ".venv"),
-                str(repo_dir / ".webui-venv"),
+    prefixes = [str(repo_dir / ".venv"), str(repo_dir / ".webui-venv"),
                 str(repo_dir / "finetune-studio" / ".venv")]
+    if is_locitize_data_root(Path(data_root)):
+        prefixes.insert(0, str(data_root))
+    # Escape only the path inside the single-quoted PowerShell literal, so a
+    # folder name with an apostrophe cannot break the quoting around it.
     clauses = " -or ".join(
-        f"$_.Path -like '{p}\\*'".replace("'", "''") if "'" in p
-        else f"$_.Path -like '{p}\\*'"
-        for p in prefixes
+        "$_.Path -like '" + p.replace("'", "''") + "\\*'" for p in prefixes
     )
     script = (
         "$procs = Get-Process | Where-Object { " + clauses + " }; "
@@ -216,7 +248,7 @@ def run_gui() -> int:
 
     ttk.Checkbutton(
         frame,
-        text="Keep my models, fine-tuned runs and session details",
+        text="Keep my models, chats, fine-tuned runs and session details",
         variable=keep_var, command=refresh_listing,
     ).pack(anchor="w")
     status = ttk.Label(frame, text="", style="Muted.TLabel", wraplength=600)

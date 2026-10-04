@@ -35,13 +35,26 @@ def test_keep_models_preserves_models_and_finetune(tmp_path, monkeypatch):
     repo, root = _install(tmp_path)
     delete, keep = uninstall_plan(repo, root, keep_models=True)
     kept_names = {p.name for p in keep}
-    assert kept_names == {"models", "finetune"}
+    assert kept_names == {"models", "finetune", "webui-data", "memory"}
     deleted_names = {p.name for p in delete}
     # The re-creatable pieces go; the sacred ones never appear in delete.
     assert {"bin", "logs", "settings.yaml", "models.yaml"} <= deleted_names
     assert "models" not in deleted_names and "finetune" not in deleted_names
     # All three venvs are planned.
     assert sum(1 for p in delete if p.name in (".venv", ".webui-venv")) == 3
+
+
+def test_a_folder_that_is_not_a_locitize_data_root_is_never_deleted(tmp_path, monkeypatch):
+    """LOCITIZE_DATA_DIR pointing at a drive root or Documents must not empty it."""
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setattr(uninstall, "desktop_shortcut", lambda: None)
+    repo, _root = _install(tmp_path)
+    documents = tmp_path / "Documents"
+    (documents / "taxes").mkdir(parents=True)
+    for keep_models in (True, False):
+        delete, keep = uninstall_plan(repo, documents, keep_models=keep_models)
+        assert documents in keep
+        assert not any(str(p).startswith(str(documents)) for p in delete)
 
 
 def test_full_uninstall_takes_the_whole_root(tmp_path, monkeypatch):

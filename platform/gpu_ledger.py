@@ -142,7 +142,9 @@ def mark_ours(
     result: list[GpuProcess] = []
     for p in procs:
         norm = p.name.replace("\\", "/").lower()
-        is_ours = p.pid in owned or (bool(base) and base in norm)
+        # A path segment match, not a substring: <data>/bin must not also
+        # claim <data>/bin2 or <data>/binaries.
+        is_ours = p.pid in owned or (bool(base) and (base + "/") in norm)
         result.append(GpuProcess(p.pid, p.name, p.used_mb, is_ours))
     return result
 

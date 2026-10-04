@@ -3497,39 +3497,35 @@ class GuiController:
 
     def _do_benchmark(self, model_id: str) -> None:
         """Run a single-model benchmark via the injected benchmark_fn; refresh the score."""
+        self.result_q.put(self._benchmark_result(model_id))
+
+    def _benchmark_result(self, model_id: str) -> Result:
+        """Benchmark one model at its saved settings and describe the outcome."""
         if self._benchmark_fn is None:
-            self.result_q.put(
-                Result("benchmark", False, {}, error="benchmark is not available")
-            )
-            return
+            return Result("benchmark", False, {}, error="benchmark is not available")
         try:
             ok, detail, score = self._benchmark_fn(model_id)
         except Exception as exc:  # noqa: BLE001 - boundary guard
-            self.result_q.put(
-                Result(
-                    "benchmark",
-                    False,
-                    {"model_id": model_id},
-                    error=f"benchmark failed: {exc}",
-                )
-            )
-            return
-        self.result_q.put(
-            Result(
+            return Result(
                 "benchmark",
-                bool(ok),
-                {
-                    "model_id": model_id,
-                    "score": score,
-                    "score_display": format_score(score),
-                    "detail": detail,
-                    # Throughput lives in benchmark_results.jsonl for registered
-                    # and discovered models alike, so both survive a restart.
-                    "score_persisted": True,
-                    "note": "",
-                },
-                error=None if ok else detail,
+                False,
+                {"model_id": model_id},
+                error=f"benchmark failed: {exc}",
             )
+        return Result(
+            "benchmark",
+            bool(ok),
+            {
+                "model_id": model_id,
+                "score": score,
+                "score_display": format_score(score),
+                "detail": detail,
+                # Throughput lives in benchmark_results.jsonl for registered
+                # and discovered models alike, so both survive a restart.
+                "score_persisted": True,
+                "note": "",
+            },
+            error=None if ok else detail,
         )
 
     def _do_start(self, model_id: str, reasoning: dict | None = None) -> None:
@@ -4049,6 +4045,37 @@ class GuiController:
         if not errors:
             self._registry.reload(models)
 
+        # Auto-tune and benchmark are one action: once the largest context that
+        # really loads is written, measure the model AT that context, so the
+        # owner gets real tokens per second for the setting they will run with.
+        # The run still counts as in progress (Start and friends stay queued
+        # behind it) until the measurement is done.
+        tokens_per_second = None
+        benchmark_error = ""
+        if (
+            outcome.ok
+            and not outcome.canceled
+            and not self._autotune_cancel.is_set()
+            and self._benchmark_fn is not None
+        ):
+            emit(
+                f"measuring speed at context {outcome.chosen_context} "
+                f"(benchmark) ..."
+            )
+            self._autotune_model_id = model_id
+            self._autotune_running = True
+            try:
+                bench = self._benchmark_result(model_id)
+            finally:
+                self._autotune_running = False
+                self._autotune_model_id = None
+            # The benchmark's own Result also refreshes the speed column.
+            self.result_q.put(bench)
+            if bench.ok:
+                tokens_per_second = bench.payload.get("score")
+            else:
+                benchmark_error = bench.error or "benchmark failed"
+
         self.result_q.put(
             Result(
                 "autotune",
@@ -4069,6 +4096,8 @@ class GuiController:
                     ],
                     "detail": outcome.detail,
                     "canceled": outcome.canceled,
+                    "tokens_per_second": tokens_per_second,
+                    "benchmark_error": benchmark_error,
                 },
                 # A cancellation is not an error and must not be reported as one:
                 # `error` stays None so nothing downstream renders a red failure

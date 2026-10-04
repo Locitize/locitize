@@ -1798,3 +1798,28 @@ def test_forwarded_json_content_length_matches_promoted_body():
         router.stop()
         upstream.shutdown()
         upstream.server_close()
+
+
+# --------------------------------------------------------------------------- #
+# Browser / DNS-rebinding guard
+# --------------------------------------------------------------------------- #
+
+
+def test_foreign_request_reason_accepts_local_callers():
+    from router import foreign_request_reason
+
+    assert foreign_request_reason("127.0.0.1:8093", None, 8093) is None
+    assert foreign_request_reason("localhost:8093", None, 8093) is None
+    assert foreign_request_reason("127.0.0.1:8093", "http://127.0.0.1:8096", 8093) is None
+
+
+def test_foreign_request_reason_refuses_websites_and_rebinding():
+    from router import foreign_request_reason
+
+    # A web page the user visits: Host is right, Origin is the site.
+    assert foreign_request_reason("127.0.0.1:8093", "https://evil.example", 8093)
+    # DNS rebinding: the attacker's own host name resolves to 127.0.0.1.
+    assert foreign_request_reason("evil.example:8093", None, 8093)
+    assert foreign_request_reason("127.0.0.1:9999", None, 8093)
+    assert foreign_request_reason(None, None, 8093)
+    assert foreign_request_reason("127.0.0.1:8093", "null", 8093)

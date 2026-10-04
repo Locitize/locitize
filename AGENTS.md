@@ -9,7 +9,8 @@ A Windows-first local AI platform: it serves the user's own GGUF models through
 llama.cpp (OpenAI-compatible, loopback-only), with voice (whisper.cpp in,
 Kokoro out), vision, a fine-tune studio, optional Open WebUI chat, and a Qt
 desktop that manages it all. Nothing leaves the machine unless the user asks;
-the egress ledger proves it.
+the egress ledger records LOCITIZE's own outbound connections (installers,
+Open WebUI and launched coding tools make their own - see SECURITY.md).
 
 - Requirements: Windows 10/11, Python 3.11+, ~2 GB disk for the toolchain.
   NVIDIA GPU optional but recommended (CUDA build auto-selected when present).
