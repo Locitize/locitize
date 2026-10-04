@@ -2137,3 +2137,50 @@ def test_a_failing_controller_read_is_not_a_crash():
     gc = _controller(model_ctrl=Broken())
     gc._check_running_model()  # must not raise
     assert _drain(gc, "running_model") == []
+
+
+def test_chat_starts_open_webui_itself_instead_of_asking(monkeypatch):
+    """Open WebUI is the default chat: installed but not running means start it,
+    not a "Start Open WebUI?" dialog and never the llama.cpp page."""
+    import webui as webui_mod
+
+    gc = _controller()
+    gc._active_port = 8080
+    gc._settings.chat.preferred_ui = "openwebui"
+    monkeypatch.setattr(webui_mod, "webui_available", lambda _s: True)
+    monkeypatch.setattr(gc, "_openwebui_listening", lambda: False)
+    gc.request_chat()
+
+    commands = []
+    while not gc.command_q.empty():
+        commands.append(gc.command_q.get_nowait().kind)
+    results = []
+    while not gc.result_q.empty():
+        results.append(gc.result_q.get_nowait().kind)
+    assert commands == ["start_openwebui"]
+    assert "chat_offer_start" not in results
+
+
+def test_a_failed_open_webui_start_reports_why_and_does_not_open_llamacpp():
+    gc = _controller()
+    gc._active_port = 8080
+    opened = []
+    gc._open_llamacpp = lambda reason="": opened.append("llamacpp")
+
+    def boom():
+        raise RuntimeError("port 8096 is in use")
+
+    gc._openwebui_start_fn = boom
+    gc._do_start_openwebui()
+    gc._openwebui_start_fn = lambda: False
+    gc._do_start_openwebui()
+
+    errors = []
+    while not gc.result_q.empty():
+        r = gc.result_q.get_nowait()
+        if r.kind == "chat" and not r.ok:
+            errors.append(r.error)
+    assert opened == []
+    assert len(errors) == 2
+    assert "port 8096 is in use" in errors[0]
+    assert "did not become ready" in errors[1]

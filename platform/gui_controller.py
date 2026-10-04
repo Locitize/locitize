@@ -2350,7 +2350,9 @@ class GuiController:
         - OPEN_OPENWEBUI      -> open the running Open WebUI immediately
         - DEGRADE_TO_LLAMACPP -> open the built-in UI, carrying the reason
         - ASK                 -> a "chat_ask" Result so gui.py renders the choice dialog
-        - OFFER_START_OPENWEBUI -> a "chat_offer_start" Result so gui.py offers Start
+        - OFFER_START_OPENWEBUI -> start Open WebUI on the ops worker, then open it.
+          Open WebUI is the default chat; the owner chose it (or never chose
+          llama.cpp), so it is started rather than offered behind a dialog.
 
         The decision function is pure and shared with the terminal menu, so both
         surfaces make the identical choice. gui_controller does the small file/port
@@ -2387,9 +2389,11 @@ class GuiController:
         elif decision is ChatDecision.ASK:
             self.result_q.put(Result("chat_ask", True, {}))
         elif decision is ChatDecision.OFFER_START_OPENWEBUI:
-            self.result_q.put(
-                Result("chat_offer_start", True, {"reason": resolution.reason})
-            )
+            self.result_q.put(Result("chat_status", True, {
+                "message": "starting Open WebUI (the first start sets up its "
+                           "database and can take a few minutes)...",
+            }))
+            self.command_q.put(Command("start_openwebui"))
 
     def open_chat(self, choice: str | None = None, remember: bool = False) -> None:
         """Open the chosen chat UI, optionally remembering the choice (M9.3/M9.4).
@@ -3337,27 +3341,32 @@ class GuiController:
 
         Runs on the ops worker (the start can block for the readiness timeout during
         the first-run DB migration). Uses the injected start callable so this
-        controller adds no subprocess code of its own. On failure it degrades to the
-        built-in llama.cpp UI so the owner still gets chat (Architecture M9.5).
+        controller adds no subprocess code of its own. On failure it says so and
+        why, and does NOT quietly open llama.cpp's page instead: Open WebUI is
+        what the owner asked for, and a silent swap hid real start failures.
         """
+        remedy = (
+            " Check the Open WebUI log in the data folder, or set the chat app to "
+            "llama.cpp in Settings to use the built-in page."
+        )
         if self._openwebui_start_fn is None:
-            self._open_llamacpp(
-                reason="Open WebUI cannot be started here; opening the built-in UI"
-            )
+            self.result_q.put(Result(
+                "chat", False, {}, error="Open WebUI cannot be started here." + remedy
+            ))
             return
         try:
             ok = self._openwebui_start_fn()
-        except Exception as exc:  # noqa: BLE001 - boundary: honest degrade, never raise
-            ok = False
-            self.result_q.put(
-                Result("chat", False, {}, error=f"Open WebUI start failed: {exc}")
-            )
+        except Exception as exc:  # noqa: BLE001 - boundary: report, never raise
+            self.result_q.put(Result(
+                "chat", False, {}, error=f"Open WebUI could not start: {exc}." + remedy
+            ))
+            return
         if ok:
             self._open_openwebui()
         else:
-            self._open_llamacpp(
-                reason="Open WebUI did not become ready; opening the built-in UI"
-            )
+            self.result_q.put(Result(
+                "chat", False, {}, error="Open WebUI did not become ready." + remedy
+            ))
 
     def _do_start_assistant(self, voice: str, speak: bool) -> None:
         """Start the assistant session via the injected builder; marshal the outcome.

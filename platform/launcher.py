@@ -1343,10 +1343,8 @@ class Launcher:
             self._open_chat_browser(settings, self._openwebui_chat_url(settings))
             return
         if decision is ChatDecision.OFFER_START_OPENWEBUI:
-            answer = input_fn(f"  {resolution.reason} - Start it now? (y/N) ").strip().lower()
-            if answer not in ("y", "yes"):
-                self._out("  ok - not starting Open WebUI")
-                return
+            # Open WebUI is the default chat: start it rather than ask, and on
+            # failure say why instead of quietly opening llama.cpp's page.
             self._out(
                 "  starting Open WebUI (first launch sets up its database "
                 "and can take up to 5 minutes)..."
@@ -1355,11 +1353,8 @@ class Launcher:
                 self._open_chat_browser(settings, self._openwebui_chat_url(settings))
             else:
                 self._out(
-                    "  Open WebUI did not become ready; opening the built-in "
-                    "llama.cpp UI instead"
-                )
-                self._open_chat_browser(
-                    settings, self._llamacpp_chat_url(settings, model_port)
+                    "  Open WebUI did not become ready. Check its log in the data "
+                    "folder, or run with --chat-ui llamacpp for the built-in page."
                 )
             return
         # ASK: present the numbered choice; the owner may remember it.
