@@ -1,0 +1,14 @@
+{
+  "_about": [
+    "LOCITIZE ships NO model list (owner decision 2026-08-29). Which model a",
+    "person runs is their choice: first-run setup scans the machine for GGUFs",
+    "they already have and imports them, and the Models page's Get models",
+    "section searches huggingface.co in the user's own words, with every",
+    "download checksum-verified. This file remains as the (empty) catalog the",
+    "hub merges over search results, so a fork that WANTS to curate a list for",
+    "its own audience can fill it back in - the loading rules from M14.14.1",
+    "still apply: no location keys, no stored hashes, sizes are hints only."
+  ],
+  "version": 1,
+  "models": []
+}

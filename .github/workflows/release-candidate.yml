@@ -1,0 +1,29 @@
+name: Build unsigned Windows candidate
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  candidate:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.7'
+      - name: Install and constrain dependencies
+        run: python -m pip install -r platform/requirements.txt -r platform/requirements-dev.txt -c platform/requirements-core.lock
+      - name: Test
+        working-directory: platform
+        run: python -m pytest -q
+      - name: Build candidate
+        run: python platform/scripts/build_release.py --output dist/LOCITIZE-candidate
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LOCITIZE-unsigned-candidate
+          path: |
+            dist/*.zip
+            dist/*.sha256

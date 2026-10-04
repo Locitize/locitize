@@ -1,0 +1,53 @@
+# LOCITIZE platform dependencies (Architecture section 13). Minimal and mainstream.
+#
+# GPU access uses nvidia-smi (ships with the NVIDIA driver, parsed as CSV), so no
+# pynvml / nvidia-ml-py dependency is required. Service readiness HTTP probing
+# uses the standard-library urllib.request, so `requests` is intentionally NOT a
+# dependency (Architecture section 13 permits the Builder to keep to urllib).
+
+PyYAML>=6.0        # parse settings.yaml / models.yaml with safe_load only
+psutil>=5.9        # cross-platform RAM facts for health probes
+Pillow>=10.0       # screen capture + downscale for --second-eye's frame-diff trigger
+
+# Voice OUT / Kokoro text-to-speech (M6, Architecture M6.2). The kokoro package
+# runs the on-disk kokoro-v1_0.pth on CPU torch; it is loaded ONLY by the child
+# kokoro_server.py process, never by the launcher/GUI. torch MUST be the CPU
+# wheel: an 82M TTS model needs no GPU, and TTS runs concurrently with the LLM
+# that owns the graphics card, so a CPU build avoids VRAM contention entirely.
+#
+# The line below is what makes that real. It used to be a COMMENT telling the
+# reader to pass --index-url by hand, which meant a plain
+# `pip install -r requirements.txt` silently pulled the multi-gigabyte default
+# build instead. pip reads --extra-index-url directly from this file, and the
+# CPU index publishes torch with a "+cpu" local version, which PEP 440 sorts
+# ABOVE the same plain version - so the resolver picks the CPU wheel on its own,
+# with no extra flag for anyone to forget.
+#
+# WHY THE VERSION BELOW IS PINNED EXACTLY (Review M-5): --extra-index-url ADDS
+# the CPU index to the candidate set rather than replacing PyPI, so the "+cpu
+# sorts higher" trick only holds while both indexes carry the same highest
+# version. The day PyPI publishes a torch release the CPU index has not mirrored
+# yet, a range like torch>=2.2 resolves to the default CUDA build - silently, on
+# a stranger's machine, as a multi-gigabyte download. An exact pin removes the
+# race: either the CPU wheel is there or the install fails loudly and a human
+# bumps this line deliberately.
+--extra-index-url https://download.pytorch.org/whl/cpu
+# kokoro pulls its own G2P stack (misaki + spacy en_core_web_sm) and bundles
+# espeak-ng via espeakng-loader, so no system espeak-ng install is needed on
+# Windows. The Kokoro architecture config.json (a ~2KB non-weight descriptor) is
+# vendored locally at assets/kokoro/config.json, so no HF hub weight download
+# ever occurs -- the .pth and voice .pt tensors load straight from disk.
+torch==2.13.0+cpu  # exact CPU wheel from the index above (see the pin note); loaded in kokoro_server.py
+kokoro>=0.9.4      # Kokoro-82M TTS engine driving the on-disk .pth / .pt voices
+#
+# OPT-IN GPU BUILD (owner request 2026-09-03): kokoro_server.py moves the model
+# to the card whenever torch.cuda.is_available(), so a voice call's first word
+# lands ~0.7s sooner (measured 0.78s -> 0.10s per sentence, +0.5 GB VRAM). The
+# CPU wheel above stays the default; the setup wizard's "Hear it back, faster"
+# feature installs the CUDA one, which is the setup_env.PIP_SETS["kokoro_pip_cuda"]
+# set: torch==2.11.0+cu128 from https://download.pytorch.org/whl/cu128 (the one
+# index with a Blackwell-capable Windows wheel that runs on a 570-series driver).
+PySide6>=6.6,<7
+
+# Development / test only:
+pytest>=7.0        # test runner for the automated suite (AC6)

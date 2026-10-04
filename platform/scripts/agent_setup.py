@@ -1,0 +1,125 @@
+"""Headless setup for AI agents (M18.3): the wizard's work, no GUI.
+
+The setup wizard is a tkinter window a person clicks through. An AI agent
+setting LOCITIZE up for a user has no mouse - so this script performs the same
+core sequence headlessly, reusing the exact setup_env/config functions the
+wizard calls (never a parallel implementation):
+
+  1. seed the data root (settings.yaml + models.yaml from the shipped templates)
+  2. find or install llama.cpp (GPU-matched, digest-verified download) and
+     record its path in settings.yaml
+  3. discover the GGUF models already on this machine and register them
+     (hardlinked into the models dir - no copies; re-runs never duplicate)
+
+It then makes sure the shared model store folder exists and installs the
+claude-local shim (claude-local.cmd/.ps1 in ~/.local/bin), which runs Claude
+Code against the model LOCITIZE is serving.
+
+Run it from the platform venv AFTER `pip install -r requirements.txt`:
+
+    .venv\\Scripts\\python platform\\scripts\\agent_setup.py
+
+Idempotent: every step detects what already exists and skips it, so re-running
+is always safe. Exit 0 = usable install (a machine with no models still exits 0
+- models can be imported or downloaded later); exit 1 = a hard step failed.
+
+Optional features (voice, vision, Open WebUI, fine-tune studio) stay wizard/
+user-driven - this script installs the core serve-a-model path only. ASCII only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+PLATFORM_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PLATFORM_DIR))
+
+import config  # noqa: E402
+import modelhub  # noqa: E402
+import setup_env  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="agent_setup.py",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.parse_args(argv)
+    say = print
+    data_root = setup_env.BASE_DIR / "locitize-data"
+
+    # -- 1. seed config ------------------------------------------------------
+    actions = config.ensure_user_config(data_root, setup_env.BASE_DIR)
+    say(f"[1/3] config seeded at {data_root} "
+        f"({', '.join(a.kind for a in actions) or 'already present'})")
+
+    # -- 2. llama.cpp --------------------------------------------------------
+    has_gpu, gpu_name = setup_env.detect_nvidia()
+    say(f"      GPU: {gpu_name or 'none detected (CPU build will be used)'}")
+    server = setup_env.find_llama_server()
+    if server:
+        say(f"[2/3] llama.cpp found: {server}")
+    else:
+        result, server = setup_env.install_llama_cpp(
+            data_root / "bin", has_gpu, confirm_unverified=False, say=say
+        )
+        if not server:
+            say(f"[2/3] FAILED: {result.message}")
+            return 1
+        say(f"[2/3] llama.cpp installed: {server}")
+    written = setup_env.write_settings_paths(
+        sys.executable, data_root, {"llama_cpp": server}
+    )
+    if not written.ok:
+        say(f"      FAILED to record path: {written.message}")
+        return 1
+
+    # -- 3. the user's models ------------------------------------------------
+    found = setup_env.find_local_models(say=say)
+    if not found:
+        say("[3/3] no local GGUF models found; use the Models page (or the "
+            "user's own files) to add some - setup itself is complete")
+        return 0
+    models_dir = data_root / "models"
+    imported = skipped = failed = 0
+    for entry in found:
+        location = setup_env.place_into_models_dir(entry["path"], models_dir)
+        mmproj_src = setup_env.pair_mmproj(entry["path"])
+        mmproj = (setup_env.place_into_models_dir(mmproj_src, models_dir)
+                  if mmproj_src else "")
+        result = setup_env.register_model_via_venv(
+            sys.executable,
+            {
+                "data_root": str(data_root),
+                "mmproj": mmproj,
+                "model_id": modelhub.registry_id_for(entry["name"]),
+                "name": Path(entry["name"]).stem,
+                "location": location,
+                "description": "Imported by headless agent setup.",
+                "notes": f"Found at {entry['path']} during agent setup scan.",
+            },
+        )
+        if result.ok:
+            imported += 1
+        elif "already exists" in result.message:
+            skipped += 1
+        else:
+            failed += 1
+            say(f"      {entry['name']}: {result.message[:100]}")
+    say(f"[3/3] models: {imported} imported, {skipped} already registered, "
+        f"{failed} failed")
+    say("")
+    say("Done. Verify with: launcher.py --health --json")
+    store = setup_env.ensure_model_store(say)
+    say(f"model store: {store.message}")
+    shim = setup_env.install_claude_local(say)
+    say(f"claude-local: {shim.message}")
+    say("Launch the desktop with: LOCITIZE.vbs")
+    return 0 if failed == 0 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,265 @@
+﻿# LOCITIZE platform settings - SHIPPED TEMPLATE (Architecture M14.2.2, DEC-M14-4).
+#
+# This file is the tracked template. It is never read at runtime and never
+# edited by you. On first run LOCITIZE copies it to your data root as settings.yaml
+# and that copy is the live file:
+#
+#   1. %LOCITIZE_DATA_DIR%            if the environment variable is set
+#   2. <install dir>/locitize-data/   if that directory exists (portable / dev mode;
+#                                  creating the folder is the entire opt-in)
+#   3. %LOCALAPPDATA%\LOCITIZE        otherwise (the normal install default)
+#
+# LOCALAPPDATA, not APPDATA: this tree holds logs, transcripts, chat databases,
+# fetched binaries, GGUF files and training outputs - tens of gigabytes of
+# machine-local data that must never be roamed onto an enterprise profile.
+#
+# Every machine-specific value below is EMPTY on purpose. An empty path means
+# "not configured yet", which is a legal state: the feature reports an honest
+# disabled status with a remedy instead of crashing or silently using someone
+# else's directory layout. Fill them in here in your own copy, or set the
+# matching LOCITIZE_* environment variable, which overrides the file.
+#
+# No secrets belong in this file - only paths, ports, thresholds and logging.
+# All managed services bind 127.0.0.1 only, within the reserved range 8080-8099.
+
+# Schema version. Bumped 1 -> 2 in M14 when the data root was introduced. A
+# version: 1 file still parses unchanged, so a downgrade is survivable.
+version: 2
+
+paths:
+  # Absolute paths to the external binaries and weights LOCITIZE supervises. All
+  # empty by default; the first-run setup fills them in, or you can.
+  llama_cpp: ""        # llama-server.exe            or LOCITIZE_LLAMACPP_PATH
+  whisper: ""          # whisper-server.exe          or LOCITIZE_WHISPER_PATH
+  whisper_model: ""    # ggml-*.bin weights          or LOCITIZE_WHISPER_MODEL_PATH
+  whisper_stream: ""   # whisper-stream.exe          or LOCITIZE_WHISPER_STREAM_PATH
+  kokoro: ""           # kokoro binary/dir           or LOCITIZE_KOKORO_PATH (optional)
+  kokoro_model: ""     # kokoro .pth checkpoint      or LOCITIZE_KOKORO_MODEL_PATH
+  kokoro_voices: ""    # dir of voice .pt files      or LOCITIZE_KOKORO_VOICES_PATH
+  venv: ""             # expected venv path; "" = detect the current interpreter
+  model_store: ""      # shared model folder ("" = the AI Models folder on the system drive)
+
+ports:
+  allocation: auto   # auto (increment within range on conflict) | strict (fail)
+  range_start: 8080
+  range_end: 8099
+  llama_cpp: 8080
+  whisper: 8091
+  kokoro: 8092
+  vision: 8094       # future service
+  scheduler: 8095    # future service
+  openwebui: 8096    # Open WebUI managed chat service; loopback only
+  router: 8093      # model router (OpenAI-compatible); loopback only
+
+thresholds:
+  ram_floor_mb: 8192       # WARNING below this available RAM
+  ram_hard_min_mb: 4096    # FAIL below this
+  disk_floor_mb: 20480     # WARNING below ~20GB free
+  disk_hard_min_mb: 2048   # FAIL below ~2GB free
+  vram_headroom_mb: 512    # required free VRAM above a model's estimate
+  python_min: "3.11"
+
+services:
+  ready_timeout_s: 60
+  stop_timeout_s: 10
+  llama_cpp_health_path: "/health"   # readiness endpoint; "" -> port/poll fallback
+  llama_cpp_metrics: true            # append --metrics to the llama.cpp argv so the
+                                     # GUI monitor can read /metrics; set false if a
+                                     # build rejects the flag (monitor degrades)
+
+gui:
+  monitor_interval_s: 1.5    # live-monitor poll cadence in seconds (range 1.0-2.0)
+  monitor_enabled: true      # show the live tokens/s + context panel at all
+  chat_open_browser: true    # Chat button opens the default browser (else shows URL)
+
+proxy:
+  # Optional locitize.local reverse proxy, OFF by default. The plain Chat button to
+  # 127.0.0.1:<port> always works and needs none of this.
+  enabled: false             # in-process loopback reverse proxy; default OFF
+  port: 8085                 # loopback proxy port (no elevation needed)
+  hostname: "locitize.local"    # friendly host; needs a manual/elevated hosts line
+  bind_port_80: false        # OPT-IN only; port 80 needs Administrator, never silent
+
+secure_proxy:
+  # Optional Caddy TLS proxy so chat opens at https://locitize.local with a padlock.
+  #
+  # OFF by default, deliberately (M14.2.6). Turning this on lets LOCITIZE install
+  # software with winget, write a proxy config, start a listener on 443, and add
+  # a root certificate to your current-user certificate store. None of that may
+  # ever happen to someone who merely started the app, so it is opt-in and stays
+  # opt-in. The hosts-file line (locitize.local -> 127.0.0.1) is the one elevated
+  # step LOCITIZE never performs itself; it reports a remedy instead.
+  enabled: false
+  hostname: "locitize.local"
+  caddy_path: ""             # empty = auto-discover on PATH / winget packages
+  caddyfile: ""              # empty = <data root>/Caddyfile
+  auto_install: true         # only consulted when enabled is true
+
+speech:
+  # whisper-stream live-capture tuning.
+  # stream_step_ms: 0 enables VAD mode -- transcribe only when speech is detected
+  #   and has ended, instead of transcribing every fixed window (which makes the
+  #   model hallucinate stock phrases like "Thank you." on silence). Leave at 0.
+  # vad_thold: voice-activity detection threshold (higher = stricter). Raise it if
+  #   background noise is transcribed; lower it if quiet speech is missed.
+  # freq_thold: high-pass cutoff in Hz that rejects low-frequency rumble.
+  stream_step_ms: 0
+  vad_thold: 0.60
+  freq_thold: 100.0
+  # Router-side filtering for Open WebUI microphone/call uploads. balanced is
+  # the safe default; strong removes more steady noise but may weaken quiet
+  # consonants; off forwards the original recording unchanged.
+  noise_suppression: "balanced"  # off | balanced | strong
+
+tts:
+  # Kokoro text-to-speech (voice OUT). The engine runs on CPU torch in a child
+  # process (kokoro_server.py) so it never contends with the LLM for GPU/VRAM.
+  enabled: true                    # false -> kokoro health probe WARNING, TTS off
+  voice: "am_michael"              # must name an on-disk voice .pt (see paths.kokoro_voices)
+  speed: 1.0                       # Kokoro speech-rate multiplier (> 0)
+  sample_sentence: "Hello, I am LOCITIZE. This is how this voice sounds."  # spoken by --audition
+  autoplay: true                   # speak() plays via winsound; false = synthesize-only
+  reply_lead_silence_ms: 120       # pad before the first word so the device can spin up;
+                                   # raise to 800-1500 for a sleeping Bluetooth speaker
+
+assistant:
+  # Built-in voice-assistant loop. Latency is MEASURED per turn, not promised.
+  system_prompt: "You are LOCITIZE, a concise local voice assistant."
+  response_reserve_tokens: 512   # ctx tokens kept free for the reply (must be > 0)
+  max_history_turns: 20          # hard cap on retained turns before the ctx-budget trim
+  speak_per_sentence: true       # stream + speak each sentence; false = wait-for-complete
+  # Voice mic capture strategy. push_to_talk (DEFAULT) feeds the assistant only
+  # during an Enter-opened window -- this removes ambient hallucination and
+  # self-echo runaway. continuous = legacy always-listening (fragile).
+  capture_mode: "push_to_talk"   # push_to_talk | continuous
+  max_capture_s: 15.0            # push_to_talk: hard cap on one capture window (s)
+  utterance_settle_s: 0.7        # push_to_talk: end-of-utterance inter-segment silence (s)
+  stt_mode: "vad"                # legacy tuning field (kept for compatibility)
+  listen_window_s: 15.0          # legacy tuning field (kept for compatibility)
+
+memory:
+  # Local, append-only conversation transcript store. NOT a vector DB.
+  enabled: true                  # false = no conversation persistence
+  dir: "memory"                  # relative to the data root; never escapes it
+  auto_recall: false             # true injects recent-N transcript into each turn
+  recall_recent_n: 6             # entries pulled by recent()/auto_recall
+  search_limit: 5                # max snippets returned by search()
+
+vision:
+  # Single-image vision Q&A. Uses a vision model plus its on-disk mmproj
+  # projector (set the mmproj path on that model row in models.yaml). Not video.
+  prompt: "Describe this image accurately."   # default question when --describe gives none
+
+logging:
+  level_console: INFO
+  level_file: DEBUG
+  max_bytes: 5000000
+  backup_count: 5
+  channels: [launcher, assistant, speech, llm, tts, benchmark, errors]
+
+launcher:
+  auto_journal: true       # append a journal entry on interactive exit
+  # Empty on purpose (M14.2.6): naming a model here that a fresh install does
+  # not have is a guaranteed first-run error. Set it to one of your own
+  # models.yaml ids once you have registered a model.
+  default_model: ""
+
+chat:
+  # Chat-UI chooser. LOCITIZE manages chat applications; it never rebuilds chat.
+  # preferred_ui is the persisted default the Chat button/menu uses:
+  #   ask       -> present the choice each time (llama.cpp built-in vs Open WebUI)
+  #   llamacpp  -> always open the built-in llama.cpp web UI (zero setup)
+  #   openwebui -> always open the managed Open WebUI service (rich chat, history)
+  # Default is openwebui (owner decision 2026-08-31): the rich chat is the
+  # experience LOCITIZE leads with. The chooser degrades HONESTLY when it
+  # is not installed - the built-in llama.cpp UI opens with the remedy
+  # named - and offers to start it when installed but not yet running.
+  preferred_ui: openwebui
+
+chat_harness:
+  # "Launch in..." picker (owner request 2026-08-21): opens Claude Code, Codex,
+  # or OpenCode in a new terminal, pointed at the running model, working on a
+  # project folder the same way those CLIs walk any other repo. last_project_dir
+  # is the folder the picker's browse dialog defaults to (remembered across
+  # launches); "" means never launched one yet, so the dialog opens with no
+  # default. Each harness CLI must already be installed and on PATH -- LOCITIZE
+  # never installs one for you; a missing CLI just greys out that option.
+  last_project_dir: ""
+
+openwebui:
+  # Open WebUI as an optional managed loopback chat service, installed into a
+  # dedicated venv so its heavy, version-fragile deps never touch the platform
+  # venv. It is pointed at the running llama.cpp server (OpenAI-compatible
+  # backend) and supervised by the same lifecycle as every other LOCITIZE service.
+  #
+  # OFF by default: it is separately licensed third-party software with its own
+  # terms, and installing it is the user's decision, not a side effect of
+  # starting LOCITIZE.
+  enabled: false
+  venv: ".webui-venv"           # dedicated venv dir under the data root
+  data_dir: "webui-data"        # under the data root; private like memory/
+  ready_timeout_s: 300          # first boot migrates its DB; longer than the global 60s
+  backend_base_url: ""          # "" -> derive http://127.0.0.1:<ports.llama_cpp>/v1 at start
+  disable_embedding_fetch: true # default-safe: suppress the first-run RAG embedding download
+  # Call mode: how long (ms) to wait after you stop talking before sending.
+  # 2000 is Open WebUI's own fixed value; a smaller number is rewritten into
+  # the installed bundle at start (300..5000). 1000 feels like a conversation.
+  call_silence_ms: 2000
+  # Call mode: speak over the reply to stop it. Browser echoCancellation is
+  # already on. Speaker-phone echo can still false-trigger; use a headset.
+  voice_interruption: true
+
+finetune:
+  # The QLoRA fine-tuning studio ships vendored inside this repo at
+  # Codebase/finetune-studio, supervised as a managed loopback service, plus
+  # discovery of the .gguf models it produces. Works out of the box on a fresh
+  # clone with no external checkout required.
+  enabled: true                 # true lets the Fine-tune page start the studio
+  studio_dir: ""                # "" -> the bundled Codebase/finetune-studio copy (or LOCITIZE_FINETUNE_STUDIO_DIR for a different checkout)
+  outputs_dir: ""               # "" -> <data root>/finetune/outputs (DEC-M14-9); or LOCITIZE_FINETUNE_OUTPUTS_DIR
+  python: ""                    # "" -> autodetect the studio's own venv interpreter
+  app_path: "app/app.py"        # Streamlit entry script, relative to studio_dir
+  port: 8501                    # loopback port (or LOCITIZE_PORTS_FINETUNE)
+  ready_timeout_s: 60           # readiness window for the Streamlit server
+  autostart: false              # RESERVED, NOT IMPLEMENTED - nothing reads this key yet
+  open_browser: true            # open the studio URL in your browser on Open
+  discovery_enabled: true       # scanning works even when the studio is not running
+  default_context_size: 8192    # serving default for a discovered model
+  default_gpu_layers: 999       # serving default for a discovered model
+  active_run_window_s: 120      # a train.log written this recently means a run is live
+
+models_hub:
+  # The Models page's "Get models" section: browse a shipped catalog, search
+  # HuggingFace, and download one verified .gguf into your data root.
+  #
+  # LOCITIZE contacts huggingface.co ONLY when you press Search, select a
+  # repository, or confirm a download. Never at startup, never on a timer,
+  # never in the background. Set enabled: false and no network call is
+  # reachable from this feature at all.
+  #
+  # No HuggingFace account is used or supported. Models behind a licence you
+  # must accept return an honest "download it in your browser and Register it"
+  # message instead - LOCITIZE stores no credentials of any kind.
+  enabled: true
+  # Settable here and nowhere else (DEC-M14-10): the environment override was
+  # removed, because a key that decides WHO LOCITIZE talks to must be changed in a
+  # file you own and can audit. A value naming a host outside allowed_hosts is
+  # still refused, so pointing LOCITIZE at a mirror takes two deliberate edits.
+  api_base: "https://huggingface.co"
+  # Host allowlist, re-checked on EVERY redirect hop. A host matches when it
+  # equals an entry or is a subdomain of one (real downloads redirect to
+  # *.hf.co CDN hosts). Edit here only - there is deliberately no environment
+  # variable that can widen this list.
+  allowed_hosts: ["huggingface.co", "hf.co"]
+  search_limit: 100             # results per Search press
+  search_timeout_s: 15          # per-request timeout for search/listing
+  catalog_path: ""              # "" -> the installed model_catalog.json
+  download_dir: ""              # "" -> <data root>/models
+  min_free_disk_headroom_mb: 2048  # free space needed BEYOND the model's own size
+  # RESERVED, NOT IMPLEMENTED YET. Resuming a cancelled download (a .partial
+  # plus a sidecar, per Architecture M14.14.3) is designed but not built, so
+  # nothing reads this key today: a cancelled download is deleted and starts
+  # again from the beginning. Declared now so finishing it later is not a
+  # breaking settings change.
+  resume_enabled: false
+  register_on_complete: true    # default state of the "add to my model list" box

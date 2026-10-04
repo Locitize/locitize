@@ -1,0 +1,50 @@
+# LOCITIZE model registry - SHIPPED TEMPLATE (Architecture M14.2.2, DEC-M14-4).
+#
+# This file is the tracked template. It is never read at runtime. On first run
+# LOCITIZE copies it to your data root as models.yaml, and that copy is the live
+# registry (see settings.default.yaml's header for how the data root is found).
+#
+# It ships with ZERO model rows, on purpose. A registry row is a claim that a
+# specific file exists on this machine. Shipping rows that point at files you do
+# not have would be fabricated data: every model would show up in the UI, and
+# every one of them would fail to launch. An empty registry is the honest state
+# for a machine with no models yet - the UI says so and tells you how to add one.
+#
+# How to add a model (any one of these):
+#   - run the first-run setup and point it at a model file;
+#   - use the Register action in the LOCITIZE window;
+#   - or copy the commented example below into the `models:` list and edit it.
+#
+# No secrets: `location` is a filesystem path only, never a URL with a token.
+#
+# status: installed = on disk, shown and launchable; future = declared, not yet
+# available; disabled = hidden.
+
+version: 1
+
+# Zero rows. The loader reads this key; everything below it is a comment and is
+# never parsed, so the example cannot become a phantom model.
+models: []
+
+# ---------------------------------------------------------------------------
+# EXAMPLE ROW - COMMENTED OUT, NEVER PARSED. Copy it under `models:` above,
+# remove the leading "# ", and replace every value with your own.
+# ---------------------------------------------------------------------------
+#
+# models:
+#   - id: my-model                      # unique, lowercase, used on the command line
+#     name: "My Model 14B"              # display name in the UI
+#     description: "What this model is good at."
+#     location: ""                      # full path to the .gguf on YOUR machine,
+#                                       # or set LOCITIZE_MODEL_MY_MODEL instead
+#     context_size: 16384               # tokens of context to serve
+#     gpu_layers: 999                   # 999 = offload everything, -1 = all, 0 = CPU only
+#     recommended_prompt: "You are a concise, helpful assistant."
+#     benchmark_score: null             # filled in by the benchmark runner
+#     notes: "Anything you want to remember about this model."
+#     status: installed                 # installed | future | disabled
+#     quantization: "Q5_K_M"
+#     vram_estimate_mb: 10000           # rough VRAM need; checked against free VRAM
+#     server_args: ["--parallel", "1"]  # extra llama-server flags
+#     # ready_timeout_s: 240            # optional: longer cold-load window for a big model
+#     # mmproj: ""                      # optional: vision projector .gguf path

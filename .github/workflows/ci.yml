@@ -1,0 +1,47 @@
+# LOCITIZE CI (M15.8): the full test suite on a machine that is not the
+# owner's. Windows runner because the platform is Windows-first - the service
+# supervision, the batch launcher, and the path gates all have nt-only tests
+# that silently skip elsewhere and must NOT skip here.
+name: ci
+
+# Least-privilege token: this job only reads the tree and runs tests.
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The path-hygiene gates (verify_no_owner_paths, ship-set, write
+          # fence) compare the git index against the working tree, so they
+          # need real history metadata, not a bare export.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: platform/requirements.txt
+
+      - name: Install dependencies
+        working-directory: platform
+        # requirements.txt carries the CPU torch index and exact pin inline,
+        # so a plain install cannot silently pull the multi-gigabyte CUDA
+        # build here either (same reasoning as the file documents).
+        run: pip install -r requirements.txt
+
+      - name: Compile check
+        working-directory: platform
+        run: python -m compileall . -q
+
+      - name: Test suite
+        working-directory: platform
+        run: python -m pytest -q

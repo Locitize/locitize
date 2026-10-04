@@ -1,0 +1,37 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+# The dedicated Open WebUI venv (open-webui + its heavy deps). Isolated from
+# the platform venv and never committed, exactly like .venv/.
+.webui-venv/
+.env
+speech.wav
+utterance.wav
+logs/*.log
+dist/
+build/
+*.egg-info/
+
+# Local-only directories some development machines carry at the repo root.
+# None of them are part of the product (platform/ imports nothing from them);
+# these guards keep a stray local folder from ever being committed.
+/src/
+/apps/
+/tests/
+/migrations/
+/docs/
+/data/
+/_Code Views/
+/alembic.ini
+/pyproject.toml
+/uv.lock
+/locitize-data/
+
+# Machine-local secrets and scratch output that must never be published.
+.webui_secret_key
+/_*
+/desktop-reload-*

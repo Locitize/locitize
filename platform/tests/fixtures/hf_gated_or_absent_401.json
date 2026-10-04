@@ -1,0 +1,29 @@
+{
+  "status": 401,
+  "reason": "Unauthorized",
+  "headers": {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": "41",
+    "Connection": "close",
+    "Date": "Wed, 19 Aug 2026 11:17:07 GMT",
+    "ETag": "W/\"29-dEMcHWfJi78ZR1aqzb1ELAhp3Us\"",
+    "X-Powered-By": "huggingface-moon",
+    "X-Request-Id": "Root=1-6a8590b3-30f7767824153eda24dbdca5",
+    "RateLimit": "\"api\";r=495;t=237",
+    "RateLimit-Policy": "\"fixed window\";\"api\";q=500;w=300",
+    "cross-origin-opener-policy": "same-origin",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Access-Control-Max-Age": "86400",
+    "Access-Control-Allow-Origin": "https://huggingface.co",
+    "Vary": "Origin",
+    "Access-Control-Expose-Headers": "X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash",
+    "X-Error-Message": "Invalid username or password.",
+    "WWW-Authenticate": "Bearer realm=\"Authentication required\", charset=\"UTF-8\"",
+    "X-Cache": "Error from cloudfront",
+    "Via": "1.1 7339fd9bf4f43b35e9f6e9d82d006322.cloudfront.net (CloudFront)",
+    "X-Amz-Cf-Pop": "DFW59-P5",
+    "Alt-Svc": "h3=\":443\"; ma=86400",
+    "X-Amz-Cf-Id": "eblJ9Q5v6w3w5M5DYo1ppOqj5qO-kvcDaYGx-wH9xrax4UEhwBiDFA=="
+  },
+  "body": "{\"error\":\"Invalid username or password.\"}"
+}

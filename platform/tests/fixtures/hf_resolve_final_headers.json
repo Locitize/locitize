@@ -1,0 +1,20 @@
+{
+  "status": 200,
+  "final_url": "https://us.aws.cdn.hf.co/xet-bridge-us/6a7d8038d813eea1a14a8db4/4c86fb6ff254d074f281ae9793cfe9da692263a486716d51e865a47981199be2?user_id=public&response-content-disposition=inline%3B+filename*%3DUTF-8%27%27Qwen3.8-27B-IQ4_NL.gguf%3B+filename%3D%22Qwen3.8-27B-IQ4_NL.gguf%22%3B&X-Xet-Cas-Uid=public&Expires=1787141827&Policy=eyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly91cy5hd3MuY2RuLmhmLmNvL3hldC1icmlkZ2UtdXMvNmE3ZDgwMzhkODEzZWVhMWExNGE4ZGI0LzRjODZmYjZmZjI1NGQwNzRmMjgxYWU5NzkzY2ZlOWRhNjkyMjYzYTQ4NjcxNmQ1MWU4NjVhNDc5ODExOTliZTJcXD91c2VyX2lkPXB1YmxpYyZyZXNwb25zZS1jb250ZW50LWRpc3Bvc2l0aW9uPWlubGluZSUzQitmaWxlbmFtZSUyQSUzRFVURi04JTI3JTI3UXdlbjMuOC0yN0ItSVE0X05MLmdndWYlM0IrZmlsZW5hbWUlM0QlMjJRd2VuMy44LTI3Qi1JUTRfTkwuZ2d1ZiUyMiUzQiZYLVhldC1DYXMtVWlkPXB1YmxpYyIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiRXBvY2hUaW1lIjoxNzg3MTQxODI3fX19XX0_&Signature=MEYCIQCgB%7Ejg3EH-I1LpxmZ7jIUPtqDKZivhbswQOY4CqWviOQIhAPoZaZmDeYFUNKUB%7EMuPutfo%7EsZfLZ-KQyjGCMSpVJvW&Key-Pair-Id=01KXEF4KZ1B6FV465MAWR4M21F",
+  "headers": {
+    "content-type": "application/octet-stream",
+    "accept-ranges": "bytes",
+    "content-disposition": "inline; filename*=UTF-8''Qwen3.8-27B-IQ4_NL.gguf; filename=\"Qwen3.8-27B-IQ4_NL.gguf\";",
+    "etag": "\"4c86fb6ff254d074f281ae9793cfe9da692263a486716d51e865a47981199be2\"",
+    "access-control-allow-headers": "Content-Range, Content-Type, Content-Disposition, ETag",
+    "access-control-expose-headers": "*",
+    "content-length": "16337628128",
+    "vary": "origin, access-control-request-method, access-control-request-headers",
+    "access-control-allow-origin": "*",
+    "x-request-id": "01M0CVTFB05Q4SHF7DJM3V0QG8",
+    "x-hf-cdn-pop": "aws-us-east-1",
+    "date": "Wed, 19 Aug 2026 11:17:07 GMT",
+    "alt-svc": "h3=\":443\";ma=60;",
+    "connection": "close"
+  }
+}
