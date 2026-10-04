@@ -6,18 +6,19 @@
 ' shows only the desktop window, with zero console flash. All launch logic still
 ' lives in LOCITIZE.bat; this only changes WHETHER a console is shown.
 '
-' It stays visible on purpose in the two cases where console output matters:
-'   - first run (no virtual environment yet): the setup wizard and any
-'     "install Python first" message must be seen, not swallowed.
-'   - an explicit argument (--setup / --terminal): the terminal menu and the
-'     wizard need a real console to read from and write to.
-' Only a bare double-click on an already-set-up install launches hidden.
+' The setup wizard is a window of its own, so first run and --setup launch
+' hidden too - a new user sees only the installer. The one message the console
+' used to carry ("install Python first") is shown here as a dialog instead,
+' before anything is launched.
+'
+' The console stays visible only where a person types into it:
+'   --terminal (the text menu) and --uninstall (asks for confirmation).
 '
 ' Any arguments are forwarded to LOCITIZE.bat, so "LOCITIZE.vbs --terminal" and
-' "LOCITIZE.vbs --setup" behave like the batch equivalents (and stay visible).
+' "LOCITIZE.vbs --setup" behave like the batch equivalents.
 Option Explicit
 
-Dim shell, fso, here, bat, i, cmdLine, style, venvUp, venvHere
+Dim shell, fso, here, bat, i, cmdLine, style, venvUp, venvHere, firstArg
 
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
@@ -35,14 +36,31 @@ For i = 0 To WScript.Arguments.Count - 1
 Next
 cmdLine = cmdLine & """"
 
-' Hide the console only for a plain, already-set-up launch. The venv lives at
-' ..\.venv (normal, alongside platform\) or .venv (flat checkout).
+' The venv lives at ..\.venv (normal, alongside platform\) or .venv (flat
+' checkout). Without one, LOCITIZE.bat runs the wizard on the system Python.
 venvUp = fso.FileExists(fso.GetParentFolderName(here) & "\.venv\Scripts\python.exe")
 venvHere = fso.FileExists(here & "\.venv\Scripts\python.exe")
-If WScript.Arguments.Count = 0 And (venvUp Or venvHere) Then
-    style = 0   ' hidden window - no console flash
+firstArg = ""
+If WScript.Arguments.Count > 0 Then firstArg = LCase(WScript.Arguments(0))
+
+' Setup runs on bare "python". On stock Windows that may be missing or only the
+' Microsoft Store alias (which fails --version), so check it here, hidden, and
+' explain in a dialog - the hidden console could not show the message.
+If (Not (venvUp Or venvHere)) Or firstArg = "--setup" Then
+    If shell.Run("cmd /c python --version", 0, True) <> 0 Then
+        MsgBox "LOCITIZE needs Python 3.11 or newer, which this machine does not have yet." & vbCrLf & vbCrLf & _
+               "1. Install it from https://www.python.org/downloads/" & vbCrLf & _
+               "   (tick ""Add python.exe to PATH"" in the installer)" & vbCrLf & _
+               "2. Double-click LOCITIZE.vbs again.", vbInformation, "LoCiTiZe setup"
+        shell.Run "https://www.python.org/downloads/", 1, False
+        WScript.Quit 1
+    End If
+End If
+
+If firstArg = "--terminal" Or firstArg = "--uninstall" Then
+    style = 1   ' visible - these read from the keyboard
 Else
-    style = 1   ' visible - first-run setup, or an explicit --setup / --terminal
+    style = 0   ' hidden - the desktop and the setup wizard are windows of their own
 End If
 
 ' bWaitOnReturn False = launch and return at once so the launcher keeps running

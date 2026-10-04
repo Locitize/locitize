@@ -983,10 +983,16 @@ def run() -> int:
     try:
         root = tk.Tk()
     except tk.TclError as exc:
-        sys.stderr.write(
+        message = (
             f"LOCITIZE setup could not open a window ({exc}). "
-            f"Run 'LOCITIZE.bat --terminal' to set up from the terminal.\n"
+            f"Run 'LOCITIZE.bat --terminal' to set up from the terminal."
         )
+        sys.stderr.write(message + "\n")
+        # The launcher hides the console, so stderr alone could go unseen.
+        if sys.platform == "win32":
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(None, message, WINDOW_TITLE, 0x10)
         return 2
     SetupWizard(root)
     root.mainloop()

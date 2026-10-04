@@ -4458,9 +4458,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._edit_error.setText(f"setup launcher not found at {bat}")
             return
         try:
+            # No console window: the wizard is a window of its own.
             subprocess.Popen(
-                ["cmd", "/c", "start", "LOCITIZE setup", str(bat), "--setup"],
+                ["cmd", "/c", str(bat), "--setup"],
                 cwd=str(bat.parent),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             self._feature_state_note.setText(
                 "setup wizard opened in its own window; restart LOCITIZE after "

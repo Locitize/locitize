@@ -282,17 +282,18 @@ def test_run_desktop_import_failures_are_accurate_and_clean(
 
 def test_vbs_launcher_ships_and_delegates_to_the_bat():
     """M17.12: the official no-console launcher exists next to LOCITIZE.bat,
-    delegates to it, and hides the console ONLY for a plain, already-set-up
-    launch (args or a missing venv keep it visible for setup/terminal output)."""
+    delegates to it, and hides the console for the desktop AND the setup
+    wizard; only --terminal / --uninstall (keyboard input) stay visible, and a
+    missing Python is explained in a dialog instead of the hidden console."""
     vbs = Path(__file__).parents[1] / "LOCITIZE.vbs"
     assert vbs.is_file()
     text = vbs.read_text(encoding="utf-8")
     assert "LOCITIZE.bat" in text          # reuses all batch launch logic
     assert "shell.Run" in text             # launches via WScript.Shell.Run
-    # Hidden (style 0) only when there are no args AND a venv exists; else visible.
     assert "style = 0" in text
     assert "style = 1" in text
-    assert "WScript.Arguments.Count = 0" in text
+    assert 'firstArg = "--terminal" Or firstArg = "--uninstall"' in text
+    assert "MsgBox" in text and "python --version" in text
 
 
 def test_create_desktop_shortcut_skips_when_vbs_absent(tmp_path, monkeypatch):
