@@ -38,7 +38,7 @@ from typing import Callable
 import setup_env
 import setup_plan
 
-WINDOW_TITLE = "LOCITIZE setup"
+WINDOW_TITLE = "LoCiTiZe setup"
 PAD = 12
 
 # M18.5 (wizard polish): the same dark palette as the Qt desktop, so the first
@@ -51,6 +51,37 @@ MUTED = "#9aa0a6"     # secondary text
 ACCENT = "#4f8cff"    # primary action / step eyebrow
 ACCENT_HOVER = "#67a0ff"
 STEPS_TOTAL = 4
+
+# The logo wordmark, letter by letter: capitals carry the icon's blue-to-violet
+# gradient, lowercase is the icon's near-white (sampled from
+# assets/locitize_icon_1024.png).
+WORDMARK: tuple[tuple[str, str], ...] = (
+    ("L", "#5dacfe"), ("o", "#e9e9ea"), ("C", "#699ffd"), ("i", "#e9e9ea"),
+    ("T", "#7196fe"), ("i", "#e9e9ea"), ("Z", "#8087fe"), ("e", "#e9e9ea"),
+)
+
+
+def _wordmark_title(parent: tk.Misc, lead: str) -> tk.Text:
+    """A heading of `lead` followed by the LoCiTiZe wordmark in the logo's colors.
+
+    A one-line read-only Text, because a Label has one color and the wordmark
+    needs one per letter.
+    """
+    plain = ("Segoe UI", 16, "bold")
+    brand = ("Segoe UI", 16, "bold italic")
+    letters = "".join(ch for ch, _ in WORDMARK)
+    text = tk.Text(
+        parent, height=1, width=len(lead) + len(letters) + 1, wrap="none",
+        background=BG, foreground=INK, font=plain, borderwidth=0,
+        highlightthickness=0, relief="flat", cursor="arrow", takefocus=0,
+    )
+    text.insert("end", lead)
+    for index, (ch, color) in enumerate(WORDMARK):
+        tag = f"wordmark{index}"
+        text.tag_configure(tag, foreground=color, font=brand)
+        text.insert("end", ch, tag)
+    text.configure(state="disabled")
+    return text
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -208,13 +239,21 @@ class SetupWizard:
         return self._frame
 
     def _heading(
-        self, parent: tk.Misc, title: str, subtitle: str, step: int | None = None
+        self,
+        parent: tk.Misc,
+        title: str,
+        subtitle: str,
+        step: int | None = None,
+        wordmark: bool = False,
     ) -> None:
         if step is not None:
             ttk.Label(
                 parent, text=f"STEP {step} OF {STEPS_TOTAL}", style="Step.TLabel"
             ).pack(anchor="w", pady=(0, 2))
-        ttk.Label(parent, text=title, font=("Segoe UI", 16, "bold")).pack(anchor="w")
+        if wordmark:
+            _wordmark_title(parent, title).pack(anchor="w")
+        else:
+            ttk.Label(parent, text=title, font=("Segoe UI", 16, "bold")).pack(anchor="w")
         ttk.Label(
             parent, text=subtitle, wraplength=700, justify="left",
             style="Muted.TLabel",
@@ -224,10 +263,11 @@ class SetupWizard:
         body = self._clear()
         self._heading(
             body,
-            "Welcome to LOCITIZE",
+            "Welcome to ",
             "Download it. Locitize it. Talk to it. Everything runs on this machine "
             "- no cloud call, no API key, nothing leaves the machine.",
             step=1,
+            wordmark=True,
         )
         status = ttk.Label(body, text="Checking what this machine already has...")
         status.pack(anchor="w")
