@@ -2571,15 +2571,48 @@ class GuiController:
             )
         except Exception as exc:  # noqa: BLE001 - never let ensure kill chat open
             ok, message = False, f"secure proxy check failed: {exc}"
+        candidates = []
         if ok:
-            url = f"https://{hostname}/"
+            candidates.append(f"https://{hostname}/")
         else:
             self.result_q.put(Result("chat_status", True, {"message": message}))
             if self._friendly_openwebui_listening(443):
-                url = f"https://{hostname}/"
+                candidates.append(f"https://{hostname}/")
             elif self._friendly_openwebui_listening(80):
-                url = f"http://{hostname}/"
+                candidates.append(f"http://{hostname}/")
+        # Something answering on the friendly name is not proof it is Open WebUI:
+        # another local app (an Agent Portal's own Caddy, say) can own that name
+        # too, and Chat then opened the wrong app. Use it only when it really
+        # serves Open WebUI's health answer; otherwise the plain loopback URL.
+        for candidate in candidates:
+            if self._serves_openwebui(candidate):
+                url = candidate
+                break
         self._open_url(url, reason=reason)
+
+    @staticmethod
+    def _serves_openwebui(base_url: str) -> bool:
+        """True when base_url answers Open WebUI's /health with {"status": true}.
+
+        Loopback-only by construction (callers pass the locitize.local name,
+        already checked to resolve to this machine). Certificate checks are
+        skipped because the friendly name uses a local authority; this probe
+        sends nothing and only reads the status flag.
+        """
+        import json
+        import ssl
+        import urllib.request
+
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        try:
+            with urllib.request.urlopen(  # noqa: S310 - loopback name only
+                base_url.rstrip("/") + "/health", timeout=2, context=context
+            ) as resp:
+                return json.loads(resp.read(256).decode("utf-8")).get("status") is True
+        except Exception:  # noqa: BLE001 - any failure means "not Open WebUI"
+            return False
 
     def _friendly_openwebui_listening(self, port: int) -> bool:
         """True if locitize.local answers on the given port (hosts + proxy intact).

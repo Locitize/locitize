@@ -2184,3 +2184,23 @@ def test_a_failed_open_webui_start_reports_why_and_does_not_open_llamacpp():
     assert len(errors) == 2
     assert "port 8096 is in use" in errors[0]
     assert "did not become ready" in errors[1]
+
+
+def test_chat_never_opens_a_friendly_name_that_is_not_open_webui(monkeypatch):
+    """locitize.local answering is not enough: another app (an Agent Portal's
+    Caddy) can own the name. Chat opens it only when it serves Open WebUI."""
+    import secure_proxy
+
+    gc = _controller()
+    opened = []
+    gc._open_url = lambda url, reason="": opened.append(url)
+    monkeypatch.setattr(secure_proxy, "ensure", lambda settings, notify=None: (True, "ok"))
+
+    gc._serves_openwebui = lambda url: False
+    gc._open_openwebui()
+    gc._serves_openwebui = lambda url: True
+    gc._open_openwebui()
+
+    port = gc._settings.ports.openwebui
+    hostname = gc._settings.secure_proxy.hostname
+    assert opened == [f"http://127.0.0.1:{port}/", f"https://{hostname}/"]
