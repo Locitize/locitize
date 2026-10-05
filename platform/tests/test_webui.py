@@ -215,6 +215,7 @@ def test_openwebui_spec_backend_and_data_env(tmp_path):
     """The env wires llama.cpp as the OpenAI backend and DATA_DIR under the data root."""
     settings = _fake_codebase(tmp_path)
     settings.ports.llama_cpp = 8080
+    settings.router.enabled = False  # the direct llama-server wiring under test
     spec = build_openwebui_spec(settings, "x.log")
     assert spec.env["OPENAI_API_BASE_URL"] == "http://127.0.0.1:8080/v1"
     assert spec.env["OPENAI_API_BASE_URLS"] == "http://127.0.0.1:8080/v1"
@@ -1152,7 +1153,7 @@ def test_call_defaults_are_reconciled_before_open_webui_starts():
 
     import launcher
 
-    src = inspect.getsource(launcher.Launcher._start_openwebui)
+    src = inspect.getsource(launcher.Launcher._start_openwebui_now)
     for call in ("reconcile_voice_interruption(settings)", "reconcile_call_silence(settings)",
                  "reconcile_call_audio_playback(settings)",
                  "reconcile_frontend_version(settings)", "reconcile_default_model(settings)"):
@@ -1224,7 +1225,7 @@ def test_start_openwebui_never_upgrades_and_always_health_checks():
 
     import launcher
 
-    src = inspect.getsource(launcher.Launcher._start_openwebui)
+    src = inspect.getsource(launcher.Launcher._start_openwebui_now)
     assert "upgrade_openwebui" not in src
     assert "pip" not in src
     assert "controller.start()" in src

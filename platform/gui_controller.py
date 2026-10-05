@@ -2363,10 +2363,18 @@ class GuiController:
 
         installed = webui_available(self._settings)
         ready = installed and self._openwebui_listening()
+        # With the router on, Open WebUI lists every model and loading one is a
+        # pick in its own picker - so Open WebUI needs no model running first.
+        # The built-in llama.cpp page still does (it IS the running model).
+        router_on = bool(getattr(getattr(self._settings, "router", None), "enabled", False))
+        preferred = (self._settings.chat.preferred_ui or "").strip().lower()
+        backend_ready = self._active_port is not None or (
+            router_on and installed and preferred == "openwebui"
+        )
         resolution = resolve_chat_choice(
             preferred=self._settings.chat.preferred_ui,
             cli_override=None,
-            model_running=self._active_port is not None,
+            model_running=backend_ready,
             webui_installed=installed,
             webui_ready=ready,
         )

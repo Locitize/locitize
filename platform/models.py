@@ -347,7 +347,11 @@ class ModelRegistry:
             port=port,
             health_path=engine.health_path(s),
             ready_timeout_s=ready_timeout,
-            stop_timeout_s=s.services.stop_timeout_s,
+            # A model server holds nothing worth a graceful shutdown, and
+            # llama-server ignores the polite stop on Windows anyway, so the
+            # full grace period was pure waiting on every model swap (measured
+            # ~11s to drop a model). One second, then the forced stop.
+            stop_timeout_s=min(1.0, s.services.stop_timeout_s),
             # D-M4-3: keep the llama.cpp child log across starts so a failed start's
             # trace is not overwritten by the next attempt (this is the evidence the
             # D-M4-1 investigation needed).

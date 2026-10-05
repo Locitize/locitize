@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -427,6 +428,7 @@ class Launcher:
         # owner happened to click Chat - so a browser already open on Open WebUI,
         # or any other OpenAI-compatible client, found nothing listening.
         self._ensure_router(settings)
+        self._start_openwebui_in_background(settings)
 
         import atexit
 
@@ -539,6 +541,7 @@ class Launcher:
         # owner happened to click Chat - so a browser already open on Open WebUI,
         # or any other OpenAI-compatible client, found nothing listening.
         self._ensure_router(settings)
+        self._start_openwebui_in_background(settings)
 
         import atexit
 
@@ -1578,12 +1581,50 @@ class Launcher:
             router.stop()
             self._router = None
 
+    def _start_openwebui_in_background(self, settings: Any) -> None:
+        """Start Open WebUI when the app opens, so Chat opens it at once.
+
+        Open WebUI takes 20-30 seconds to start; paying that on every Chat click
+        made Chat feel broken. Started here, on a background thread, it is
+        usually ready before the owner reaches for Chat. No model is loaded:
+        with the router on, picking one in Open WebUI loads it.
+        """
+        from webui import webui_available
+
+        try:
+            available = webui_available(settings)
+        except Exception:  # noqa: BLE001 - a partial settings object: no early start
+            return
+        if not available:
+            return
+        threading.Thread(
+            target=self._start_openwebui,
+            args=(settings,),
+            name="openwebui-start",
+            daemon=True,
+        ).start()
+
     def _start_openwebui(self, settings: Any) -> bool:
+        """Start Open WebUI once; True if it is (or became) ready.
+
+        Serialised: the background start at app launch and a Chat click can
+        overlap, and two starts would kill each other's process. A caller that
+        waited finds the first start's server answering /health and returns.
+        """
+        lock = self.__dict__.setdefault("_openwebui_start_lock", threading.Lock())
+        with lock:
+            from webui import wait_openwebui_healthy
+
+            if wait_openwebui_healthy(int(settings.ports.openwebui), timeout_s=0.5):
+                return True
+            return self._start_openwebui_now(settings)
+
+    def _start_openwebui_now(self, settings: Any) -> bool:
         """Start the Open WebUI service on the shared manager; True if it went ready.
 
         Reuses the shared ServiceManager so the atexit/finally stop_all covers Open
-        WebUI too (no orphan on menu quit). If a service is already listening on the
-        port, treats it as ready. Returns False (honest degrade) on any failure.
+        WebUI too (no orphan on menu quit). Returns False (honest degrade) on any
+        failure.
         """
         from services import ServiceStatus
         from webui import build_openwebui_spec

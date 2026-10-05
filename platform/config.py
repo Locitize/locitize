@@ -339,14 +339,14 @@ class RouterConfig:
     of straight at llama-server, so its picker lists every registered model and
     choosing one switches what LOCITIZE serves on the GPU.
 
-    OFF by default on purpose. The router runs INSIDE the process that owns the
-    ModelController, so a chat UI pointed at it while no LOCITIZE session is up
-    would find nothing listening - whereas the direct llama-server URL keeps
-    working for anyone who starts a model by other means. Enabling it is a
-    deliberate choice to route chat through LOCITIZE.
+    ON by default: Open WebUI is the default chat and the app starts it with
+    the router, so its picker lists every model and picking one loads it - the
+    same setup Agent Portal runs. The router lives inside the app's process, so
+    a chat UI pointed at it needs the app open; set enabled: false to point Open
+    WebUI straight at whatever llama-server is running instead.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     # Owner request 2026-09-03: add a short system note when a conversation
     # changes model mid-flight, telling the incoming model that the earlier
     # assistant turns are another model's words. Without it a switched-to model

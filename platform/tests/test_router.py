@@ -276,18 +276,17 @@ def test_the_router_reads_the_registry_fresh_on_every_request():
 
 
 def test_open_webui_is_pointed_at_the_router_only_when_it_is_enabled():
-    """The direct llama-server URL stays the default: the router lives inside the
-    process that owns the ModelController, so a chat UI pointed at it while no
-    LOCITIZE session runs would find nothing listening."""
+    """The router is the default (Open WebUI lists every model and picking one
+    loads it); turning it off points Open WebUI straight at llama-server."""
     import webui
 
     settings = Settings()
-    assert settings.router.enabled is False
+    assert settings.router.enabled is True
+    assert webui.backend_base_url(settings).endswith(f":{settings.ports.router}/v1")
+    settings.router.enabled = False
     assert webui.backend_base_url(settings).endswith(
         f":{settings.ports.llama_cpp}/v1"
     )
-    settings.router.enabled = True
-    assert webui.backend_base_url(settings).endswith(f":{settings.ports.router}/v1")
 
 
 def test_an_explicit_backend_base_url_still_wins_over_the_router():
@@ -357,7 +356,7 @@ def test_the_router_block_is_reported_in_the_settings_dump():
 
     dump = settings_to_dict(Settings(), redact=True)
     assert "router" in dump
-    assert dump["router"]["enabled"] is False
+    assert dump["router"]["enabled"] is True
 
 
 def test_the_router_binds_the_session_controller_not_any_built_one():
@@ -387,7 +386,7 @@ def test_the_router_is_started_before_open_webui():
 
     import launcher
 
-    src = inspect.getsource(launcher.Launcher._start_openwebui)
+    src = inspect.getsource(launcher.Launcher._start_openwebui_now)
     # Compared against the CALL, not the "from webui import" line at the top of
     # the method - that import always sorts first and would pass vacuously.
     assert src.index("_ensure_router") < src.index("build_openwebui_spec(settings")
