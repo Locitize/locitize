@@ -3,27 +3,36 @@
 Run local AI and continue your coding work from one Windows desktop.
 
 locitize combines model management, local coding sessions, chat, voice, vision,
-and fine-tuning. Session Portal's local readers now live inside locitize's native
+and (experimental) fine-tuning. Session Portal's local readers now live inside locitize's native
 Sessions page. There is one product to install.
 
-## Install the unsigned beta
+## Install in 3 steps
 
-1. Extract the complete locitize release ZIP to a folder.
-2. Run **Install locitize.bat**. It verifies the included file hashes, installs
-   under your user account, and creates Desktop and Start menu shortcuts.
-3. Open **locitize**. The first-run wizard guides model discovery and optional
-   component installation. No separate Python installation is needed.
-4. Open Models, select an installed GGUF, and start it. Check health before
-   launching a coding session.
+1. **Download** `locitize-1.0.4-windows.zip` from the
+   [latest release](https://github.com/locitize/locitize/releases/latest) and
+   extract it to a folder. Python is included - nothing else to install first.
+2. **Double-click `Install locitize.bat`.** It checks every file, installs under
+   your user account (no admin needed) and adds Desktop and Start menu shortcuts.
+3. **Open locitize.** The setup window finds the AI models already on your PC and
+   installs what you pick (Open WebUI chat is ticked by default). Then click
+   **Chat**, pick a model, and talk.
 
-The beta is unsigned. File hashes detect corruption but do not prove publisher
-identity. Production release checks are listed in
-[release readiness](platform/docs/release-readiness.md).
+No models are included: locitize uses the GGUF models already on your PC (from
+LM Studio, Ollama, your Downloads folder...). Have none? Open **Models > Get
+models**, search for one that fits your GPU (a 4B-8B model is a good start), and
+download it there.
 
-Windows 10/11 x64 is the target. A compatible NVIDIA GPU is optional; available
-RAM, VRAM and model size determine what can run. locitize preserves its measured
-memory guards. Model weights and optional voice/chat/training stacks are separate
-downloads, so their disk requirements are additional to the desktop package.
+**Good to know**
+- Windows 10/11, 64-bit. An NVIDIA GPU is optional but makes everything faster.
+- The download is unsigned, so Windows may show "Windows protected your PC" the
+  first time: click **More info**, then **Run anyway**.
+- Setup needs internet for the components you choose (a few minutes).
+- Fine-tuning is experimental: it needs Docker Desktop and an NVIDIA GPU, and its
+  first-run setup is still manual.
+
+Prefer git? `git clone https://github.com/locitize/locitize`, install
+[Python 3.11+](https://www.python.org/downloads/), then double-click
+`platform\locitize.vbs`.
 
 ## Your daily workflow
 

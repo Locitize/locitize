@@ -1,4 +1,4 @@
-# locitize 0.2.0-beta.1 release readiness
+# locitize 1.0.4 release readiness
 
 Status: unsigned internal beta candidate. Not approved as a production release.
 This work uses the repository build/test/package process; no vault workflow.
@@ -47,7 +47,7 @@ Prepare the venv with requirements-core.lock and requirements-dev.txt. Track all
 intended source files. From the repository root:
 
 ```powershell
-.venv\Scripts\python platform/scripts/build_release.py --output dist/locitize-0.2.0-beta.1-candidate
+.venv\Scripts\python platform/scripts/build_release.py --output dist/locitize-1.0.4-windows
 ```
 
 The builder never downloads components or signs output. It refuses an existing

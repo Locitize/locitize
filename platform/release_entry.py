@@ -14,16 +14,14 @@ def main():
     sys.dont_write_bytecode = True
     here = Path(__file__).resolve().parent
     sys.path.insert(0, str(here))
-    from runtime_layout import bundled_python, environment_root
+    from runtime_layout import bundled_python
 
     bundled = bundled_python(here)
     if bundled:
         import subprocess
-        target = environment_root(here) / ".venv"
-        interpreter = target / "Scripts" / "python.exe"
-        if not interpreter.is_file():
-            subprocess.run([str(bundled), "-B", "-E", "-s", "-m", "venv", "--system-site-packages", str(target)],
-                           check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        from runtime_layout import ensure_platform_venv
+        interpreter = ensure_platform_venv(here)
+        target = interpreter.parent.parent
         if Path(sys.prefix).resolve() != target.resolve():
             executable = interpreter.with_name("pythonw.exe") if not sys.argv[1:] else interpreter
             child = subprocess.Popen([str(executable), "-B", "-E", "-s", str(here / "release_entry.py"), *sys.argv[1:]],

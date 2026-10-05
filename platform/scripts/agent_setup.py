@@ -58,7 +58,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     say = print
-    data_root = setup_env.BASE_DIR / "locitize-data"
+    # Packaged install: run inside the app's own platform venv (created from the
+    # bundled runtime), exactly as release_entry.py does for the GUI.
+    from runtime_layout import ensure_platform_venv
+    venv_python = ensure_platform_venv(PLATFORM_DIR)
+    if venv_python and Path(sys.prefix).resolve() != venv_python.parent.parent.resolve():
+        import subprocess
+        return subprocess.call([str(venv_python), "-B", "-E", "-s", str(Path(__file__).resolve()),
+                                *(argv if argv is not None else sys.argv[1:])])
+    data_root = setup_env.default_data_root(setup_env.BASE_DIR)
 
     # -- 1. seed config ------------------------------------------------------
     actions = config.ensure_user_config(data_root, setup_env.BASE_DIR)

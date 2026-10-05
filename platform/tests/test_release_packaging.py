@@ -89,3 +89,15 @@ def test_installer_verifies_before_publication_and_preserves_previous_version(tm
     else:
         assert result.returncode != 0
         assert not (target / VERSION).exists()
+
+
+def test_setup_data_root_follows_the_real_data_dir_when_packaged(tmp_path, monkeypatch):
+    from runtime_layout import default_data_root
+    code = tmp_path / "installation" / "platform"
+    code.mkdir(parents=True)
+    data = tmp_path / "user data"
+    monkeypatch.setenv("LOCITIZE_DATA_DIR", str(data))
+    assert default_data_root(code) == code / "locitize-data"  # source checkout unchanged
+    (code.parent / "runtime").mkdir()
+    (code.parent / "runtime" / "python.exe").touch()
+    assert default_data_root(code) == data  # packaged: never inside the install tree

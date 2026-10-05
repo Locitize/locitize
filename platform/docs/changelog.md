@@ -1,5 +1,10 @@
 # locitize Platform Changelog
 
+## 1.0.3 - one-download Windows package
+
+- build_release.py produces locitize-1.0.3-windows (zip + .sha256) with a bundled Python runtime; no Python install is needed.
+- In a packaged install, setup (wizard and scripts/agent_setup.py) keeps user data in the real data directory (LOCITIZE_DATA_DIR or %LOCALAPPDATA%\LOCITIZE), never inside the install folder, and agent_setup runs inside the app's own venv so Open WebUI installs the same way the wizard does.
+
 ## 0.2.0-beta.1 - unified desktop candidate - 2026-09-07
 
 - Added Home and native Sessions: seven local readers, search, previews,

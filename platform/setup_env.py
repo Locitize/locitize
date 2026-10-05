@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 BASE_DIR = Path(__file__).resolve().parent
-from runtime_layout import environment_root
+from runtime_layout import default_data_root, environment_root
 REPO_DIR = environment_root(BASE_DIR)
 
 # Hosts the setup fetcher may reach, re-checked on every redirect hop by
@@ -75,7 +75,7 @@ class Machine:
     """The facts detection gathered, and the paths the executor will write to."""
 
     venv_python: Path | None = None
-    data_root: Path = field(default_factory=lambda: BASE_DIR / "locitize-data")
+    data_root: Path = field(default_factory=lambda: default_data_root(BASE_DIR))
     has_nvidia: bool = False
     gpu_name: str = ""
     notes: list[str] = field(default_factory=list)
