@@ -153,6 +153,10 @@ class FakeGuiController:
         # auto-tune branch: an accepted request means a tune is now in flight.
         self.autotune_running_model = model_id
 
+    def request_autotune_all(self):
+        self.calls.append(("request_autotune_all",))
+        self.autotune_running_model = "local-chat"
+
     def autotune_in_progress(self):
         return self.autotune_running_model is not None
 
@@ -1164,5 +1168,34 @@ def test_memory_page_lists_recent_on_first_visit(qapp):
     window._sidebar.setCurrentRow(desktop.PAGE_NAMES.index("Memory"))
     assert ("request_memory_search", "") in fake.calls
     window.closeEvent(qt_gui.QCloseEvent())
+    window.deleteLater()
+    app.processEvents()
+
+
+def test_autotune_all_runs_until_its_own_final_result(qapp, monkeypatch):
+    """One model's result must not end an Auto-tune all run in the UI; only the
+    run's own result does, and it reports the tally."""
+    app, desktop, qt_gui = qapp
+    fake, window = _autotune_window(
+        desktop, monkeypatch, desktop.QtWidgets.QMessageBox.StandardButton.Yes
+    )
+    window._autotune_all_btn.click()
+    assert ("request_autotune_all",) in fake.calls
+    assert window._autotune_all_btn.isEnabled() is False
+
+    fake.autotune_running_model = None  # between two models of the run
+    window._apply(gui_controller.Result("autotune", True, {
+        "model_id": "local-chat", "native_context": 32768, "previous_context": 8192,
+        "chosen_context": 65536, "trials": [{}], "tokens_per_second": 50.0,
+    }))
+    assert window._autotune_active() is True  # the run is still going
+    assert window._autotune_all_btn.isEnabled() is False
+
+    window._apply(gui_controller.Result("autotune_all", True, {
+        "total": 3, "tuned": 2, "failed": 0, "skipped": 1, "canceled": True,
+    }))
+    assert window._autotune_active() is False
+    assert "2 of 3 models tuned" in window._autotune_status.text()
+    assert "canceled" in window._autotune_status.text()
     window.deleteLater()
     app.processEvents()

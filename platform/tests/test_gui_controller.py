@@ -2204,3 +2204,37 @@ def test_chat_never_opens_a_friendly_name_that_is_not_open_webui(monkeypatch):
     port = gc._settings.ports.openwebui
     hostname = gc._settings.secure_proxy.hostname
     assert opened == [f"http://127.0.0.1:{port}/", f"https://{hostname}/"]
+
+
+def test_autotune_all_tunes_each_model_and_stops_when_canceled():
+    gc = _controller()
+    gc._is_discovered = lambda mid: False
+    ran = []
+
+    def fake_tune(model_id):
+        ran.append(model_id)
+        if model_id == "b":
+            gc._autotune_cancel.set()  # Stop pressed during the second model
+            return "canceled"
+        return "ok"
+
+    gc._do_autotune_context = fake_tune
+    gc._autotune_cancel.clear()
+    gc._do_autotune_all(["a", "b", "c"])
+    assert ran == ["a", "b"]  # c is skipped after the cancel
+    results = []
+    while not gc.result_q.empty():
+        results.append(gc.result_q.get_nowait())
+    final = [r for r in results if r.kind == "autotune_all"]
+    assert len(final) == 1
+    assert final[0].payload == {"total": 3, "tuned": 1, "failed": 0, "skipped": 2, "canceled": True}
+    assert not gc.autotune_in_progress()
+
+
+def test_cancel_works_between_two_models_of_an_autotune_all_run():
+    gc = _controller()
+    gc._autotune_batch = True  # between models: no single tune running
+    gc._autotune_running = False
+    assert gc.autotune_in_progress() is True
+    assert gc.cancel_autotune() is True
+    assert gc._autotune_cancel.is_set()

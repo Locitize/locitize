@@ -1100,6 +1100,10 @@ class GuiController:
         # racing read sees one state or the other and never a torn value.
         self._autotune_running = False
         self._autotune_model_id: str | None = None
+        # True for the whole of an "Auto-tune all" run, including the moments
+        # between two models when no single tune is running, so Stop keeps
+        # meaning "cancel the run" from the first model to the last.
+        self._autotune_batch = False
 
     # ---- read accessors for the presentation layer ----------------------- #
 
@@ -1716,6 +1720,30 @@ class GuiController:
         self._autotune_cancel.clear()
         self.command_q.put(Command("autotune", {"model_id": model_id}))
 
+    def request_autotune_all(self) -> None:
+        """Enqueue an "Auto-tune all" run over every registered, launchable model.
+
+        Same refusal as a single tune (nothing may be running: each trial
+        start needs the GPU and the reserved port). Discovered fine-tunes are
+        skipped - they have no models.yaml block to write back into.
+        """
+        if self._controller.running_model_id is not None:
+            self.result_q.put(Result(
+                "autotune_all", False, {},
+                error="stop the running model before auto-tuning",
+            ))
+            return
+        model_ids = [
+            m.id for m in self._registry.launchable() if not self._is_discovered(m.id)
+        ]
+        if not model_ids:
+            self.result_q.put(Result(
+                "autotune_all", False, {}, error="no registered models to auto-tune",
+            ))
+            return
+        self._autotune_cancel.clear()
+        self.command_q.put(Command("autotune_all", {"model_ids": model_ids}))
+
     def autotune_in_progress(self) -> bool:
         """True while an auto-tune is occupying the ops worker.
 
@@ -1723,7 +1751,7 @@ class GuiController:
         or "cancel the auto-tune"; those are different actions and must not be
         conflated, because an auto-tune runs precisely when no model is running.
         """
-        return self._autotune_running
+        return self._autotune_running or self._autotune_batch
 
     def autotune_model_id(self) -> str | None:
         """Which model the in-progress auto-tune is for, or None when idle."""
@@ -1743,7 +1771,7 @@ class GuiController:
         once, and unwinds through autotune_model_context's cancellation path,
         which restores the model's previous settings and reports canceled=True.
         """
-        if not self._autotune_running:
+        if not (self._autotune_running or self._autotune_batch):
             return False
         self._autotune_cancel.set()
         return True
@@ -2922,6 +2950,8 @@ class GuiController:
             self._do_delete_model(command.payload)
         elif command.kind == "autotune":
             self._do_autotune_context(command.payload.get("model_id", ""))
+        elif command.kind == "autotune_all":
+            self._do_autotune_all(list(command.payload.get("model_ids", [])))
         elif command.kind == "remember_chat_ui":
             self._do_remember_chat_ui(command.payload.get("choice", ""))
         elif command.kind == "open_openwebui_ready":
@@ -3990,7 +4020,7 @@ class GuiController:
             )
         )
 
-    def _do_autotune_context(self, model_id: str) -> None:
+    def _do_autotune_context(self, model_id: str) -> str:
         """Run the context auto-tuner for ONE model on the ops worker (Thread B).
 
         This is a LONG handler by this controller's standards - several minutes
@@ -4021,14 +4051,14 @@ class GuiController:
                 Result("autotune", False, {"model_id": model_id},
                        error=f"model '{model_id}' is not in the registry")
             )
-            return
+            return "failed"
         if not model.location:
             self.result_q.put(
                 Result("autotune", False, {"model_id": model_id},
                        error="this model has no file location set, so its GGUF "
                              "header cannot be read")
             )
-            return
+            return "failed"
 
         def emit(line: str) -> None:
             """Publish one progress line to the pump (never blocks, never raises)."""
@@ -4081,7 +4111,7 @@ class GuiController:
             self.result_q.put(
                 Result("autotune", False, {"model_id": model_id}, error=str(exc))
             )
-            return
+            return "failed"
         finally:
             self._autotune_running = False
             self._autotune_model_id = None
@@ -4160,6 +4190,44 @@ class GuiController:
                 ),
             )
         )
+        if outcome.canceled:
+            return "canceled"
+        return "ok" if outcome.ok else "failed"
+
+    def _do_autotune_all(self, model_ids: list[str]) -> None:
+        """Auto-tune (and benchmark) every given model, one after another.
+
+        Each model goes through exactly the single-model path, so each one
+        publishes its own progress and result and its speed column updates as
+        it finishes. Stop cancels the model in progress (left unchanged, as for
+        a single tune) and skips the rest. One "autotune_all" Result closes the
+        run with the tally.
+        """
+        total = len(model_ids)
+        tally = {"ok": 0, "failed": 0, "canceled": 0}
+        self._autotune_batch = True
+        try:
+            for index, model_id in enumerate(model_ids, start=1):
+                if self._autotune_cancel.is_set():
+                    break
+                self.result_q.put(Result("autotune_progress", True, {
+                    "model_id": model_id,
+                    "line": f"model {index} of {total}: starting",
+                }))
+                outcome = self._do_autotune_context(model_id)
+                tally[outcome] = tally.get(outcome, 0) + 1
+                if outcome == "canceled":
+                    break
+        finally:
+            self._autotune_batch = False
+        canceled = self._autotune_cancel.is_set() or tally["canceled"] > 0
+        self.result_q.put(Result("autotune_all", True, {
+            "total": total,
+            "tuned": tally["ok"],
+            "failed": tally["failed"],
+            "skipped": total - tally["ok"] - tally["failed"],
+            "canceled": canceled,
+        }))
 
     def _do_delete_model(self, payload: dict[str, Any]) -> None:
         """Delete a model's file(s) from disk, then remove its models.yaml row.

@@ -1217,11 +1217,19 @@ class MainWindow(QtWidgets.QMainWindow):
             "minutes and starts the model several times."
         )
         self._autotune_btn.clicked.connect(self._on_autotune_context)
+        self._autotune_all_btn = QtWidgets.QPushButton("Auto-tune all")
+        self._autotune_all_btn.setToolTip(
+            "Auto-tune every model on your list, one after another: find each "
+            "one's largest context and measure its speed. Takes a few minutes "
+            "per model; Stop cancels the rest."
+        )
+        self._autotune_all_btn.clicked.connect(self._on_autotune_all)
         for button in (
             self._start_btn,
             self._stop_btn,
             self._chat_btn,
             self._autotune_btn,
+            self._autotune_all_btn,
             self._register_btn,
             self._delete_btn,
             self._refresh_models_btn,
@@ -1278,6 +1286,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # so the button and the status line stop inviting a second click.
         self._autotune_pending = False
         self._autotune_canceling = False
+        # True from an "Auto-tune all" click until its final result: each
+        # model's own result must not end the run in the UI.
+        self._autotune_batch = False
         # M17.14 (owner request): the inventory and "Get models" sit SIDE BY SIDE,
         # each claiming half the width, instead of stacked one above the other -
         # so the page is one screen wide instead of one long vertical scroll. A
@@ -2340,6 +2351,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._capabilities_save_btn.setEnabled(False)
             self._delete_btn.setEnabled(False)
             self._autotune_btn.setEnabled(False)
+            self._autotune_all_btn.setEnabled(False)
 
     def _selected_model(self):
         """Return the cached model matching the selected row, if any."""
@@ -2642,6 +2654,12 @@ class MainWindow(QtWidgets.QMainWindow):
             # run behind the live one.
             and not self._autotune_active()
         )
+        self._autotune_all_btn.setEnabled(
+            not self._assistant_live
+            and self._ui.running_model_id is None
+            and not self._autotune_active()
+            and any(m.get("source") != "discovered" for m in self._models)
+        )
         self._vision_btn.setEnabled(
             not self._assistant_live and bool(self._vision_path.text())
         )
@@ -2838,6 +2856,63 @@ class MainWindow(QtWidgets.QMainWindow):
         # than at whenever the next refresh happens to be.
         self._refresh_buttons()
 
+    def _on_autotune_all(self):
+        """Confirm, then queue an auto-tune of every registered model."""
+        if not self._autotune_all_btn.isEnabled():
+            return
+        count = sum(1 for m in self._models if m.get("source") != "discovered")
+        confirmed = QtWidgets.QMessageBox.question(
+            self,
+            "Auto-tune all models",
+            f"Auto-tune all {count} models?\n\n"
+            f"Each model is started several times to find the largest context "
+            f"this machine can load, then benchmarked at that size for its real "
+            f"speed. That takes a few minutes per model - roughly "
+            f"{max(1, round(count * 4 / 60))} hour(s) for {count} - and uses the "
+            f"GPU throughout. Press Stop at any time: the model in progress is "
+            f"left unchanged and the rest are skipped.",
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if confirmed != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        self._autotune_batch = True
+        self._autotune_pending = True
+        self._autotune_canceling = False
+        self._autotune_status.setVisible(True)
+        self._autotune_status.setText(
+            f"auto-tuning all {count} models: starting ... (press Stop to cancel)"
+        )
+        self._model_status.setText(f"auto-tuning all {count} models...")
+        self._gc.request_autotune_all()
+        self._refresh_buttons()
+
+    def _apply_autotune_all_result(self, result):
+        """Close an "Auto-tune all" run with its tally."""
+        self._autotune_batch = False
+        self._autotune_pending = False
+        self._autotune_canceling = False
+        self._refresh_buttons()
+        self._autotune_status.setVisible(True)
+        if not result.ok:
+            message = result.error or "auto-tune all failed"
+            self._autotune_status.setText(f"auto-tune all: {message}")
+            self._model_status.setText(f"auto-tune all: {message}")
+            return
+        p = result.payload
+        text = (
+            f"auto-tune all finished: {p.get('tuned', 0)} of {p.get('total', 0)} "
+            f"models tuned"
+        )
+        if p.get("failed"):
+            text += f", {p['failed']} failed"
+        if p.get("canceled"):
+            text += f", canceled ({p.get('skipped', 0)} not tuned)"
+        self._autotune_status.setText(text + ".")
+        self._model_status.setText(text)
+        self._on_refresh_models()
+
     def _apply_autotune_progress(self, result):
         """Render one live progress line from the running auto-tune.
 
@@ -2861,9 +2936,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_autotune_result(self, result):
         """Render the finished auto-tune: the real numbers, or the honest reason."""
         # The run is over however it ended, so Stop stops meaning "cancel" again
-        # before any of the enablement rules below are re-derived.
-        self._autotune_pending = False
-        self._autotune_canceling = False
+        # before any of the enablement rules below are re-derived - unless this
+        # is one model of an "Auto-tune all" run, which ends with its own result.
+        if not self._autotune_batch:
+            self._autotune_pending = False
+            self._autotune_canceling = False
         # Re-derive rather than force-enable: the selection or running state may
         # have changed while the tune ran, and this one rule owns the answer.
         # _refresh_buttons covers the model-exclusive controls too, so it also
@@ -3904,6 +3981,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._apply_autotune_progress(result)
         elif kind == "autotune":
             self._apply_autotune_result(result)
+        elif kind == "autotune_all":
+            self._apply_autotune_all_result(result)
         elif kind == "finetune_state":
             self._apply_finetune_result(result)
         elif kind == "finetune_models":
