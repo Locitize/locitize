@@ -2819,7 +2819,9 @@ class GuiController:
         #     => one call stops both). These are the no-orphan steps: they run even
         #     if everything above failed.
         step("proxy", self.stop_proxy)
-        step("services", lambda: self._manager.stop_all())
+        # Straight to the confirmed tree kill, all services at once: they ignore
+        # the polite signal on Windows, so waiting only delayed the close.
+        step("services", lambda: self._manager.stop_all(grace_s=0))
         # SEC-M14-5 / Reviewer MEDIUM-8: a teardown step that failed used to be
         # recorded in memory and then discarded with the process. Writing it to
         # the application log is what makes "LOCITIZE closed but a child survived"

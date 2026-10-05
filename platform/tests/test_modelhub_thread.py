@@ -96,7 +96,7 @@ def arm_for_shutdown(controller):
     controller._stop_event = threading.Event()
     controller.stop_proxy = lambda: calls.append("stop_proxy")
     controller._manager = type(
-        "M", (), {"stop_all": lambda self: calls.append("stop_all")}
+        "M", (), {"stop_all": lambda self, grace_s=None: calls.append("stop_all")}
     )()
     return calls
 
@@ -264,7 +264,7 @@ def test_modelhub_thread_shutdown_cancels_and_joins():
     controller._assistant_handle = None
     controller._stop_event = threading.Event()
     controller.stop_proxy = lambda: None
-    controller._manager = type("M", (), {"stop_all": lambda self: None})()
+    controller._manager = type("M", (), {"stop_all": lambda self, grace_s=None: None})()
     controller._dispatch(
         gui_controller.Command("hub_download", {"repo_id": "o/r", "filename": "m.gguf"})
     )
@@ -293,7 +293,7 @@ def test_modelhub_thread_shutdown_refuses_a_download_queued_behind_it():
     controller._assistant_handle = None
     controller._stop_event = threading.Event()
     controller.stop_proxy = lambda: None
-    controller._manager = type("M", (), {"stop_all": lambda self: None})()
+    controller._manager = type("M", (), {"stop_all": lambda self, grace_s=None: None})()
 
     # Queued but not yet dispatched - exactly the state the race needs.
     controller.request_hub_download({"repo_id": "o/r", "filename": "m.gguf"})

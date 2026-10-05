@@ -151,7 +151,7 @@ class _RecordingManager:
     def __init__(self):
         self.stop_count = 0
 
-    def stop_all(self):
+    def stop_all(self, grace_s=None):
         self.stop_count += 1
 
 

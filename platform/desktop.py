@@ -4806,6 +4806,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     return
             self._warn_if_run_active()
             self._closed = True
+            # The window goes the moment X is clicked; the cleanup below (stop
+            # the model, Open WebUI and voice services) finishes behind it.
+            self.hide()
+            QtWidgets.QApplication.processEvents()
             self._timer.stop()
             self._sysmon_stop.set()  # M17.18: stop the RAM/VRAM sampler thread
             self._gc.shutdown()

@@ -976,3 +976,38 @@ def test_no_guard_configured_is_the_existing_behaviour():
         ServiceManager(), _guard_spec_builder, _switch_factory(created)
     )
     assert controller.start("model-a") is ServiceStatus.RUNNING
+
+
+def test_closing_the_app_stops_services_in_parallel_with_a_short_grace():
+    """The close path: every service stops at once, each with the short grace,
+    so closing takes about one stop rather than the sum of every full window."""
+    import threading
+    import time
+
+    from services import ServiceManager
+
+    manager = ServiceManager()
+    graces, running_at_once, lock = [], [], threading.Lock()
+    active = [0]
+
+    class SlowService:
+        def __init__(self, name):
+            self.name = name
+
+        def stop(self, grace_s=None):
+            with lock:
+                active[0] += 1
+                running_at_once.append(active[0])
+            graces.append(grace_s)
+            time.sleep(0.3)
+            with lock:
+                active[0] -= 1
+
+    for name in ("a", "b", "c"):
+        manager._services[name] = SlowService(name)
+    started = time.monotonic()
+    manager.stop_all(grace_s=0)
+    elapsed = time.monotonic() - started
+    assert graces == [0, 0, 0]
+    assert max(running_at_once) == 3
+    assert elapsed < 0.8  # parallel: about one stop, not three

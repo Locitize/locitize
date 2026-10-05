@@ -64,7 +64,7 @@ class _FakeManager:
     def __init__(self) -> None:
         self.stop_all_calls = 0
 
-    def stop_all(self) -> None:
+    def stop_all(self, grace_s=None) -> None:
         self.stop_all_calls += 1
 
 

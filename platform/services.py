@@ -633,8 +633,15 @@ class ManagedProcess:
                 pass
             self._log_handle = None
 
-    def stop(self) -> ServiceStatus:
+    def stop(self, grace_s: float | None = None) -> ServiceStatus:
         """Stop the service: graceful CTRL_BREAK, then confirmed taskkill /F /T.
+
+        `grace_s` caps the graceful window for this call. 0 skips the polite
+        signal and goes straight to the confirmed tree kill - the app's close
+        path. The services it runs ignore the polite signal on Windows anyway,
+        and a short window was worse than none: Open WebUI's launcher stub
+        exits on the signal while its Python workers keep running, so the
+        "stopped" check passed and the tree kill that reaps them never ran.
 
         D-M4-1 no-orphan guarantee: this never reports STOPPED unless the child is
         actually confirmed gone (poll() returns an exit code). If the graceful
@@ -659,6 +666,8 @@ class ManagedProcess:
         # Graceful: signal the process group (valid due to CREATE_NEW_PROCESS_GROUP).
         signalled = True
         try:
+            if grace_s is not None and grace_s <= 0:
+                raise _SkipGracefulStop
             handle.send_signal(_ctrl_break_signal())
         except BaseException as exc:  # noqa: BLE001 - see the two paragraphs below
             # Signal delivery can fail if the process is mid-exit, or if THIS
@@ -698,7 +707,10 @@ class ManagedProcess:
             # for, and sleeping stop_timeout_s per service would just make every
             # console-less (GUI) shutdown slower for no chance of a better result.
             try:
-                handle.wait(timeout=self._spec.stop_timeout_s)
+                grace = self._spec.stop_timeout_s
+                if grace_s is not None:
+                    grace = min(grace, grace_s)
+                handle.wait(timeout=grace)
             except Exception:  # noqa: BLE001 - wait() timeout type varies by platform
                 # Graceful window elapsed without exit; fall through to escalation.
                 pass
@@ -799,6 +811,10 @@ class ManagedProcess:
         merged = dict(os.environ)
         merged.update(self._spec.env)
         return merged
+
+
+class _SkipGracefulStop(Exception):
+    """Internal: a caller asked for the confirmed tree kill with no polite signal."""
 
 
 def _ctrl_break_signal() -> int:
@@ -986,8 +1002,13 @@ class ServiceManager:
     def restart(self, name: str) -> ServiceStatus:
         return self._require(name).restart()
 
-    def stop_all(self) -> None:
+    def stop_all(self, grace_s: float | None = None) -> None:
         """Stop every REGISTERED service (best effort), reverse start order first.
+
+        With `grace_s`, the services are stopped in parallel, each with at most
+        that graceful window (the app's close path passes 0: straight to the
+        confirmed tree kill). Without it, the original
+        sequential, full-grace teardown.
 
         H-1 fix: teardown now covers every service in `_services`, not only those
         that finished starting (`_start_order`). A ManagedProcess is registered
@@ -1017,10 +1038,29 @@ class ServiceManager:
         ordered.extend(
             name for name in reversed(all_names) if name not in started_set
         )
+        if grace_s is None:
+            for name in ordered:
+                service = self._services.get(name)
+                if service is not None:
+                    service.stop()
+            return
+        # Closing the app: stop everything at once with a short grace each, so
+        # the close takes about as long as the slowest single stop rather than
+        # the sum of every service's full window (measured before: Open WebUI
+        # alone sat out its whole 10s and was then force-stopped anyway).
+        workers = []
         for name in ordered:
             service = self._services.get(name)
-            if service is not None:
-                service.stop()
+            if service is None:
+                continue
+            worker = threading.Thread(
+                target=service.stop, kwargs={"grace_s": grace_s},
+                name=f"stop-{name}", daemon=True,
+            )
+            worker.start()
+            workers.append(worker)
+        for worker in workers:
+            worker.join(timeout=30.0)
 
     def monitor(self) -> dict[str, ServiceStatus]:
         """Return a status snapshot for every registered service (no side effects)."""
