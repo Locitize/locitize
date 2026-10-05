@@ -1526,6 +1526,13 @@ def _build_openwebui_env(settings: Settings, data_dir: Path) -> dict[str, str]:
         f"http://127.0.0.1:{owui_port}",
         f"http://localhost:{owui_port}",
     ]
+    # Chat opens https://<secure_proxy.hostname> (locitize.local) when that
+    # name serves Open WebUI. Its live-update socket checks this same list, so
+    # without the name a page opened there sends messages but never receives
+    # a reply.
+    hostname = (getattr(getattr(settings, "secure_proxy", None), "hostname", "") or "").strip()
+    if hostname:
+        origins.append(f"https://{hostname}")
     env["CORS_ALLOW_ORIGIN"] = ";".join(dict.fromkeys(origins))
     env["ENABLE_COMMUNITY_SHARING"] = "False"
     env["ENABLE_VERSION_UPDATE_CHECK"] = "False"

@@ -162,6 +162,13 @@ class LlamaCppBackend:
         # gated by settings so a build that rejects the flag can turn it off.
         if settings.services.llama_cpp_metrics:
             command.append("--metrics")
+        # A ceiling on reply length for requests that set none (Open WebUI
+        # sends no max_tokens). Without it a small model that falls into a
+        # loop generates forever and holds the only slot, so every later
+        # message waits (seen 2026-10-04: a 0.6B model at 22,000 tokens and
+        # counting). Owner server_args come later, so an explicit
+        # --n-predict there still wins.
+        command.extend(["--n-predict", str(DEFAULT_MAX_REPLY_TOKENS)])
         # M8.1 (vision): a row carrying an mmproj path is served multimodally.
         if model.mmproj:
             command.extend([self._MMPROJ_FLAG, model.mmproj])
@@ -169,6 +176,10 @@ class LlamaCppBackend:
 
     def health_path(self, settings: Any) -> str | None:
         return settings.services.llama_cpp_health_path or None
+
+
+# Long enough for a reasoning model's thinking plus a full answer.
+DEFAULT_MAX_REPLY_TOKENS = 16384
 
 
 _REGISTRY: dict[str, InferenceBackend] = {

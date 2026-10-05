@@ -1289,3 +1289,12 @@ def test_upgrade_openwebui_fail_soft_when_venv_missing(tmp_path):
     settings = _fake_codebase(tmp_path, install=False)
     msg = upgrade_openwebui(settings)
     assert "auto-update skipped" in msg.lower() or "missing" in msg.lower()
+
+
+def test_open_webui_accepts_its_friendly_name_as_an_origin(tmp_path):
+    """Chat opens https://locitize.local; Open WebUI's live-update socket checks
+    the same origin list, so without the name replies never reach the page."""
+    settings = _fake_codebase(tmp_path)
+    settings.secure_proxy.hostname = "locitize.local"
+    spec = build_openwebui_spec(settings, "x.log")
+    assert "https://locitize.local" in spec.env["CORS_ALLOW_ORIGIN"].split(";")

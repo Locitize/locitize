@@ -82,6 +82,9 @@ def test_llama_core_command_spells_the_confirmed_flags():
     assert "--fit-target" not in cmd
     assert cmd[cmd.index("--alias") + 1] == "My Model"
     assert "--metrics" in cmd
+    # A reply-length ceiling for clients that send no max_tokens, so a looping
+    # model cannot hold the only slot forever.
+    assert cmd[cmd.index("--n-predict") + 1] == "16384"
 
 
 def test_llama_core_command_honours_settings_and_mmproj():
