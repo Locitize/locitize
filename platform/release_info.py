@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib.metadata
 import sys
 
-VERSION = "1.0.4"
+VERSION = "1.1.0"
 
 
 def diagnostics():

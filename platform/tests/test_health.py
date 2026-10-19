@@ -509,3 +509,26 @@ def test_the_in_process_router_port_is_ours():
     ).run()
     assert result.status is HealthStatus.PASS
     assert result.data["ours"] == ["router:8093"]
+
+
+def test_the_bundled_runtime_counts_as_an_isolated_environment():
+    """The installed package runs on runtime\python.exe, not a venv; it used to
+    fail this probe and show a red health light on every installed copy."""
+    from health import VirtualEnvProbe
+
+    class _System:
+        def in_virtualenv(self):
+            return False
+
+        def on_bundled_runtime(self):
+            return True
+
+    result = VirtualEnvProbe(_System()).run()
+    assert result.status is HealthStatus.PASS
+    assert "bundled" in result.detail
+
+    class _Bare:
+        def in_virtualenv(self):
+            return False
+
+    assert VirtualEnvProbe(_Bare()).run().status is HealthStatus.FAIL

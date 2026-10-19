@@ -10,7 +10,7 @@ unless you ask it to.
 
 ## Install in 3 steps
 
-1. **Download** `locitize-1.0.4-windows.zip` from the
+1. **Download** `locitize-1.1.0-windows.zip` from the
    [latest release](https://github.com/locitize/locitize/releases/latest) and
    extract it to a folder. Python is included - nothing else to install first.
 2. **Double-click `Install locitize.bat`.** It checks every file, installs under

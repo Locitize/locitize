@@ -178,6 +178,18 @@ class DefaultSystemInfoProvider:
         # base_prefix differs from prefix inside a venv/virtualenv.
         return sys.prefix != getattr(sys, "base_prefix", sys.prefix)
 
+    def on_bundled_runtime(self) -> bool:
+        """True when running on the Python the release package ships (runtimepython.exe)."""
+        from runtime_layout import bundled_python
+
+        bundled = bundled_python()
+        if bundled is None:
+            return False
+        try:
+            return Path(sys.executable).resolve() == bundled.resolve()
+        except OSError:
+            return False
+
     def ram_total_mb(self) -> float:
         import psutil
 
@@ -480,6 +492,12 @@ class VirtualEnvProbe:
     def run(self) -> HealthResult:
         if self._system.in_virtualenv():
             return HealthResult(self.name, HealthStatus.PASS, "running inside a virtual environment")
+        # The installed package runs on its own bundled Python, which is not a
+        # venv but is just as isolated. Every installed copy used to FAIL here
+        # and show a red health light (found testing the 1.1.0 package).
+        bundled = getattr(self._system, "on_bundled_runtime", None)
+        if bundled is not None and bundled():
+            return HealthResult(self.name, HealthStatus.PASS, "running on the bundled Python runtime")
         return HealthResult(
             self.name,
             HealthStatus.FAIL,
