@@ -180,7 +180,7 @@ def test_gui_command_start_failure_marshals_remedy_not_a_crash():
     _dispatch_next(gc)
     result = gc.result_q.get_nowait()
     assert result.kind == "start" and not result.ok
-    assert "STOPPED_ERROR" in (result.error or "")
+    assert "did not start cleanly" in (result.error or "")
     assert gc._active_port is None
 
 
@@ -1164,7 +1164,7 @@ def test_gui_command_delete_model_refuses_a_discovered_row():
     assert gc.command_q.empty()
     result = gc.result_q.get_nowait()
     assert result.kind == "delete_model" and not result.ok
-    assert "discovered" in result.error.lower() or "register" in result.error.lower()
+    assert "not on your list" in result.error.lower()
 
 
 def test_gui_command_delete_model_refuses_the_running_model():
@@ -1196,7 +1196,7 @@ def test_gui_command_autotune_refuses_a_discovered_row():
     assert gc.command_q.empty()
     result = gc.result_q.get_nowait()
     assert result.kind == "autotune" and not result.ok
-    assert "discovered" in result.error.lower() or "register" in result.error.lower()
+    assert "not on your list" in result.error.lower()
 
 
 def test_gui_command_autotune_refuses_while_a_model_is_running():
@@ -1518,7 +1518,7 @@ models:
 
 # --------------------------------------------------------------------------- #
 # request_launch_harness / _do_launch_harness (owner request 2026-08-21:
-# "Launch in Claude Code / Codex / OpenCode" from the Chat picker)
+# "Launch in Codex / OpenCode" from the Chat picker)
 # --------------------------------------------------------------------------- #
 
 
@@ -1599,29 +1599,6 @@ def test_launch_harness_codex_wires_provider_and_spawns(tmp_path, monkeypatch):
     assert env == {"LOCITIZE_CODEX_API_KEY": "locitize-local"}
 
 
-def test_launch_harness_claude_env_targets_model_port_with_no_v1_suffix(tmp_path, monkeypatch):
-    import harness_launch
-
-    gc, _registry = _real_gui_controller(tmp_path, _minimal_models_yaml())
-    gc._controller.running_model_id = "model-a"
-    gc._active_port = 8091
-    monkeypatch.setattr(harness_launch, "detect_executable", lambda h: "/bin/claude")
-
-    spawns = []
-    monkeypatch.setattr(
-        harness_launch,
-        "spawn_in_terminal",
-        lambda argv, cwd, env, title: spawns.append((argv, cwd, env, title)),
-    )
-
-    gc.request_launch_harness("claude", str(tmp_path), remember=False)
-    _dispatch_next(gc)
-    result = gc.result_q.get_nowait()
-
-    assert result.kind == "launch_harness" and result.ok
-    assert result.payload["note"]  # the tool-use/llama.cpp-version caveat is surfaced
-    _argv, _cwd, env, _title = spawns[0]
-    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8091"
 
 
 def test_launch_harness_remember_persists_via_write_chat_harness_dir(tmp_path, monkeypatch):
@@ -1655,9 +1632,9 @@ def test_detect_harnesses_delegates_to_harness_launch(tmp_path, monkeypatch):
 
     gc, _registry = _real_gui_controller(tmp_path, _minimal_models_yaml())
     monkeypatch.setattr(
-        harness_launch, "detect_harnesses", lambda: {"claude": None, "codex": "/bin/codex", "opencode": None}
+        harness_launch, "detect_harnesses", lambda: {"codex": "/bin/codex", "opencode": None}
     )
-    assert gc.detect_harnesses() == {"claude": None, "codex": "/bin/codex", "opencode": None}
+    assert gc.detect_harnesses() == {"codex": "/bin/codex", "opencode": None}
 
 
 def test_last_project_dir_reads_from_settings(tmp_path):

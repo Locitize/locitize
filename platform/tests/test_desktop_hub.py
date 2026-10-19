@@ -386,7 +386,7 @@ def test_hub_ui_done_reports_verification_honestly(qapp):
     window._drain()
     text = window._hub_status.text()
     assert "Checksum verified" in text
-    assert "Registered as 'm'" in text
+    assert "Added to your models as 'm'" in text
 
 
 # Eight or more hex characters in a row. Nothing in the completion line's
@@ -473,7 +473,7 @@ def test_hub_ui_completion_line_keeps_the_register_clause_and_stays_hex_free(qap
     assert text == (
         "Saved to /data/models/tiny.gguf. "
         "Checksum verified against HuggingFace's file listing. "
-        "Registered as 'tiny'."
+        "Added to your models as 'tiny'."
     )
     assert HEX_RUN_RE.search(text) is None
 
@@ -540,7 +540,7 @@ def test_hub_ui_failed_download_shows_the_error_and_no_override(qapp):
 def test_hub_ui_disabled_state_names_the_setting(qapp):
     """models_hub.enabled false disables every egress control and says why."""
     window, _fake = build(qapp, hub_enabled=False)
-    assert "Model downloading is off" in window._hub_status.text()
+    assert "switched off" in window._hub_status.text()
     assert window._hub_search_btn.isEnabled() is False
     assert window._hub_query.isEnabled() is False
     assert window._hub_download_btn.isEnabled() is False

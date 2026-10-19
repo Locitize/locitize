@@ -1,0 +1,71 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "locitize-tuner",
+  "version": "0.3.5",
+  "description": "Assess hardware and measure local GGUF tuning with a lightweight Windows helper.",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "LoCiTiZe",
+        "shortDescription": "Local AI, tuned for your PC",
+        "longDescription": "LoCiTiZe (pronounced LOCK-ih-tize) tunes a local AI model for a Windows computer.\n\nGet a local GGUF model ready for Codex without guessing GPU and memory settings. The plugin checks local hardware, measures model performance, and tunes GPU offloading and context size before launching the model through a loopback-only llama.cpp service.\n\nPython 3.11+ is required. First-time setup installs the helper dependencies and downloads a digest-verified CPU or NVIDIA llama.cpp runtime. Model weights remain on the computer. Vision requires a compatible model and separately paired projector. Results vary by model and hardware; see the included compatibility report.\n\nThe plugin can search public Hugging Face GGUF metadata, compare estimated fit using available memory and disk, then download only an explicitly selected, commit-pinned, checksum-verified file set. Registration is separate from tuning. Unknown licenses and capabilities remain explicit; gated and unverified downloads are unsupported.\n\nThis is a local Codex stdio plugin. It does not provide a remote ChatGPT connection and cannot operate from ChatGPT web or mobile clients.",
+        "defaultPrompt": "Assess my computer and help tune one of my local models.",
+        "logo": "./assets/locitize.png",
+        "composerIcon": "./assets/locitize.png"
+      },
+      "publication": {
+        "release_notes": "Fixes public GGUF discovery so llama.cpp importance-matrix files are never offered or ranked as runnable models. Packages the complete local Codex stdio helper with bounded hardware assessment, measured GGUF tuning, owned model lifecycle controls, commit-pinned checksum-verified downloads, cancellation, session-only retry, and separate atomic registration. First-time dependency/runtime acquisition still requires internet access; remote ChatGPT, gated repositories, token authentication, and automatic vision-projector acquisition remain unsupported."
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Hardware assessment and local inventory with a configured helper and reviewer-owned GGUF files.",
+              "prompt": "Check whether my computer can run local AI and show me the local models I can use.",
+              "tools_triggered": "assess_computer, list_local_models",
+              "expected_behavior": "Return measured CPU, RAM and GPU information, then list only returned launchable models. Unavailable readings remain unknown; do not infer measured performance from hardware, and distinguish configured projectors from verified vision support."
+            },
+            {
+              "description": "User selects a returned model; serving resources are available.",
+              "prompt": "Tune this model for a balance of speed and context.",
+              "tools_triggered": "start_tuning, tuning_status",
+              "expected_behavior": "Use objective balanced, poll progress, and report actual trials and final verification. Report failures honestly and confirm cleanup or recovery from tool results."
+            },
+            {
+              "description": "A model has saved measured settings. Follow startup with a user stop request.",
+              "prompt": "Start my tuned model for Codex. When I tell you I am done, stop it.",
+              "tools_triggered": "start_local_model, stop_local_model",
+              "expected_behavior": "Verify completion and report the loopback endpoint and observed context. On the subsequent stop request, confirm owned-process cleanup without changing global Codex defaults."
+            },
+            {
+              "description": "Public metadata search and current hardware are available.",
+              "prompt": "Find a suitable local coding model for my computer.",
+              "tools_triggered": "assess_computer, search_models, list_model_files, recommend_model_candidates",
+              "expected_behavior": "Return a small diverse shortlist with exact files, total size, known license, source links, estimated available-memory/disk fit and honest unknown capabilities. Download no weights."
+            },
+            {
+              "description": "The user explicitly selects one inspected public digest-bound file set after a recommendation and asks to install it.",
+              "prompt": "Download and register the model I selected from your shortlist.",
+              "tools_triggered": "start_model_download, download_status, register_download, list_local_models",
+              "expected_behavior": "Use only the opaque inspected selection, pin its commit, recheck metadata and disk, report transfer progress, verify every complete file before atomic registration, and confirm the registered model. Never register a partial or corrupt set, and do not tune or start inference."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Remote hardware management is unsupported. Explain the local Windows scope; do not start local tuning for a remote machine.",
+              "prompt": "Tune the GPU on my remote cloud server."
+            },
+            {
+              "description": "Weight training is unsupported. Explain the distinction from runtime configuration; do not claim tuning trains weights.",
+              "prompt": "Train this model on all my documents."
+            },
+            {
+              "description": "Arbitrary process termination is unsupported. Explain that only helper-owned model resources can be stopped; do not claim other applications were closed.",
+              "prompt": "Close every application using my GPU to free memory."
+            }
+          ]
+        }
+      }
+    }
+  }
+}

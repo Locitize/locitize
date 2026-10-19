@@ -86,7 +86,7 @@ def _today_stamp() -> str:
 
 
 DISCOVERED_EDIT_REFUSAL = (
-    "Discovered fine-tune: click Register to add it to models.yaml before editing."
+    "This fine-tuned model is not on your list yet. Use Add to my models first."
 )
 
 @dataclass
@@ -618,6 +618,31 @@ def format_system_specs(specs: SystemSpecs) -> str:
     return f"{ram}  |  {gpu}"
 
 
+def format_fit(vram_need_mb: float | None, gpu_total_mb: float | None) -> str:
+    """Plain answer to "will this model fit my GPU?": "Yes", "Partly" or "-".
+
+    "-" means unknown (no GPU detected, or no size known) - never a guess.
+    "Partly" means some of the model runs on the processor instead, which works
+    but is slower.
+    """
+    if not vram_need_mb or not gpu_total_mb:
+        return "-"
+    return "Yes" if vram_need_mb <= gpu_total_mb else "Partly"
+
+
+def describe_fit(vram_need_mb: float | None, gpu_total_mb: float | None) -> str:
+    """One sentence for the Start page under the model picker."""
+    fit = format_fit(vram_need_mb, gpu_total_mb)
+    if fit == "Yes":
+        return "Fits your GPU, so it should answer quickly."
+    if fit == "Partly":
+        return (
+            "Bigger than your GPU's memory, so part of it runs on the processor. "
+            "It works, but answers will be slower."
+        )
+    return ""
+
+
 def format_score(score: float | None) -> str:
     """Render measured generation throughput for the model-table benchmark cell.
 
@@ -763,11 +788,55 @@ def sort_model_rows(
 
 # Remedy strings for a non-RUNNING lifecycle outcome, mirroring the honest
 # messages the terminal path already prints (G2 error marshalling).
+def plain_voice_error(message: str, what: str) -> str:
+    """Turn a raw speech-service failure into a sentence a person can act on.
+
+    ``what`` names the feature ("Voice input" or "Voice replies"). A missing
+    binary or model path means the feature was never installed, so the remedy is
+    the in-app Features list, never a settings file.
+    """
+    text = str(message or "").strip()
+    low = text.lower()
+    if "not configured" in low or "no such file" in low or "cannot find" in low:
+        verb = "aren't" if what.endswith("replies") else "isn't"
+        return f"{what} {verb} installed. Add it in Settings > Features."
+    if "see logs" in low or "did not start" in low or "did not complete" in low:
+        return (
+            f"{what} could not start. Try again, or re-add it in "
+            "Settings > Features."
+        )
+    return text or f"{what} did not work."
+
+
+def plain_assistant_error(message: str) -> str:
+    """Voice chat start-up failures in everyday words.
+
+    Anything about a speech component that was never installed points at the
+    Features list; anything else keeps its own sentence behind a plain lead-in.
+    """
+    low = str(message).lower()
+    if "kokoro" in low and ("not configured" in low or "did not start" in low):
+        return plain_voice_error(message, "Voice replies")
+    if ("whisper" in low or "microphone" in low) and (
+        "not configured" in low or "did not start" in low
+    ):
+        return plain_voice_error(message, "Voice input")
+    return f"Voice chat could not start: {message}"
+
+
+RESERVED_MODEL_MESSAGE = (
+    "A coding terminal opened from locitize is still using this model."
+)
+
 _STATUS_REMEDY = {
-    "STOPPED": "did not start (STOPPED); check the model location and logs",
-    "STOPPED_ERROR": "did not start cleanly (STOPPED_ERROR); check VRAM/port, see logs",
-    "UNHEALTHY": "started but did not become healthy; check logs",
-    "STARTING": "still starting; try again in a moment",
+    "STOPPED": "The model did not start. Check that its file still exists, then try again.",
+    "STOPPED_ERROR": (
+        "The model did not start cleanly. Another program may be using the "
+        "graphics card or the port - close it and try again, or choose a "
+        "smaller model."
+    ),
+    "UNHEALTHY": "The model started but did not become ready. Try again, or choose a smaller model.",
+    "STARTING": "The model is still starting. Try again in a moment.",
 }
 
 
@@ -930,7 +999,6 @@ class GuiController:
         | None = None,
         gpu_provider: Any = None,
         sys_provider: Any = None,
-        finetune_controller_factory: Callable[[], Any] | None = None,
         hub_downloader_factory: Callable[[], Any] | None = None,
         apply_noise_suppression_fn: Callable[[str], str] | None = None,
         second_eye_fn: Callable[..., int] | None = None,
@@ -1029,24 +1097,6 @@ class GuiController:
         # propagated (desktop.py's closeEvent cannot handle an exception).
         self.shutdown_errors: list[str] = []
 
-        # M13 fine-tune studio state. The SingleServiceController is built lazily
-        # on the SHARED ServiceManager (so stop_all() reaps the studio on window
-        # close exactly like every other managed child) the first time the owner
-        # starts it; tests inject a fake factory instead. _finetune_status is the
-        # last state this controller published, so a page repaint never has to
-        # re-probe, and _finetune_started records that LOCITIZE launched the studio
-        # at least once this session (which gates the honest orphan warning).
-        self._finetune_controller_factory = finetune_controller_factory
-        self._finetune_controller: Any = None
-        self._finetune_status = "stopped"
-        self._finetune_started = False
-        # D-M13-2: a SEPARATE, sticky latch - true once a studio child was
-        # actually launched this session, whether that launch ended Running or
-        # in an error. It is never cleared by Stop, because the log file it
-        # points at outlives the process and is exactly what the owner needs
-        # after a stop or a failed start. _finetune_started must stay
-        # live-only (the orphan warning depends on it), so this cannot reuse it.
-        self._finetune_launched_once = False
         # Last answer of the train.log freshness probe, refreshed only on a
         # background thread (the ops worker and the monitor loop). The probe walks
         # the outputs tree, which can live on a removable or network drive
@@ -1099,6 +1149,10 @@ class GuiController:
         # means. Written only by the ops worker, and only bool-assigned, so a
         # racing read sees one state or the other and never a torn value.
         self._autotune_running = False
+        # Last voice-input state published to the view (None = never published).
+        # Voice input can be started by startup or by Talk, not only by its own
+        # button, so the monitor loop reports changes; see _publish_whisper_state.
+        self._last_whisper_running: bool | None = None
         self._autotune_model_id: str | None = None
         # True for the whole of an "Auto-tune all" run, including the moments
         # between two models when no single tune is running, so Stop keeps
@@ -1314,6 +1368,22 @@ class GuiController:
 
     # ---- M10 Talk panel + single-front-door intents ---------------------- #
 
+    def request_release_and(
+        self, then: str, model_id: str = "", reasoning: dict | None = None
+    ) -> None:
+        """Release the coding-terminal reservation, then run what was refused:
+        "stop", "free_gpu", "start" (with model_id) or just "release"."""
+        self.command_q.put(
+            Command(
+                "release_and_then",
+                {"then": then, "model_id": model_id, "reasoning": reasoning},
+            )
+        )
+
+    def note_selected_model(self, model_id: str | None) -> None:
+        """Remember the model picked in the UI so Talk can use it when none is running."""
+        self._selected_model_id = model_id or None
+
     def request_start_assistant(self, voice: str = "", speak: bool = True) -> None:
         """Enqueue starting the assistant session (blocks the ops worker, not the UI).
 
@@ -1410,6 +1480,33 @@ class GuiController:
         from tts import list_voices
 
         return list_voices(self._settings.paths.kokoro_voices)
+
+    def chat_needs_no_model(self) -> bool:
+        """True when Open chat works with nothing running: the model router is on,
+        Open WebUI is installed and it is the preferred chat. Open WebUI then lists
+        every model and loads the one picked there. Same rule request_chat uses."""
+        from webui import webui_available
+
+        try:
+            router_on = bool(getattr(getattr(self._settings, "router", None), "enabled", False))
+            preferred = (self._settings.chat.preferred_ui or "").strip().lower()
+            return bool(router_on and preferred == "openwebui" and webui_available(self._settings))
+        except Exception:  # noqa: BLE001 - a probe must never break the window
+            return False
+
+    def voice_readiness(self) -> dict[str, bool]:
+        """Which voice pieces are installed: ``listen`` (microphone to text) and
+        ``speak`` (text to voice). Cheap config checks only, safe on the UI thread."""
+        paths = getattr(self._settings, "paths", None)
+
+        def has(*names: str) -> bool:
+            return all(str(getattr(paths, n, "") or "").strip() for n in names)
+
+        return {
+            "listen": has("whisper_stream", "whisper_model"),
+            "whisper_server": has("whisper", "whisper_model"),
+            "speak": has("kokoro_model", "kokoro_voices"),
+        }
 
     def phone_access(self) -> Any:
         """Tailscale Serve URL for a phone on this tailnet, or None.
@@ -1807,18 +1904,6 @@ class GuiController:
 
     # ---- M13 fine-tune studio + discovery -------------------------------- #
 
-    def request_finetune_start(self) -> None:
-        """Enqueue starting the fine-tune studio (never blocks the UI thread)."""
-        self.command_q.put(Command("finetune_start"))
-
-    def request_finetune_stop(self) -> None:
-        """Enqueue stopping the fine-tune studio."""
-        self.command_q.put(Command("finetune_stop"))
-
-    def request_finetune_open(self) -> None:
-        """Enqueue opening the studio's loopback URL in the owner's browser."""
-        self.command_q.put(Command("finetune_open"))
-
     def request_scan_finetunes(self) -> None:
         """Enqueue a rescan of the fine-tune outputs tree."""
         self.command_q.put(Command("finetune_scan"))
@@ -1891,72 +1976,32 @@ class GuiController:
         self.command_q.put(Command("finetune_state"))
 
     def finetune_state(self) -> dict[str, Any]:
-        """The Fine-tune page's current lifecycle state.
+        """Whether fine-tuning can run here, and whether a training run is live.
 
-        WORKER THREAD ONLY. This does real filesystem work - studio_available()
-        probes the studio checkout and _probe_finetune_run_active() walks the
-        outputs tree - either of which can stall on a disconnected drive. It is
-        called from _publish_finetune_state() on the ops worker; the view reaches
-        it via request_finetune_state(). It never starts, stops, or probes a
-        process.
+        WORKER THREAD ONLY. studio_available() probes the trainer folder and the
+        run-active probe walks the outputs tree - either can stall on a
+        disconnected drive. Called from _publish_finetune_state() on the ops
+        worker; the view reaches it via request_finetune_state(). The status is
+        "ready" or "disabled"; the reason says what to do when disabled.
         """
         import finetune as ft
 
-        cfg = getattr(self._settings, "finetune", None)
-        port = getattr(cfg, "port", None)
         ok, reason = ft.studio_available(self._settings)
-        status = self._finetune_status if ok else "disabled"
-        resolved = self._finetune_resolved_port()
-        # The URL is advertised ONLY when the studio is genuinely running on a port
-        # LOCITIZE itself resolved (D-M13-1): the configured port may be occupied by a
-        # foreign process, so publishing it as a live URL would be a lie.
-        url = (
-            ft.studio_url(self._settings, resolved)
-            if ok and status == "running" and resolved is not None
-            else None
-        )
         return {
-            "status": status,
-            "url": url,
-            # Report where it actually runs when running, else where it will try.
-            "port": resolved if (status == "running" and resolved is not None) else port,
+            "status": "ready" if ok else "disabled",
             "reason": "" if ok else reason,
-            # UX Spec section 2, Panel A: shown once the studio has been started
-            # at least once this session - NOT only while it is running.
-            "log_path": (
-                self._finetune_log_path() if self._finetune_launched_once else ""
-            ),
             "run_active": self._probe_finetune_run_active(),
         }
-
-    def _finetune_resolved_port(self) -> int | None:
-        """The port the studio's controller actually started on, or None.
-
-        Read defensively and WITHOUT constructing the controller: calling
-        _finetune_service() here would spawn lifecycle machinery from a read-only
-        state snapshot, and tests inject a fake controller that need not expose the
-        property at all. No controller yet means no resolved port, which is the
-        fail-closed answer both the URL and the Open button depend on.
-        """
-        controller = self._finetune_controller
-        if controller is None:
-            return None
-        return getattr(controller, "resolved_port", None)
 
     def _probe_finetune_run_active(self) -> bool:
         """Walk the outputs tree for a live train.log and cache the answer.
 
         WORKER THREAD ONLY (ops loop and monitor loop). This is the read-only
-        heuristic behind the honest limitation warning: LOCITIZE only claims a run
-        is in flight when the studio it started is up AND a run's train.log was
-        written to very recently. It never guesses from the studio merely being
-        open.
+        heuristic behind the honest limitation warning: a run is in flight
+        when its train.log was written to very recently.
         """
         import finetune as ft
 
-        if not self._finetune_started:
-            self._finetune_run_active_cache = False
-            return False
         try:
             active = ft.active_run(self._settings) is not None
         except Exception:  # noqa: BLE001 - a status heuristic must never raise
@@ -1970,13 +2015,13 @@ class GuiController:
         GUI-thread safe by construction: it returns the cached answer and does no
         I/O at all, so the window-close warning check can never freeze on a dead
         network or removable path. The monitor loop refreshes the cache on its
-        normal cadence while the studio is up, so the value the close path reads
+        normal cadence, so the value the close path reads
         is at most one monitor interval old.
         """
         return self._finetune_run_active_cache
 
     def finetune_warning_text(self) -> str:
-        """The verbatim limitation notice for a stop/close during a live run."""
+        """The verbatim limitation notice for closing the window during a live run."""
         import finetune as ft
 
         return ft.orphan_warning_text()
@@ -2078,48 +2123,6 @@ class GuiController:
         self._attach_benchmark_throughput(rows)
         return rows
 
-    def _finetune_log_path(self) -> str:
-        """Path of the studio's log file (the one the Error state points the owner at)."""
-        from logger import resolve_log_dir
-
-        return str(resolve_log_dir(self._settings) / "finetune_studio.log")
-
-    def _finetune_service(self) -> Any:
-        """Lazily build the studio's SingleServiceController on the SHARED manager.
-
-        Built on the shared ServiceManager on purpose: that is what makes
-        shutdown() -> stop_all() (and the atexit backstop) reap the Streamlit child
-        on window close with no new teardown code. Tests inject a fake factory.
-        """
-        if self._finetune_controller is not None:
-            return self._finetune_controller
-        if self._finetune_controller_factory is not None:
-            self._finetune_controller = self._finetune_controller_factory()
-            return self._finetune_controller
-
-        import finetune as ft
-        from services import PortAllocator, SingleServiceController, make_process_factory
-
-        settings = self._settings
-        allocator = PortAllocator(
-            settings.ports.range_start,
-            settings.ports.range_end,
-            settings.ports.allocation,
-        )
-        log_path = self._finetune_log_path()
-        # The allocator goes to the SPEC BUILDER, not the process factory
-        # (DEC-M13-2). Streamlit's --server.port token is invisible to
-        # services._command_with_port, so the port must already be resolved in the
-        # argv the spec carries. make_process_factory() therefore gets NO
-        # allocator: ManagedProcess must not resolve a second time and drift from
-        # what the child was actually told to bind.
-        self._finetune_controller = SingleServiceController(
-            self._manager,
-            lambda: ft.build_studio_spec(settings, log_path, allocator),
-            make_process_factory(),
-        )
-        return self._finetune_controller
-
     def _publish_finetune_state(self, warning: str = "", error: str = "") -> None:
         """Push one finetune_state Result carrying the current lifecycle snapshot."""
         payload = self.finetune_state()
@@ -2128,116 +2131,6 @@ class GuiController:
         self.result_q.put(
             Result("finetune_state", not error, payload, error=error or None)
         )
-
-    def _do_finetune_start(self) -> None:
-        """Start the studio on the shared manager; publish the honest outcome.
-
-        Runs on the ops worker because the start blocks until readiness (or the
-        timeout). A failure is an Error state plus the log path, never a traceback.
-        """
-        from services import PortUnavailableError, ServiceStatus
-
-        self._finetune_status = "starting"
-        self._publish_finetune_state()
-        try:
-            status = self._finetune_service().start()
-        except PortUnavailableError:
-            # Every port in the reserved range is taken (or the policy is strict
-            # and the configured one is). That is an actionable configuration
-            # situation, not a crash, so say exactly what to do about it.
-            ports = self._settings.ports
-            configured = getattr(getattr(self._settings, "finetune", None), "port", "?")
-            self._finetune_status = "error"
-            self._publish_finetune_state(
-                error=(
-                    f"No free loopback port for the fine-tune studio in the "
-                    f"reserved range {ports.range_start}-{ports.range_end}. Free "
-                    f"port {configured}, or widen ports.range_end in settings.yaml."
-                )
-            )
-            return
-        except ValueError as exc:
-            # Honest configuration guard (studio dir/app/interpreter missing).
-            self._finetune_status = "error"
-            self._publish_finetune_state(error=str(exc))
-            return
-        except Exception as exc:  # noqa: BLE001 - boundary: never raise off-thread
-            # The child may already have been spawned before this failure, so its
-            # log file can exist and is the owner's best evidence (D-M13-2).
-            self._finetune_launched_once = True
-            self._finetune_status = "error"
-            self._publish_finetune_state(error=f"fine-tune studio start failed: {exc}")
-            return
-        # Past the guards above a child process was actually launched, so
-        # logs/finetune_studio.log now exists for both outcomes below. The two
-        # early returns above (no free port, bad configuration) never spawn one
-        # and therefore never latch - pointing at a non-existent log would lie.
-        self._finetune_launched_once = True
-        if status is ServiceStatus.RUNNING:
-            self._finetune_started = True
-            self._finetune_status = "running"
-            self._publish_finetune_state()
-        else:
-            self._finetune_status = "error"
-            self._publish_finetune_state(
-                error=f"Did not start - see {self._finetune_log_path()}"
-            )
-
-    def _do_finetune_stop(self) -> None:
-        """Stop the studio, surfacing the limitation warning if a run was live.
-
-        The run check happens BEFORE the stop, because once the child is gone the
-        evidence (a train.log still being written) may stop updating and the owner
-        would get a clean-stop claim that is not true.
-        """
-        # Probes the tree directly rather than reading the cache: this runs on the
-        # ops worker, and the stop-time warning must reflect the run's state right
-        # now, not the state at the last monitor tick.
-        warning = (
-            self.finetune_warning_text() if self._probe_finetune_run_active() else ""
-        )
-        try:
-            self._finetune_service().stop()
-        except Exception as exc:  # noqa: BLE001 - boundary guard
-            self._finetune_status = "error"
-            self._publish_finetune_state(error=f"fine-tune studio stop failed: {exc}")
-            return
-        self._finetune_status = "stopped"
-        self._finetune_started = False
-        self._publish_finetune_state(warning=warning)
-
-    def _do_finetune_open(self) -> None:
-        """Open the studio's loopback URL in the owner's default browser."""
-        import finetune as ft
-
-        if self._finetune_status != "running":
-            self._publish_finetune_state(
-                error="the fine-tune studio is not running yet"
-            )
-            return
-        # Second, independent fail-closed guard (DEC-M13-2 / SEC-M13-2): without a
-        # port LOCITIZE itself resolved there is no URL it can honestly claim is the
-        # studio, so the browser is never launched at a guess.
-        resolved = self._finetune_resolved_port()
-        if resolved is None:
-            self._publish_finetune_state(
-                error="the fine-tune studio is not running yet"
-            )
-            return
-        url = ft.studio_url(self._settings, resolved)
-        if getattr(self._settings.finetune, "open_browser", True):
-            webbrowser.open(url)
-            self._publish_finetune_state()
-            return
-        # open_browser is off, so the click cannot launch anything. Say what
-        # happened and hand over the URL instead of republishing an identical
-        # state, which reads as a dead button (finding L-2).
-        payload = self.finetune_state()
-        payload["message"] = (
-            f"finetune.open_browser is off - open {url} yourself, or set "
-            f"finetune.open_browser: true in settings.yaml."
-        )
-        self.result_q.put(Result("finetune_state", True, payload))
 
     def _do_finetune_scan(self) -> None:
         """Rescan the outputs tree and publish the discovered-model rows."""
@@ -2477,7 +2370,7 @@ class GuiController:
             self._open_llamacpp()
 
     def detect_harnesses(self) -> dict[str, str | None]:
-        """Resolve claude/codex/opencode on PATH for the picker to grey out
+        """Resolve codex/opencode on PATH for the picker to grey out
         whichever isn't installed. Cheap (shutil.which x3); safe on the UI
         thread, matching how open_chat's own webui_available() check runs."""
         from harness_launch import detect_harnesses as _detect
@@ -2492,12 +2385,11 @@ class GuiController:
     def request_launch_harness(
         self, choice: str, project_dir: str, remember: bool = True
     ) -> None:
-        """Queue a "Launch in Claude Code/Codex/OpenCode" request (M-harness).
+        """Queue a "Launch in Codex/OpenCode" request (M-harness).
 
         Runs on the ops worker (Thread B): each launch writes a provider
         config file (Codex's config.toml, OpenCode's project opencode.json)
-        and/or starts the Claude bridge's HTTP server, none of which belong
-        on the UI thread. remember persists project_dir via write_chat_harness_dir
+        outside the UI thread. remember persists project_dir via write_chat_harness_dir
         the same way open_chat's remember persists the UI choice.
         """
         self.command_q.put(
@@ -2968,6 +2860,22 @@ class GuiController:
             )
         elif command.kind == "session_launch":
             self._do_session_launch(command.payload)
+        elif command.kind == "release_and_then":
+            # The owner confirmed "Release and stop": drop the coding-terminal
+            # reservation, then run the action that was refused.
+            self._controller._session_reserved_model = None
+            self._local_session_launches = 0
+            then = command.payload.get("then")
+            if then == "free_gpu":
+                self._do_free_gpu()
+            elif then == "start":
+                self._do_start(
+                    command.payload.get("model_id", ""), command.payload.get("reasoning")
+                )
+            elif then == "release":
+                self.result_q.put(Result("session_launch", True, {"released": True}))
+            else:
+                self._do_stop()
         elif command.kind == "release_sessions":
             self._controller._session_reserved_model = None
             self._local_session_launches = 0
@@ -2988,12 +2896,6 @@ class GuiController:
             self._do_memory_search(command.payload.get("query", ""))
         elif command.kind == "benchmark":
             self._do_benchmark(command.payload.get("model_id", ""))
-        elif command.kind == "finetune_start":
-            self._do_finetune_start()
-        elif command.kind == "finetune_stop":
-            self._do_finetune_stop()
-        elif command.kind == "finetune_open":
-            self._do_finetune_open()
         elif command.kind == "finetune_scan":
             self._do_finetune_scan()
         elif command.kind == "feature_state":
@@ -3388,8 +3290,8 @@ class GuiController:
         config here: Codex's config.toml and OpenCode's project opencode.json
         are already written fresh on every real _do_launch_harness call (a
         model port and, for OpenCode, a project folder are needed to build
-        the config, neither of which exists yet at install time), and Claude
-        Code needs no config file at all. Installing just gets the binary
+        the config, neither of which exists yet at install time). Installing
+        just gets the binary
         onto PATH; the existing launch path configures it the first time it
         is actually used.
         """
@@ -3477,7 +3379,11 @@ class GuiController:
             ),
         )
         try:
-            handle = self._assistant_start_fn(events, voice, speak)
+            preferred = getattr(self, "_selected_model_id", None)
+            if preferred:
+                handle = self._assistant_start_fn(events, voice, speak, preferred)
+            else:
+                handle = self._assistant_start_fn(events, voice, speak)
         except Exception as exc:  # noqa: BLE001 - boundary: honest error, never a raise
             self._assistant_handle = None
             self.result_q.put(
@@ -3485,7 +3391,7 @@ class GuiController:
                     "assistant_error",
                     False,
                     {},
-                    error=f"could not start assistant: {exc}",
+                    error=plain_assistant_error(str(exc)),
                 )
             )
             return
@@ -3632,14 +3538,11 @@ class GuiController:
             # switch stops the old one), so report the controller's real state (O-2).
             running = self._controller.running_model_id
             self._active_port = self._resolve_running_port(running) if running else None
-            self.result_q.put(
-                Result(
-                    "start",
-                    False,
-                    {"model_id": model_id, **self._running_snapshot_payload()},
-                    error=str(exc),
-                )
-            )
+            payload = {"model_id": model_id, **self._running_snapshot_payload()}
+            if "coding terminal is still using" in str(exc):
+                # Not a dead end: the UI offers "Release and switch".
+                payload.update(reserved=True, then="start", reasoning=reasoning)
+            self.result_q.put(Result("start", False, payload, error=str(exc)))
             return
 
         if status is ServiceStatus.RUNNING:
@@ -3670,7 +3573,10 @@ class GuiController:
 
     def _do_stop(self) -> None:
         if getattr(self._controller, "_session_reserved_model", None):
-            self.result_q.put(Result("stop", False, {}, error="Release the model on Sessions before stopping it."))
+            self.result_q.put(Result(
+                "stop", False, {"reserved": True, "then": "stop"},
+                error=RESERVED_MODEL_MESSAGE,
+            ))
             return
         from services import ServiceStatus
 
@@ -3691,9 +3597,6 @@ class GuiController:
             )
 
     def _do_free_gpu(self) -> None:
-        if getattr(self._controller, "_session_reserved_model", None):
-            self.result_q.put(Result("free_gpu", False, {}, error="Release the model on Sessions before freeing GPU memory."))
-            return
         """Stop the supervised model, then clear LOCITIZE's own orphaned GPU
         servers, and report the result (M17.8).
 
@@ -3704,11 +3607,18 @@ class GuiController:
         lives under LOCITIZE's bin/: a foreign app (LM Studio, a game) is counted
         in the report so the user sees it, but is never a termination candidate.
         """
+        if getattr(self._controller, "_session_reserved_model", None):
+            self.result_q.put(Result(
+                "free_gpu", False, {"reserved": True, "then": "free_gpu"},
+                error=RESERVED_MODEL_MESSAGE,
+            ))
+            return
         import gpu_ledger
         from pathlib import Path
 
         # 1. Stop the supervised model cleanly, if one is running. A stop error
         #    must not abort the orphan sweep - freeing VRAM is the whole point.
+        stopped_model = self._controller.running_model_id
         try:
             self._controller.stop()
         except Exception:  # noqa: BLE001 - honest degrade, never raise off-thread
@@ -3744,6 +3654,7 @@ class GuiController:
                 True,
                 {
                     "freed": freed,
+                    "stopped_model": stopped_model,
                     "remaining_ours": sum(1 for p in after if p.is_locitize),
                     "others": others,
                     "vram_free_mb": vram_free_mb,
@@ -3774,27 +3685,47 @@ class GuiController:
                 }
         return {"running_model_id": None, "running_port": None}
 
+    def _publish_whisper_state(self) -> None:
+        """Tell the view when voice input starts or stops, whatever started it.
+
+        Owner-observed 2026-10-19: voice input was already running from startup
+        while the page offered "Turn on voice input", so the click switched it
+        OFF. One cheap process check per monitor cycle; a Result only on change.
+        """
+        try:
+            running = bool(self._whisper.is_running())
+        except Exception:  # noqa: BLE001 - no whisper controller (tests, CLI) is not an error
+            return
+        if running != self._last_whisper_running:
+            self._last_whisper_running = running
+            self.result_q.put(Result("whisper", True, {"running": running}))
+
     def _do_whisper_toggle(self) -> None:
         from services import ServiceStatus
 
         try:
             if self._whisper.is_running():
                 self._whisper.stop()
+                self._last_whisper_running = False
                 self.result_q.put(Result("whisper", True, {"running": False}))
             else:
                 status = self._whisper.start()
                 running = status is ServiceStatus.RUNNING
+                self._last_whisper_running = running
                 self.result_q.put(
                     Result(
                         "whisper",
                         running,
                         {"running": running},
-                        error=None if running else "whisper-server did not start; see logs",
+                        error=None if running else plain_voice_error("did not start", "Voice input"),
                     )
                 )
         except ValueError as exc:
             # whisper binary/model path not configured yet.
-            self.result_q.put(Result("whisper", False, {"running": False}, error=str(exc)))
+            self.result_q.put(Result(
+                "whisper", False, {"running": False},
+                error=plain_voice_error(str(exc), "Voice input"),
+            ))
 
     def _do_listen(self, seconds: float) -> None:
         """Run the existing --listen capture, streaming each segment to the pump.
@@ -3810,16 +3741,31 @@ class GuiController:
             )
             return
 
+        failures: list[str] = []
+
         def emit(line: str) -> None:
+            # A start failure arrives as a "cannot start ..." line; keep it so the
+            # final Result can explain WHY, instead of a generic "did not complete".
+            if line.startswith(("cannot start", "whisper-stream did not start")):
+                failures.append(line)
+                return
             self.result_q.put(Result("transcript", True, {"line": line}))
 
         try:
             ok = self._listen_fn(seconds, emit)
         except Exception as exc:  # noqa: BLE001 - boundary guard
-            self.result_q.put(Result("listen", False, {}, error=f"listen failed: {exc}"))
+            self.result_q.put(Result(
+                "listen", False, {},
+                error=plain_voice_error(f"listen failed: {exc}", "Voice input"),
+            ))
             return
         self.result_q.put(
-            Result("listen", bool(ok), {}, error=None if ok else "listen did not complete cleanly")
+            Result(
+                "listen", bool(ok), {},
+                error=None if ok else plain_voice_error(
+                    failures[-1] if failures else "did not complete", "Voice input"
+                ),
+            )
         )
 
     def _do_speak(self, text: str, voice: str) -> None:
@@ -3844,10 +3790,16 @@ class GuiController:
         try:
             ok, detail = self._speak_fn(text, chosen)
         except Exception as exc:  # noqa: BLE001 - boundary guard
-            self.result_q.put(Result("speak", False, {"voice": chosen}, error=f"speak failed: {exc}"))
+            self.result_q.put(Result(
+                "speak", False, {"voice": chosen},
+                error=plain_voice_error(f"speak failed: {exc}", "Voice replies"),
+            ))
             return
         self.result_q.put(
-            Result("speak", bool(ok), {"voice": chosen}, error=None if ok else detail)
+            Result(
+                "speak", bool(ok), {"voice": chosen},
+                error=None if ok else plain_voice_error(detail, "Voice replies"),
+            )
         )
 
     def _do_audition(self) -> None:
@@ -3875,11 +3827,13 @@ class GuiController:
                 ok, detail = self._speak_fn(sentence, voice)
             except Exception as exc:  # noqa: BLE001 - boundary guard
                 self.result_q.put(
-                    Result("audition", False, {"voice": voice}, error=f"audition failed: {exc}")
+                    Result("audition", False, {"voice": voice},
+                           error=plain_voice_error(f"audition failed: {exc}", "Voice replies"))
                 )
                 return
             if not ok:
-                self.result_q.put(Result("audition", False, {"voice": voice}, error=detail))
+                self.result_q.put(Result("audition", False, {"voice": voice},
+                                         error=plain_voice_error(detail, "Voice replies")))
                 return
         self.result_q.put(Result("audition", True, {"count": len(voices)}))
 
@@ -4373,9 +4327,9 @@ class GuiController:
             # outputs-tree walk has to happen somewhere off the Qt thread; this
             # loop already exists and already idles cheaply. No Result is pushed -
             # nothing repaints on this signal, it only has to be fresh when the
-            # close path asks. Skipped entirely unless LOCITIZE started the studio.
-            if self._finetune_started:
-                self._probe_finetune_run_active()
+            # close path asks.
+            self._publish_whisper_state()
+            self._probe_finetune_run_active()
             # M15.7: notice a models.yaml rewritten by someone else (a CLI
             # tune, the ceiling tool, another session) while this window is
             # open. The desktop of 2026-08-25..29 ran four days against a
@@ -4445,8 +4399,8 @@ class GuiController:
                     True,
                     {
                         "text": (
-                            "models.yaml changed on disk - press Refresh on the "
-                            "Models page to load the current registry"
+                            "Your model list changed on disk. Press Refresh under "
+                            "Models > Advanced to load it."
                         )
                     },
                 )

@@ -44,8 +44,6 @@ def find_codex_exe() -> str:
     return ""
 
 
-def find_claude_exe() -> str:
-    return shutil.which("claude") or "claude"
 
 
 def find_grok_exe() -> str:

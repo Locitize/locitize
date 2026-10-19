@@ -1243,7 +1243,7 @@ class ModelController:
         raise ValueError(
             f"another locitize model server is already holding the GPU "
             f"({listed}). Starting a second one would leave both spilling to "
-            f"CPU. Use Offload GPU to clear it, then retry"
+            f"CPU. Press Free up GPU to clear it, then try again"
         )
 
     def switch(
@@ -1256,7 +1256,7 @@ class ModelController:
         """Switch to a different model: stop old (confirm gone), then start new."""
         reserved = getattr(self, "_session_reserved_model", None)
         if reserved and reserved != model_id:
-            raise ValueError("A coding session is using this model. Release it on the Sessions page before switching.")
+            raise ValueError("A coding terminal is still using this model. Release it on the Code page (Release model) before switching.")
         # Already serving this exact model: nothing to switch.
         if (
             self._current is not None

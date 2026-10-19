@@ -1842,7 +1842,10 @@ class Downloader:
                 timeout=self.config.search_timeout_s,
                 handler=handler,
             ) as response:
-                body = json.loads(response.read().decode("utf-8"))
+                raw = response.read(4 * 1024 * 1024 + 1)
+                if len(raw) > 4 * 1024 * 1024:
+                    raise HubError("http", "Hugging Face metadata exceeds the 4 MiB inspection limit")
+                body = json.loads(raw.decode("utf-8"))
                 next_url = _parse_link_next(response.headers.get("Link"))
                 return body, next_url
         except urllib.error.HTTPError as exc:

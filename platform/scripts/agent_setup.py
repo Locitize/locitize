@@ -159,8 +159,6 @@ def main(argv: list[str] | None = None) -> int:
     say("Done. Verify with: launcher.py --health --json")
     store = setup_env.ensure_model_store(say)
     say(f"model store: {store.message}")
-    shim = setup_env.install_claude_local(say)
-    say(f"claude-local: {shim.message}")
     say("Launch the desktop with: locitize.vbs")
     return 0 if failed == 0 else 1
 

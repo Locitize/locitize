@@ -8,6 +8,7 @@ venv/
 # The dedicated Open WebUI venv (open-webui + its heavy deps). Isolated from
 # the platform venv and never committed, exactly like .venv/.
 .webui-venv/
+.plugin-venv/
 .env
 speech.wav
 utterance.wav

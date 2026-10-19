@@ -1550,7 +1550,7 @@ def test_should_pre_steer_on_tools_needed_ask_without_prior_tools():
         "model": "qwen3-30b-a3b-instruct-q4_k_m",
         "messages": [{
             "role": "user",
-            "content": "Project folder: proj\n\nTask: list the files",
+            "content": "Project folder: /locitize-test/proj\n\nTask: list the files",
         }],
         "tools": [
             {"type": "function", "function": {"name": "laya_route_tools"}},

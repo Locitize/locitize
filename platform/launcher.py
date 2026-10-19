@@ -203,6 +203,30 @@ BANNER = r"""
 )
 
 
+
+def resolve_assistant_model(requested, running_id, default_id, registry):
+    """Pick the chat model for the Talk assistant: (model_id, problem).
+
+    Order: the model already running, the model the caller picked, the
+    configured default, then the first installed model that has a file. A fresh
+    install has no default, so without the last two steps Talk could never start.
+    ``problem`` is a plain-language sentence when nothing usable exists.
+    """
+    for candidate in (running_id, requested, default_id):
+        if not candidate:
+            continue
+        found = registry.get(candidate)
+        if found is not None and found.location:
+            return candidate, ""
+    launchable = registry.launchable()
+    if launchable:
+        return launchable[0].id, ""
+    return "", (
+        "No model is ready to talk with yet. Open Models, download or add one, "
+        "then come back to Voice & Vision."
+    )
+
+
 class Launcher:
     """Orchestrates bootstrap, the verify ladder, rendering, and the menu.
 
@@ -454,8 +478,8 @@ class Launcher:
             # the GUI's SHARED, atexit-backstopped manager so the no-orphan guarantee
             # (M10.4) covers the assistant's model/mic/voice, the vision model, and the
             # benchmark model. gui.py never sees any of this wiring (presentation only).
-            assistant_start_fn=lambda events, voice, speak: self._gui_assistant_start(
-                settings, models, events, voice=voice, speaking=speak
+            assistant_start_fn=lambda events, voice, speak, model_id=None: self._gui_assistant_start(
+                settings, models, events, voice=voice, speaking=speak, model_id=model_id
             ),
             describe_fn=lambda path, prompt: self._gui_describe(
                 settings, models, path, prompt
@@ -561,8 +585,8 @@ class Launcher:
             listen_fn=lambda seconds, emit: self._gui_listen(settings, seconds, emit),
             speak_fn=lambda text, voice: self._gui_speak(settings, text, voice),
             openwebui_start_fn=lambda: self._start_openwebui(settings),
-            assistant_start_fn=lambda events, voice, speak: self._gui_assistant_start(
-                settings, models, events, voice=voice, speaking=speak
+            assistant_start_fn=lambda events, voice, speak, model_id=None: self._gui_assistant_start(
+                settings, models, events, voice=voice, speaking=speak, model_id=model_id
             ),
             describe_fn=lambda path, prompt: self._gui_describe(
                 settings, models, path, prompt
@@ -621,7 +645,7 @@ class Launcher:
             )
             return 2
         try:
-            return desktop.run(gc, report.overall.value)
+            return desktop.run(gc, report.overall.value, report)
         finally:
             # The close hook calls shutdown(); this backstop covers construction or
             # event-loop failures and is safe because stop_all() is idempotent.
@@ -768,13 +792,15 @@ class Launcher:
 
         controller = self._gui_model_controller
         registry = self._gui_registry
-        target_id = model_id or settings.launcher.default_model
+        target_id, problem = resolve_assistant_model(
+            model_id,
+            controller.running_model_id,
+            settings.launcher.default_model,
+            registry,
+        )
+        if problem:
+            raise RuntimeError(problem)
         model = registry.get(target_id)
-        if model is None or not model.location:
-            raise RuntimeError(
-                f"chat model '{target_id}' is not available (unknown id or empty "
-                f"location); set launcher.default_model or the model's location"
-            )
         # Ensure the chat model is RUNNING on the shared controller (start if none is
         # up, switch if a different one is). An honest failure raises with the reason.
         if controller.running_model_id != target_id:

@@ -128,9 +128,10 @@ class GgufHeader:
     # is a legitimate state (some converted GGUFs omit it), not a parse failure,
     # so it is a None rather than an exception - the caller decides what to do.
     context_length: int | None
+    block_count: int | None = None
 
 
-def read_gguf_header(path: str | Path) -> GgufHeader:
+def read_gguf_header(path: str | Path, *, include_layer_count: bool = False) -> GgufHeader:
     """Read one GGUF file's architecture and native context length.
 
     Opens the file, validates the magic and version, then walks the metadata
@@ -152,7 +153,7 @@ def read_gguf_header(path: str | Path) -> GgufHeader:
 
     try:
         with open(file_path, "rb", buffering=_BUFFER_BYTES) as handle:
-            return _parse_header(handle, file_path)
+            return _parse_header(handle, file_path, include_layer_count=include_layer_count)
     except OSError as exc:
         cause = (exc.strerror or "the file could not be opened").strip().rstrip(".")
         raise GgufError(
@@ -185,7 +186,7 @@ def read_native_context_length(path: str | Path) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def _parse_header(handle: BinaryIO, file_path: Path) -> GgufHeader:
+def _parse_header(handle: BinaryIO, file_path: Path, *, include_layer_count: bool = False) -> GgufHeader:
     """Walk the fixed prefix then the KV block; stop as soon as we have enough."""
     magic = _read_exact(handle, 4, file_path, "the magic bytes")
     if magic != GGUF_MAGIC:
@@ -221,15 +222,25 @@ def _parse_header(handle: BinaryIO, file_path: Path) -> GgufHeader:
     # first and there is exactly one such key, but relying on ordering would be
     # a silent-wrong-answer bug on a file written in another order.
     context_candidates: dict[str, int] = {}
+    block_candidates: dict[str, int] = {}
 
-    for _ in range(kv_count):
+    for index in range(kv_count):
+        if include_layer_count and context_length is not None and (index >= 256 or handle.tell() > 1024 * 1024):
+            break
         key = _read_string(handle, file_path)
         value_type = _unpack(
             "<I", _read_exact(handle, 4, file_path, f"the type of '{key}'")
         )
 
+        if include_layer_count and context_length is not None and value_type == 9:
+            # Optional layer facts never require traversing tokenizer arrays.
+            break
         if key == KEY_ARCHITECTURE:
             architecture = str(_read_value(handle, value_type, file_path))
+        elif include_layer_count and key.endswith(".block_count"):
+            value = _read_value(handle, value_type, file_path)
+            if type(value) is int and 1 <= value <= 4096:
+                block_candidates[key] = value
         elif key.endswith(CONTEXT_LENGTH_SUFFIX):
             value = _read_value(handle, value_type, file_path)
             if isinstance(value, int) and not isinstance(value, bool):
@@ -242,7 +253,8 @@ def _parse_header(handle: BinaryIO, file_path: Path) -> GgufHeader:
         # millisecond range on a 15GB file.
         if architecture and f"{architecture}{CONTEXT_LENGTH_SUFFIX}" in context_candidates:
             context_length = context_candidates[f"{architecture}{CONTEXT_LENGTH_SUFFIX}"]
-            break
+            if not include_layer_count or f"{architecture}.block_count" in block_candidates:
+                break
 
     if context_length is None and architecture:
         context_length = context_candidates.get(f"{architecture}{CONTEXT_LENGTH_SUFFIX}")
@@ -261,6 +273,7 @@ def _parse_header(handle: BinaryIO, file_path: Path) -> GgufHeader:
         kv_count=kv_count,
         architecture=architecture,
         context_length=context_length,
+        block_count=block_candidates.get(f"{architecture}.block_count"),
     )
 
 

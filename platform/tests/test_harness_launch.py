@@ -1,4 +1,4 @@
-"""Tests for harness_launch.py's "Launch in Claude Code/Codex/OpenCode" wiring
+"""Tests for harness_launch.py's "Launch in Codex/OpenCode" wiring
 (owner request 2026-08-21). Everything here is exercised without a real
 model, a running llama-server, or the harness CLIs actually being installed:
 detection is a monkeypatched shutil.which, config writers operate on
@@ -30,7 +30,7 @@ def test_detect_executable_found(monkeypatch):
 
 def test_detect_executable_missing(monkeypatch):
     monkeypatch.setattr(hl.shutil, "which", lambda name: None)
-    assert hl.detect_executable("claude") is None
+    assert hl.detect_executable("opencode") is None
 
 
 def test_detect_executable_rejects_unknown_harness():
@@ -38,8 +38,8 @@ def test_detect_executable_rejects_unknown_harness():
         hl.detect_executable("not-a-real-harness")
 
 
-def test_detect_harnesses_reports_all_three_independently(monkeypatch):
-    resolved = {"claude": "/bin/claude", "codex": None, "opencode": "/bin/opencode"}
+def test_detect_harnesses_reports_both_independently(monkeypatch):
+    resolved = {"codex": None, "opencode": "/bin/opencode"}
     monkeypatch.setattr(hl.shutil, "which", lambda name: resolved[name])
     assert hl.detect_harnesses() == resolved
 
@@ -281,40 +281,15 @@ def test_opencode_launch_argv():
     assert argv == ["opencode", "/locitize-test/proj", "-m", "locitize/qwen3-14b"]
 
 
-# --------------------------------------------------------------------------- #
-# Claude Code: env pointed at the model's own llama-server (native /v1/messages)
-# --------------------------------------------------------------------------- #
 
 
-def test_claude_launch_argv_carries_the_model_id_and_scopes_the_tool_schema():
-    argv = hl.claude_launch_argv("qwen3-14b")
-    assert argv[:3] == ["claude", "--model", "qwen3-14b"]
-    assert "--strict-mcp-config" in argv
-    assert "--tools" in argv
-    assert argv[argv.index("--tools") + 1] == hl.CLAUDE_LOCAL_SESSION_TOOLS
-    # Empirically confirmed live 2026-08-21: this exact set is small enough
-    # for llama-server's grammar compiler to accept (real "PONG" reply,
-    # exit 0), where the full default tool+MCP surface hard-errored.
-    assert hl.CLAUDE_LOCAL_SESSION_TOOLS == "Bash,Edit,Read,Write,Glob,Grep"
 
 
-def test_claude_launch_env_points_at_model_server_no_v1_suffix():
-    env = hl.claude_launch_env("http://127.0.0.1:8080")
-    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8080"
-    assert env["ANTHROPIC_API_KEY"]  # non-empty; claude CLI requires SOME value
-    assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in env
 
 
-def test_claude_launch_env_sets_max_context_tokens_from_the_real_model():
-    env = hl.claude_launch_env("http://127.0.0.1:8080", context_size=10000)
-    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "10000"
 
 
-def test_claude_launch_env_omits_max_context_tokens_when_unknown():
-    env = hl.claude_launch_env("http://127.0.0.1:8080", context_size=None)
-    assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in env
-    env_zero = hl.claude_launch_env("http://127.0.0.1:8080", context_size=0)
-    assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in env_zero
+
 
 
 # --------------------------------------------------------------------------- #
@@ -462,12 +437,12 @@ def test_detect_executable_fresh_searches_refreshed_path(monkeypatch):
 
     def fake_which(name, path=None):
         seen["name"], seen["path"] = name, path
-        return "/fake/claude"
+        return "/fake/opencode"
 
     monkeypatch.setattr(hl, "refreshed_search_path", lambda: "/fake:/other")
     monkeypatch.setattr(hl.shutil, "which", fake_which)
-    assert hl.detect_executable_fresh("claude") == "/fake/claude"
-    assert seen == {"name": "claude", "path": "/fake:/other"}
+    assert hl.detect_executable_fresh("opencode") == "/fake/opencode"
+    assert seen == {"name": "opencode", "path": "/fake:/other"}
 
 
 def test_detect_executable_fresh_rejects_unknown_harness():
@@ -481,27 +456,10 @@ def test_refreshed_search_path_is_plain_path_off_windows(monkeypatch):
     assert hl.refreshed_search_path() == "/usr/bin:/bin"
 
 
-def test_install_claude_code_success(monkeypatch):
-    monkeypatch.setattr(hl.subprocess, "run", lambda *a, **k: _completed(0))
-    monkeypatch.setattr(hl, "detect_executable_fresh", lambda h: "/fake/claude")
-    ok, message = hl.install_claude_code()
-    assert ok is True
-    assert "Claude Code installed" in message
 
 
-def test_install_claude_code_installer_failure_surfaces_stderr(monkeypatch):
-    monkeypatch.setattr(hl.subprocess, "run", lambda *a, **k: _completed(1, stderr="network unreachable"))
-    ok, message = hl.install_claude_code()
-    assert ok is False
-    assert "network unreachable" in message
 
 
-def test_install_claude_code_not_found_after_install_says_restart(monkeypatch):
-    monkeypatch.setattr(hl.subprocess, "run", lambda *a, **k: _completed(0))
-    monkeypatch.setattr(hl, "detect_executable_fresh", lambda h: None)
-    ok, message = hl.install_claude_code()
-    assert ok is False
-    assert "restart locitize" in message
 
 
 def test_install_codex_success(monkeypatch):

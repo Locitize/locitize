@@ -1271,7 +1271,7 @@ def wait_loopback_port_free(port: int, *, timeout_s: float = 15.0, poll_s: float
             sock.settimeout(0.3)
             try:
                 sock.connect(("127.0.0.1", int(port)))
-                # Still accepting — keep waiting for the dying listener to exit.
+                # Still accepting â€” keep waiting for the dying listener to exit.
             except OSError:
                 return True
         if time.monotonic() >= deadline:

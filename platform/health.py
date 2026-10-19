@@ -20,6 +20,8 @@ traceback for an expected failure (Architecture section 8).
 from __future__ import annotations
 
 import json
+import os
+import re
 import time
 import shutil
 import socket
@@ -278,18 +280,18 @@ class NvidiaSmiGpuInfoProvider:
             )
         except (OSError, subprocess.SubprocessError):
             return None
-        for token in proc.stdout.split():
-            # The header reads "... CUDA Version: 12.4 ..."; capture the number.
-            if token.replace(".", "", 1).isdigit() and "." in token:
-                # Heuristic: only accept it if "CUDA" appears in the output.
-                if "CUDA Version" in proc.stdout:
-                    idx = proc.stdout.find("CUDA Version")
-                    tail = proc.stdout[idx : idx + 40]
-                    for tok in tail.replace(":", " ").split():
-                        if tok.replace(".", "", 1).isdigit() and "." in tok:
-                            return tok
-                    return None
-        return None
+        return parse_cuda_version(proc.stdout)
+
+
+def parse_cuda_version(smi_output: str) -> str | None:
+    """The CUDA version from nvidia-smi's header, or None.
+
+    Older drivers print "CUDA Version: 12.4"; drivers from the 600 series print
+    "CUDA UMD Version: 13.3" (next to "KMD Version") instead, which the old
+    exact-label match missed and reported as an unknown CUDA version.
+    """
+    match = re.search(r"CUDA (?:UMD )?Version:\s*(\d+\.\d+)", smi_output or "")
+    return match.group(1) if match else None
 
 
 class DefaultBinaryProbeProvider:
@@ -325,6 +327,13 @@ class DefaultPortProbeProvider:
                 return True
             except OSError:
                 return False
+
+
+# listener_exe() answer for a port held by this very process (the in-process
+# model router). Owner-observed 2026-10-19: every desktop launch showed
+# "ports in use: router:8093" because the router is not a child under the data
+# root, so its own port read as a conflict and the health light went amber.
+OWN_PROCESS = "<this locitize process>"
 
 
 class DefaultPortOwnerProvider:
@@ -363,6 +372,10 @@ class DefaultPortOwnerProvider:
                     and conn.laddr.port == port
                     and conn.pid
                 ):
+                    if conn.pid == os.getpid():
+                        # The model router runs on a thread INSIDE this
+                        # process, which lives nowhere near the data root.
+                        return OWN_PROCESS
                     proc = psutil.Process(conn.pid)
                     parts = [proc.exe() or ""]
                     try:
@@ -782,6 +795,8 @@ class PortsProbe:
             return False
         if not described:
             return False
+        if described == OWN_PROCESS:
+            return True
         return self._own_root in described.replace(chr(92), "/").lower()
 
     def run(self) -> HealthResult:

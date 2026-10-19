@@ -50,11 +50,11 @@ class SessionsPage(QtWidgets.QWidget):
         self.pool = QtCore.QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(22, 20, 22, 20)
-        heading = QtWidgets.QLabel("Your work, ready to continue")
-        heading.setObjectName("pageTitle")
-        layout.addWidget(heading)
-        hint = QtWidgets.QLabel("Find local coding sessions, keep notes, and continue in the right project.")
+        layout.setContentsMargins(0, 12, 0, 0)
+        # The Code page that hosts this widget supplies the title and the one
+        # "Release model" button, so neither is repeated here.
+        hint = QtWidgets.QLabel("Find past coding sessions, keep notes, and continue in the right project.")
+        hint.setObjectName("muted")
         hint.setWordWrap(True)
         layout.addWidget(hint)
         tools = QtWidgets.QHBoxLayout()
@@ -79,6 +79,7 @@ class SessionsPage(QtWidgets.QWidget):
         self.refresh_btn.clicked.connect(self.refresh)
         tools.addWidget(self.refresh_btn)
         self.new_btn = QtWidgets.QPushButton("New coding session")
+        self.new_btn.setToolTip("Pick a coding tool, a model and a project folder, then open a terminal")
         self.new_btn.setObjectName("primaryButton")
         self.new_btn.clicked.connect(lambda: self.local_launch(None))
         tools.addWidget(self.new_btn)
@@ -136,10 +137,6 @@ class SessionsPage(QtWidgets.QWidget):
         self.export_btn.clicked.connect(self.export_selected)
         self.archive_btn.clicked.connect(self.archive_selected)
         actions.addStretch(1)
-        release = QtWidgets.QPushButton("Release model")
-        release.setToolTip("When finished using local coding terminals, allow model switching again.")
-        release.clicked.connect(self.release_model)
-        actions.addWidget(release)
         more = QtWidgets.QPushButton("Import / backup")
         menu = QtWidgets.QMenu(more)
         menu.addAction("Import Session Portal details", self.import_portal)
@@ -148,7 +145,7 @@ class SessionsPage(QtWidgets.QWidget):
         more.setMenu(menu)
         actions.addWidget(more)
         layout.addLayout(actions)
-        self.status = QtWidgets.QLabel("Open Sessions to scan local histories. AMP server access is not enabled.")
+        self.status = QtWidgets.QLabel("Your past coding sessions are listed here once they have been read.")
         self.status.setWordWrap(True)
         self.status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         layout.addWidget(self.status)
@@ -175,7 +172,7 @@ class SessionsPage(QtWidgets.QWidget):
             return
         self._scanning = True
         self.refresh_btn.setEnabled(False)
-        self.status.setText("Reading local session histories...")
+        self.status.setText("Reading your past coding sessions...")
         def read():
             sessions, errors = self.service.scan()
             return sessions, errors, self.service.store.all()
@@ -250,7 +247,7 @@ class SessionsPage(QtWidgets.QWidget):
         cancel = threading.Event()
         self._search_cancel = cancel
         self.content_btn.setText("Cancel search")
-        self.status.setText("Searching bounded local transcript previews...")
+        self.status.setText("Searching your transcripts...")
         candidates = list(self.sessions)
         def find():
             matches, unavailable = set(), 0
@@ -268,7 +265,7 @@ class SessionsPage(QtWidgets.QWidget):
             if not cancel.is_set() and not error and self.search.text().strip().casefold() == query:
                 self._content_matches, unavailable = value
                 self.render()
-                self.status.setText(f"{len(self._content_matches)} transcript matches; {unavailable} unavailable. Long histories are bounded previews.")
+                self.status.setText(f"{len(self._content_matches)} transcript matches ({unavailable} could not be read). Very long histories are only searched in part.")
             elif cancel.is_set():
                 self.status.setText("Transcript search cancelled.")
             self._search_cancel = None
@@ -278,8 +275,10 @@ class SessionsPage(QtWidgets.QWidget):
         self._generation += 1
         generation = self._generation
         s = self.selected()
+        pick = "Select a session in the list first."
         for button in (self.resume_btn, self.local_btn, self.export_btn, self.archive_btn, self.save_btn):
             button.setEnabled(s is not None)
+            button.setToolTip("" if s is not None else pick)
         self.preview.clear()
         if s is None:
             self.title.clear()
@@ -295,7 +294,14 @@ class SessionsPage(QtWidgets.QWidget):
         self.pinned.setChecked(bool(meta.get("pinned")))
         self.archive_btn.setText("Restore from archive" if meta.get("archived") else "Archive")
         self.local_btn.setEnabled(s.provider in LOCAL_PROVIDERS and s.resumable)
+        self.local_btn.setToolTip(
+            "" if self.local_btn.isEnabled()
+            else "This session cannot be continued with a local model."
+        )
         self.resume_btn.setEnabled(s.resumable)
+        self.resume_btn.setToolTip(
+            "" if s.resumable else "This session has no saved state to resume."
+        )
         self.detail.setText(f"{provider_label(s.provider)} | {meta.get('model_id') or s.model or 'Model not recorded'}\n{meta.get('project') or s.project}")
         self.preview.setPlainText("Loading transcript...")
         def finished(text, error):
@@ -322,7 +328,7 @@ class SessionsPage(QtWidgets.QWidget):
         if s:
             self.change(archived=not self.metadata.get((s.provider, s.id), {}).get("archived", False))
 
-    def local_launch(self, session):
+    def local_launch(self, session, tool=None):
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Continue with locitize" if session else "New coding session")
         form = QtWidgets.QFormLayout(dialog)
@@ -332,6 +338,8 @@ class SessionsPage(QtWidgets.QWidget):
         if session:
             provider.setCurrentIndex(provider.findData(session.provider))
             provider.setEnabled(False)
+        elif tool and provider.findData(tool) >= 0:
+            provider.setCurrentIndex(provider.findData(tool))
         models = QtWidgets.QComboBox()
         for row in self.controller.list_models():
             if row.get("launchable"):

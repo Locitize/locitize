@@ -192,7 +192,7 @@ def test_run_desktop_wires_one_shared_manager_and_final_cleanup(monkeypatch):
             self.kwargs = kwargs
             constructed.append(self)
 
-    def run_view(view_controller, health):
+    def run_view(view_controller, health, report=None):
         assert view_controller is constructed[0]
         assert health == "PASS"
         assert manager.stop_count == 0
@@ -349,7 +349,7 @@ def test_ensure_desktop_interpreter_reexecs_into_venv_once(monkeypatch, tmp_path
         launcher, "_interpreters_equivalent", lambda _a, _b: False
     )
     monkeypatch.delenv(launcher._DESKTOP_REEXEC_ENV, raising=False)
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "Python311" / "python.exe"))
+    monkeypatch.setattr(sys, "executable", "/locitize-test/system-python/python.exe")
     monkeypatch.setattr(sys, "argv", ["launcher.py", "--desktop"])
     recorded = {}
 
@@ -375,7 +375,7 @@ def test_ensure_desktop_interpreter_fails_loud_when_venv_missing(monkeypatch, tm
     """No .venv and no PySide6: loud remedy, exit 2, no execve."""
     monkeypatch.setattr(launcher, "_desktop_venv_python", lambda: None)
     monkeypatch.setattr(launcher, "_current_has_pyside6", lambda: False)
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "Python311" / "python.exe"))
+    monkeypatch.setattr(sys, "executable", "/locitize-test/system-python/python.exe")
     calls = []
     monkeypatch.setattr(os, "execve", lambda *a, **k: calls.append(a))
     lines = []

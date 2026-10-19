@@ -667,6 +667,15 @@ class SetupWizard:
             ]
             if platform_pips:
                 jobs.append(platform_pips)
+            # Same rule for the fine-tune venv: the CUDA torch must land before
+            # the training stack, which would otherwise be free to pull a CPU torch.
+            finetune_pips = [
+                by_key.pop(k)
+                for k in ("finetune_pip", "finetune_torch_pip", "finetune_train_pip")
+                if k in by_key
+            ]
+            if finetune_pips:
+                jobs.append(finetune_pips)
             winget_chain = [
                 by_key.pop(k) for k in ("node_runtime", "caddy", "harness_clis")
                 if k in by_key
@@ -736,11 +745,6 @@ class SetupWizard:
             # can feed from; scanning and downloads both use it.
             store = setup_env.ensure_model_store(say)
             say(f"   {'ok' if store.ok else 'note'}: {store.message}")
-            # M21: the claude-local shim - `claude-local` in any terminal
-            # runs Claude Code against whatever model LOCITIZE is serving.
-            # Best-effort and an honest skip when claude is not installed.
-            shim = setup_env.install_claude_local(say)
-            say(f"   {'ok' if shim.ok else 'note'}: {shim.message}")
         except Exception as exc:  # noqa: BLE001 - a wizard must not die silently
             failures.append(str(exc))
             essential_failed = True
@@ -795,11 +799,18 @@ class SetupWizard:
                     "no NVIDIA card detected (nvidia-smi); the CPU voice engine "
                     "is installed and works, this step needs a GPU",
                 )
+            if key in ("finetune_torch_pip", "finetune_train_pip") and not self._machine.has_nvidia:
+                return setup_env.StepResult(
+                    key, True,
+                    "no NVIDIA card detected (nvidia-smi); fine-tuning needs one, "
+                    "so the training engine was not downloaded",
+                    skipped=True,
+                )
             packages = setup_env.PIP_SETS.get(key, ())
             target = venv_exe
             if key == "webui_pip":
                 target = _venv_exe_in(setup_env.REPO_DIR / ".webui-venv")
-            elif key == "finetune_pip":
+            elif key in ("finetune_pip", "finetune_torch_pip", "finetune_train_pip"):
                 target = _venv_exe_in(setup_env.REPO_DIR / "finetune-studio" / ".venv")
             return setup_env.pip_install(target, packages, on_output=lambda t: say("   " + t))
 

@@ -2,7 +2,7 @@
 
 The native Sessions page manages coding histories inside locitize. Its New coding
 session and Resume with local model actions select a project and model, wait for
-readiness, then launch Codex, Claude Code or OpenCode using per-process settings.
+readiness, then launch Codex or OpenCode using per-process settings.
 The Chat page uses the same configuration builder. Neither launch path rewrites
 global Codex/OpenCode settings. CLI permissions remain enabled. Resume original
 retains the tool's original backend, which may be remote.

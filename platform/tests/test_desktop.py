@@ -130,7 +130,7 @@ class FakeGuiController:
         self.calls.append(("start_openwebui_and_open", remember))
 
     def detect_harnesses(self):
-        return {"claude": None, "codex": None, "opencode": None}
+        return {"codex": None, "opencode": None}
 
     def last_project_dir(self):
         return ""
@@ -213,7 +213,7 @@ def test_desktop_smoke_builds_all_pages_and_shutdowns_once(qapp):
     assert window._stack.count() == len(desktop.PAGE_NAMES)
     # Models is the landing page: every other page depends on a running model,
     # so opening on Talk showed a disabled button with no explanation.
-    assert window._sidebar.currentItem().text() == "Home"
+    assert window._sidebar.currentItem().text() == "Start"
     assert window.minimumWidth() >= 960
     assert window.minimumHeight() >= 680
 
@@ -259,8 +259,8 @@ def test_desktop_drain_applies_assistant_state_and_metrics(qapp):
 
     assert window._talk_btn.text() == "Listening... speak now"
     assert not window._talk_btn.isEnabled()
-    assert window._chat_page_btn.isEnabled()
-    assert "42.5 tok/s" in window._talk_monitor.text()
+    assert window._chat_btn.isEnabled()
+    assert "42.5 tokens per second" in window._talk_monitor.text()
     assert window._models_monitor.text() == window._talk_monitor.text()
 
     window.closeEvent(qt_gui.QCloseEvent())
@@ -288,9 +288,9 @@ def test_disabled_primary_actions_render_with_muted_background(qapp):
         # Save and Chat begin disabled and share the selector exercised by the
         # blank reference buttons, avoiding text pixels in the color sample.
         assert not window._save_btn.isEnabled()
-        assert not window._chat_page_btn.isEnabled()
+        assert not window._chat_btn.isEnabled()
         assert window._save_btn.objectName() == "primaryButton"
-        assert window._chat_page_btn.objectName() == "primaryButton"
+        assert window._chat_btn.objectName() == "primaryButton"
         enabled_color = enabled.grab().toImage().pixelColor(10, 10).name()
         disabled_color = disabled.grab().toImage().pixelColor(10, 10).name()
         disabled_text = disabled.palette().color(
@@ -357,7 +357,7 @@ def test_model_lifecycle_clicks_apply_success_and_error_results(qapp):
     window._apply(
         gui_controller.Result("stop", True, {"running_model_id": None, "running_port": None})
     )
-    assert window._model_status.text() == "stopped"
+    assert window._model_status.text() == "Stopped."
     assert not window._stop_btn.isEnabled()
 
     window.closeEvent(qt_gui.QCloseEvent())
@@ -541,7 +541,7 @@ def test_assistant_and_chat_dialog_bindings(qapp, monkeypatch):
     assert fake.calls[-1] == ("request_end_assistant",)
 
     window._apply(gui_controller.Result("assistant_ended", True, {}))
-    window._chat_page_btn.click()
+    window._chat_btn.click()
     assert fake.calls[-1] == ("request_chat",)
     monkeypatch.setattr(
         desktop.QtWidgets.QDialog,
@@ -643,7 +643,6 @@ def test_show_harness_onboarding_skips_when_all_installed(qapp, monkeypatch):
     app, desktop, qt_gui = qapp
     fake = FakeGuiController()
     fake.detect_harnesses = lambda: {
-        "claude": "/bin/claude",
         "codex": "/bin/codex",
         "opencode": "/bin/opencode",
     }
@@ -670,7 +669,7 @@ def test_show_harness_onboarding_accepting_with_nothing_checked_installs_nothing
     # reflexive OK must never run a remote installer script.
     app, desktop, qt_gui = qapp
     fake = FakeGuiController()
-    fake.detect_harnesses = lambda: {"claude": None, "codex": "/bin/codex", "opencode": None}
+    fake.detect_harnesses = lambda: {"codex": "/bin/codex", "opencode": None}
     window = desktop.MainWindow(fake, health="OK")
 
     monkeypatch.setattr(
@@ -691,7 +690,7 @@ def test_show_harness_onboarding_offers_missing_and_installs_checked_ones(qapp, 
     """1-2 missing -> dialog shown; only explicitly-checked boxes install."""
     app, desktop, qt_gui = qapp
     fake = FakeGuiController()
-    fake.detect_harnesses = lambda: {"claude": None, "codex": "/bin/codex", "opencode": None}
+    fake.detect_harnesses = lambda: {"codex": "/bin/codex", "opencode": None}
     window = desktop.MainWindow(fake, health="OK")
 
     monkeypatch.setattr(
@@ -704,7 +703,7 @@ def test_show_harness_onboarding_offers_missing_and_installs_checked_ones(qapp, 
     window.show_harness_onboarding_if_needed()
 
     requested = sorted(c[1] for c in fake.calls if c[0] == "request_install_harness")
-    assert requested == ["claude", "opencode"]  # codex already installed, not offered
+    assert requested == ["opencode"]  # codex already installed, not offered
     window.closeEvent(qt_gui.QCloseEvent())
     window.deleteLater()
     app.processEvents()
@@ -714,7 +713,7 @@ def test_show_harness_onboarding_installs_nothing_when_declined(qapp, monkeypatc
     """3 missing -> declining the dialog requests zero installs."""
     app, desktop, qt_gui = qapp
     fake = FakeGuiController()
-    fake.detect_harnesses = lambda: {"claude": None, "codex": None, "opencode": None}
+    fake.detect_harnesses = lambda: {"codex": None, "opencode": None}
     window = desktop.MainWindow(fake, health="OK")
 
     monkeypatch.setattr(
@@ -834,9 +833,9 @@ def test_autotune_summary_reports_the_real_numbers(qapp):
     )
     window._drain()
     text = window._autotune_status.text()
-    for expected in ("131072", "196608", "212992", "extended 2x", "16384", "48.2 tokens/s"):
+    for expected in ("131072", "196608", "212992", "stretched 2x", "16384", "48.2 tokens per second"):
         assert expected in text
-    assert window._model_status.text() == "auto-tune finished: context 196608, 48.2 tokens/s"
+    assert window._model_status.text() == "Auto-tune finished: working memory 196608, 48.2 tokens per second"
     window.deleteLater()
     app.processEvents()
 
@@ -977,43 +976,19 @@ def test_thinking_box_defaults_to_no_override(qapp):
     assert fake.calls[-1] == ("request_start", "local-chat", None)
 
 
-def test_thinking_box_forwards_a_picked_level_and_budget(qapp):
+def test_thinking_box_forwards_a_picked_level(qapp):
     app, desktop, qt_gui = qapp
     fake = FakeGuiController()
     window = desktop.MainWindow(fake, health="OK")
-    window._thinking_combo.setCurrentText("low/2048")
+    labels = [window._thinking_combo.itemText(i) for i in range(window._thinking_combo.count())]
+    assert labels == ["Model's default", "Off", "Light", "Medium", "Deep"]
+    window._thinking_combo.setCurrentIndex(window._thinking_combo.findText("Light"))
     window._start_btn.click()
-    assert fake.calls[-1] == (
-        "request_start",
-        "local-chat",
-        {"effort": "low", "budget": 2048},
-    )
-
-
-def test_thinking_box_accepts_a_level_not_in_its_own_list(qapp):
-    """The list is a convenience; the model's chat template owns the vocabulary.
-
-    Qwen3.8 takes xhigh/medium/low while gpt-oss takes low/medium/high, so a
-    fixed dropdown would be wrong for part of any real registry.
-    """
-    app, desktop, qt_gui = qapp
-    fake = FakeGuiController()
-    window = desktop.MainWindow(fake, health="OK")
-    window._thinking_combo.setCurrentText("some-future-level")
-    window._start_btn.click()
-    assert fake.calls[-1][2] == {"effort": "some-future-level"}
-
-
-def test_thinking_box_refuses_to_start_on_an_unreadable_entry(qapp):
-    """Same rule as the terminal menu: never start at a level nobody chose."""
-    app, desktop, qt_gui = qapp
-    fake = FakeGuiController()
-    window = desktop.MainWindow(fake, health="OK")
-    before = list(fake.calls)
-    window._thinking_combo.setCurrentText("low/abc")
-    window._start_btn.click()
-    assert fake.calls == before  # nothing was queued
-    assert "integer" in window._model_status.text()
+    assert fake.calls[-1] == ("request_start", "local-chat", {"effort": "low"})
+    window._thinking_combo.setCurrentIndex(window._thinking_combo.findText("Off"))
+    assert window._selected_thinking("local-chat") == ({"enabled": False}, [])
+    window._thinking_combo.setCurrentIndex(window._thinking_combo.findText("Deep"))
+    assert window._selected_thinking("local-chat") == ({"effort": "xhigh"}, [])
 
 
 def test_an_externally_started_model_appears_in_the_window(qapp):
@@ -1165,7 +1140,7 @@ def test_memory_page_lists_recent_on_first_visit(qapp):
     fake = FakeGuiController()
     window = desktop.MainWindow(fake, health="OK")
     assert ("request_memory_search", "") not in fake.calls
-    window._sidebar.setCurrentRow(desktop.PAGE_NAMES.index("Memory"))
+    window._go_to("Code", "Search past chats")
     assert ("request_memory_search", "") in fake.calls
     window.closeEvent(qt_gui.QCloseEvent())
     window.deleteLater()

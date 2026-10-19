@@ -923,7 +923,7 @@ def test_a_stray_server_refuses_the_start_instead_of_stacking_on_it():
     message = str(excinfo.value)
     assert "already holding the GPU" in message
     assert "pid 4388" in message          # names the stray, so it can be found
-    assert "Offload GPU" in message       # and the remedy that already exists
+    assert "Free up GPU" in message       # and the remedy that already exists
     assert created == {}, "no process may be spawned when the guard refuses"
 
 

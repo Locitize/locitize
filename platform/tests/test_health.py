@@ -8,6 +8,8 @@ code path even on a machine that has a real GPU.
 
 from __future__ import annotations
 
+import pytest
+
 from config import Model, Settings
 from fakes import (
     FakeBinaryProbeProvider,
@@ -482,3 +484,28 @@ def test_unconfigured_optional_binary_warns_but_a_broken_path_fails():
     ).run()
     assert unset.status is HealthStatus.WARNING
     assert broken.status is HealthStatus.FAIL
+
+
+@pytest.mark.parametrize("header, expected", [
+    ("| NVIDIA-SMI 550.54   Driver Version: 550.54   CUDA Version: 12.4     |", "12.4"),
+    # Drivers from the 600 series label it "CUDA UMD Version" beside "KMD Version".
+    ("| NVIDIA-SMI 610.88   KMD Version: 610.88   CUDA UMD Version: 13.3     |", "13.3"),
+    ("| NVIDIA-SMI 610.88   KMD Version: 610.88 |", None),
+    ("", None),
+])
+def test_cuda_version_reads_old_and_new_nvidia_smi_headers(header, expected):
+    import health
+
+    assert health.parse_cuda_version(header) == expected
+
+
+def test_the_in_process_router_port_is_ours():
+    """Owner-observed 2026-10-19: every desktop launch warned 'ports in use:
+    router:8093' because the router runs inside the app's own process."""
+    from health import OWN_PROCESS
+
+    result = PortsProbe(
+        _Ports([8093]), {"router": 8093}, _Owner({8093: OWN_PROCESS}), _BIN,
+    ).run()
+    assert result.status is HealthStatus.PASS
+    assert result.data["ours"] == ["router:8093"]

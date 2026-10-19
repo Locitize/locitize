@@ -49,6 +49,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 import audio_api
+import responses_tools
 from local_guard import foreign_request_reason
 from audio_filter import AudioFilterResult
 
@@ -76,6 +77,11 @@ SWITCHING_PATHS = (
     "/chat/completions",
     "/completions",
 )
+
+# Codex's Responses requests name their model too. They switch like the chat
+# paths but get none of the chat-only voice, Laya or thinking rewrites; a body
+# without a model is served by whatever is running, unchanged.
+RESPONSES_SWITCHING_PATHS = ("/v1/responses", "/responses")
 
 
 def build_models_payload(
@@ -654,6 +660,7 @@ LAYA_ROUTE_TOOL = "laya_route_tools"
 # the live registry so a missing row falls through to the next.
 TOOL_CAPABLE_PREFERENCE = (
     "qwen3-coder",
+    "muse-glimmer",
     "gpt-oss",
 )
 
@@ -736,7 +743,7 @@ def pick_tool_capable_fallback(
 ) -> str | None:
     """Registry id of a proven tool-capable model, or None if none available.
 
-    Preference: qwen3-coder / gpt-oss (substring match on id),
+    Preference: qwen3-coder / muse-glimmer / gpt-oss (substring match on id),
     then the running model if it is not tool-broken, then any non-broken row.
     Never returns a tool-broken id.
     """
@@ -1088,8 +1095,8 @@ class _RouterHandler(BaseHTTPRequestHandler):
                                     ),
                                     "type": "model_not_tool_capable",
                                     "remedy": (
-                                        "pick a tool-capable model such as "
-                                        "qwen3-coder or gpt-oss"
+                                        "pick qwen3-coder, muse-glimmer, or gpt-oss "
+                                        "in the Agent Portal model picker"
                                     ),
                                 }
                             },
@@ -1136,6 +1143,11 @@ class _RouterHandler(BaseHTTPRequestHandler):
             body = apply_thinking_defaults(body)
             if spoken:
                 body = apply_voice_turn(body)
+
+        if method == "POST" and path in RESPONSES_SWITCHING_PATHS:
+            ok, body = self._ensure_model_for(router, body)
+            if not ok:
+                return  # _ensure_model_for already answered
 
         self._forward(method, body)
 
@@ -1388,11 +1400,20 @@ class _RouterHandler(BaseHTTPRequestHandler):
             )
             return
         host, port = target
+        tool_aliases = {}
+        if method == "POST" and self.path.split("?", 1)[0].rstrip("/") in ("/v1/responses", "/responses"):
+            try:
+                body = responses_tools.normalize_input(body)
+                body, tool_aliases = responses_tools.flatten_request(body)
+                body = responses_tools.inline_schema_refs(body)
+            except ValueError as exc:
+                self._send_json(422, {"error": {"type": "invalid_tool_namespace", "message": str(exc)}})
+                return
 
         headers = {
             key: value
             for key, value in self.headers.items()
-            if key.lower() not in ("host", "connection", "proxy-connection")
+            if key.lower() not in ("host", "connection", "proxy-connection", "content-length", "transfer-encoding")
         }
         headers["Host"] = f"{host}:{port}"
         # The client's Content-Length describes the body IT sent. The handoff
@@ -1420,7 +1441,7 @@ class _RouterHandler(BaseHTTPRequestHandler):
             if is_json:
                 # Read + promote BEFORE headers so Content-Length matches the
                 # bytes we actually write.
-                raw = promote_completion_bytes(response.read())
+                raw = responses_tools.restore_json(promote_completion_bytes(response.read()), tool_aliases)
                 self.send_response(response.status, response.reason)
                 for key, value in response.getheaders():
                     if key.lower() in (
@@ -1460,7 +1481,7 @@ class _RouterHandler(BaseHTTPRequestHandler):
                     if not chunk:
                         if carry:
                             self.wfile.write(
-                                promote_sse_chunk(carry) if is_sse else carry
+                                responses_tools.restore_sse(promote_sse_chunk(carry), tool_aliases) if is_sse else carry
                             )
                             self.wfile.flush()
                         break
@@ -1471,7 +1492,7 @@ class _RouterHandler(BaseHTTPRequestHandler):
                         carry = b""
                         continue
                     if data.endswith((b"\n\n", b"\r\n\r\n")):
-                        self.wfile.write(promote_sse_chunk(data))
+                        self.wfile.write(responses_tools.restore_sse(promote_sse_chunk(data), tool_aliases))
                         self.wfile.flush()
                         carry = b""
                         continue
@@ -1479,11 +1500,11 @@ class _RouterHandler(BaseHTTPRequestHandler):
                     idx_r = data.rfind(b"\r\n\r\n")
                     if idx_r > idx_n:
                         complete, carry = data[: idx_r + 4], data[idx_r + 4 :]
-                        self.wfile.write(promote_sse_chunk(complete))
+                        self.wfile.write(responses_tools.restore_sse(promote_sse_chunk(complete), tool_aliases))
                         self.wfile.flush()
                     elif idx_n >= 0:
                         complete, carry = data[: idx_n + 2], data[idx_n + 2 :]
-                        self.wfile.write(promote_sse_chunk(complete))
+                        self.wfile.write(responses_tools.restore_sse(promote_sse_chunk(complete), tool_aliases))
                         self.wfile.flush()
                     else:
                         carry = data

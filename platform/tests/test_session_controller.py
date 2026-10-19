@@ -44,7 +44,7 @@ def test_reserved_model_refuses_switch_before_stopping():
     from services import ModelController
     model = object.__new__(ModelController)
     model._session_reserved_model = "first"
-    with pytest.raises(ValueError, match="coding session"):
+    with pytest.raises(ValueError, match="coding terminal"):
         model.switch("second")
 
 

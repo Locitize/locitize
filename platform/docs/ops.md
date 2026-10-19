@@ -62,7 +62,7 @@ Probes (PASS/FAIL): llama `:8080`, router `:8093`, Open WebUI `:8096`, whisper `
 2. router (`:8093`)
 3. Open WebUI (`:8096`)
 4. whisper (`:8091`) / kokoro (`:8092`) as needed
-5. Agent Portal (`:4200`) — daily driver
+5. Agent Portal (`:4200`) â€” daily driver
 
 `start.ps1` defaults to `--desktop`. Use `-Terminal` for the interactive menu.
 
@@ -77,7 +77,7 @@ Details and safety notes live with `gpu_switch_lib.py`. Keep the chat model's VR
 
 ## Tailscale Serve (phone / remote on tailnet)
 
-Tailnet only — **no Funnel / public**. Locals stay on `127.0.0.1`.
+Tailnet only â€” **no Funnel / public**. Locals stay on `127.0.0.1`.
 
 **Serve layout:** Locitize/OWUI keeps root; Agent Portal has its own port.
 
@@ -93,13 +93,13 @@ Idempotent script (matches live map; do not fight Serve unless applying this exa
 |-----|---------|
 | `https://<magicdns>/` | Open WebUI `127.0.0.1:8096` (root `:443`) |
 | `https://<magicdns>:4443/` | Open WebUI `127.0.0.1:8096` (alt Serve URL; WEBUI_URL uses root) |
-| `https://<magicdns>:8443/` | Agent Portal `127.0.0.1:4200` (**portal only** — do **not** put Portal on `:443`) |
+| `https://<magicdns>:8443/` | Agent Portal `127.0.0.1:4200` (**portal only** â€” do **not** put Portal on `:443`) |
 
 Example: `https://<host>.<tailnet>.ts.net/` and `:4443` → OWUI; `:8443` → Portal only.
 
 ### Open WebUI env on every boot
 
-`platform/webui.py` → `_build_openwebui_env` (launcher `_start_openwebui` → `build_openwebui_spec`) sets:
+`platform/webui.py` â†’ `_build_openwebui_env` (launcher `_start_openwebui` â†’ `build_openwebui_spec`) sets:
 
 | Env | Value |
 |-----|-------|

@@ -1,39 +1,44 @@
-# LLM Finetune Studio
+# Fine-tune trainer
 
-Upload a chat-format dataset, click Start, get back a LoRA adapter + merged model + GGUF file.
-Training runs in a Docker container on your local GPU (tested on RTX 5070 Ti, 16GB VRAM) - no manual CUDA/Python setup needed.
+The engine behind the desktop **Fine-tune** page: QLoRA training on your own NVIDIA GPU,
+with no Docker. You give it example conversations; it gives back a LoRA adapter, a merged
+model and a GGUF file you can run in LoCiTiZe, llama.cpp, Ollama or LM Studio.
+
+You do not run anything here by hand. The Fine-tune page walks through four steps -
+choose a model, prepare and review the dataset, train, save - and runs these scripts for you.
 
 ## One-time setup
 
-1. Build the training image (takes a while the first time - installs CUDA toolchain, unsloth, and builds llama.cpp):
-   ```
-   docker build -t llm-finetune-trainer ./trainer
-   ```
-2. Install the UI's Python dependency:
-   ```
-   pip install -r app/requirements.txt
-   ```
+Tick **Fine-tune models** in LoCiTiZe setup (or Settings > Features). It builds
+`finetune-studio/.venv` with CUDA PyTorch (`torch==2.11.0+cu128`, which includes RTX 50-series
+kernels) and the pinned QLoRA stack (transformers, peft, trl, bitsandbytes, accelerate; see
+`PIP_SETS["finetune_train_pip"]` in `platform/setup_env.py`) plus `pypdf` for building datasets
+from PDF files - about 4 GB. llama.cpp (installed by setup, release pinned in
+`setup_env.LLAMA_CPP_TAG`) supplies `llama-quantize`. The first GGUF export downloads the matching
+`convert_hf_to_gguf.py` (about 30 MB) once.
 
-## Run it
-
+Manual equivalent, inside `finetune-studio/.venv`:
 ```
-streamlit run app/app.py
+pip install --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple torch==2.11.0+cu128
+pip install transformers==5.18.0 peft==0.21.2 trl==1.14.1 accelerate==1.15.0 bitsandbytes==0.50.2 datasets==5.0.1 sentencepiece==0.2.2 protobuf==7.36.2 numpy==2.4.6 pypdf
 ```
 
-Opens a local page. Upload a `.jsonl` dataset (one JSON object per line, each with a `messages` list -
-one JSON object per line with an `instruction`/`response` pair), pick a base model and settings, click **Start training**.
+## What is in `trainer/`
 
-Progress streams live in the page. When done, you'll see paths to:
-- `outputs/<run>/lora_adapter/` - small adapter weights, load on top of the base model
-- `outputs/<run>/merged_model/` - full standalone fine-tuned model
-- `outputs/<run>/<run>.<quant>.gguf` - single-file export for `llama.cpp` / Ollama / LM Studio
+| Script | What the Fine-tune page uses it for |
+|---|---|
+| `preflight.py` | Step 1 and Start training: is there an NVIDIA GPU, are the packages installed, is there enough free VRAM? Answers in plain language (`--model <id> --batch-size N` prints JSON). |
+| `build_dataset.py` | Step 2: turn documents (.txt .md .csv .docx .pdf) or a reviewed word table into training rows. |
+| `distill.py` | Step 2, "Have a bigger model write it": a teacher model answers your prompts. |
+| `train.py` | Step 3: 4-bit LoRA training, merge, and GGUF export (via `gguf_export.py`). |
+| `infer.py` | Step 4, "Compare": the same message to the original and the fine-tuned model. |
 
-### Before/after chat test
+Runs are written to `<data root>/finetune/outputs/<run>/`:
+- `lora_adapter/` - small adapter weights, load on top of the base model
+- `merged_model/` - full standalone fine-tuned model
+- `<run>.<quant>.gguf` - single-file model; step 4 saves it to a folder you choose and adds it to your model list
 
-Once a run finishes, a "Chat test" panel appears - type a prompt, hit **Compare replies**, and it runs
-the same message through both the original base model and your fine-tuned merged model side by side,
-so you can see the fine-tune's effect directly. The base model's weights are cached in a Docker volume
-(`hf-cache`) after the first load, so repeat comparisons are fast.
+Datasets you prepare in step 2 are saved to `<data root>/finetune/datasets/`.
 
 ## Dataset format
 
@@ -44,10 +49,16 @@ so you can see the fine-tune's effect directly. The base model's weights are cac
   {"role": "assistant", "content": "..."}
 ]}
 ```
-One JSON object per line (`.jsonl`), or a JSON array of these objects (`.json`).
+One JSON object per line (`.jsonl`), or a JSON array of these objects (`.json`). Alpaca-style
+`{"instruction", "input", "output"}` rows are accepted too. Step 2 shows every row, flags the
+ones the trainer cannot use, and drops duplicates before anything is trained.
 
 ## Notes
 
-- Default base model is `unsloth/Qwen2.5-1.5B-Instruct` - fast, fits easily in 16GB VRAM. 7B/8B models also fit at 4-bit but take longer.
-- `max_steps` controls how long training runs - 60 is a quick smoke test; real fine-tunes usually want several hundred to a few thousand steps depending on dataset size.
-- GGUF quantization: `f16` (largest, best quality), `q8_0` (balanced), `q4_k_m` (smallest, fastest, some quality loss) - good default for local chat use.
+- The smallest built-in base model is `unsloth/Qwen2.5-0.5B-Instruct` (a whole run takes a few
+  minutes on an RTX 5070 Ti); `Qwen2.5-1.5B-Instruct` is the best first real choice. 7B/8B models
+  also fit in 16 GB at 4-bit but take longer.
+- Step 3 suggests a number of training steps from your dataset size (1, 3 or 5 passes over it);
+  Advanced settings let you override it.
+- GGUF quality: `q4_k_m` (smallest, fastest, recommended), `q8_0` (closer to the original), `f16`
+  (full quality, largest).

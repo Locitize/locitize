@@ -1,8 +1,7 @@
 import argparse
 import json
 
-import torch
-from unsloth import FastLanguageModel
+from common import chat_reply, load_4bit
 
 
 def load_prompts(path):
@@ -35,15 +34,8 @@ def main():
     total = len(prompts)
     print(f"[STATUS] Loading teacher model {args.teacher_model}", flush=True)
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.teacher_model,
-        max_seq_length=4096,
-        load_in_4bit=True,
-    )
-    FastLanguageModel.for_inference(model)
+    model, tokenizer = load_4bit(args.teacher_model)
     print(f"[STATUS] Teacher loaded. Distilling {total} prompts.", flush=True)
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     with open(args.output, "w", encoding="utf-8") as out_f:
         for i, prompt in enumerate(prompts, start=1):
@@ -52,19 +44,9 @@ def main():
                 messages.append({"role": "system", "content": args.system})
             messages.append({"role": "user", "content": prompt})
 
-            inputs = tokenizer.apply_chat_template(
-                messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
-            ).to(device)
-
-            outputs = model.generate(
-                input_ids=inputs,
-                max_new_tokens=args.max_new_tokens,
-                temperature=args.temperature,
-                do_sample=args.temperature > 0,
-                use_cache=True,
+            reply = chat_reply(
+                model, tokenizer, messages, args.max_new_tokens, args.temperature
             )
-            prompt_length = inputs.shape[-1]
-            reply = tokenizer.decode(outputs[0, prompt_length:], skip_special_tokens=True).strip()
 
             row = {"messages": messages + [{"role": "assistant", "content": reply}]}
             out_f.write(json.dumps(row, ensure_ascii=False) + "\n")

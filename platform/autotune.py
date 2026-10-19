@@ -58,7 +58,7 @@ from typing import Any, Callable, Sequence
 # --------------------------------------------------------------------------- #
 
 # Never probe below this. A context under 8k is not worth extending and is below
-# what any harness this platform launches (Codex CLI, Claude Code) can even use.
+# what any harness this platform launches (Codex CLI) can even use.
 MIN_CONTEXT = 8192
 
 # Probe candidates are rounded to this grid so the search spends its very limited

@@ -7,6 +7,7 @@ only renders its Result objects on the Qt GUI thread through one QTimer drain.
 """
 
 import html
+import os
 import sys
 import tempfile
 import threading
@@ -39,7 +40,6 @@ HEADER_LOGO_PATH = ASSETS_DIR / "locitize_header_wordmark.png"
 # rather than a vague "we'll set it up" - one source so the two dialogs
 # can't drift apart and say different things about what actually runs.
 HARNESS_INSTALL_SUMMARIES = {
-    "claude": "irm https://claude.ai/install.ps1 | iex  (official Claude Code installer)",
     "codex": "irm https://chatgpt.com/codex/install.ps1 | iex  (official Codex installer)",
     "opencode": (
         "npm i -g opencode-ai  (installs Node.js LTS via winget first if "
@@ -107,7 +107,17 @@ MODEL_TABLE_MIN_HEIGHT = 26 + TABLE_ROW_HEIGHT_PX * 8
 # constant, not a literal in two places, because it is compared against as well
 # as displayed - a drifting copy would silently turn "as registered" into an
 # effort level and get rejected by the model's chat template at request time.
-THINKING_AS_REGISTERED = "as registered"
+THINKING_AS_REGISTERED = "Model's default"
+
+# Plain thinking choices: (label, value handed to parse_reasoning_choice).
+# An empty value means "send no override at all".
+THINKING_CHOICES = (
+    (THINKING_AS_REGISTERED, ""),
+    ("Off", "off"),
+    ("Light", "low"),
+    ("Medium", "medium"),
+    ("Deep", "xhigh"),
+)
 
 # Human labels for on-disk Kokoro voice ids. Unknown ids fall back to the
 # suffix after af_/am_/bf_/bm_. The combo stores the id as userData.
@@ -146,20 +156,91 @@ def selected_voice_id(combo):
         return str(data)
     return combo.currentText()
 
-# "Fine-tune" sits immediately after "Models" because both are about the model
-# registry and lifecycle; the sidebar remains the only mode selector (M13.2).
-PAGE_NAMES = (
-    "Home",
-    "Models",
-    "Sessions",
-    "Fine-tune",
-    "Talk",
-    "Voice Setup",
-    "Vision",
-    "Memory",
-    "Chat",
-    "Settings",
+HUB_DOWNLOAD_REASON = (
+    "Pick a file from the list first, and wait for any download in progress to finish."
 )
+
+# Fine-tuning runs natively now (no Docker), so its page is a normal sidebar
+# page. LOCITIZE_SHOW_FINETUNE=0 hides it.
+SHOW_FINETUNE_TAB = os.environ.get("LOCITIZE_SHOW_FINETUNE", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
+
+
+def build_page_names(show_finetune=True):
+    """The sidebar pages, in order. Fine-tune follows Voice & Vision."""
+    names = ["Start", "Models", "Code", "Voice & Vision"]
+    if show_finetune:
+        names.append("Fine-tune")
+    names.append("Settings")
+    return tuple(names)
+
+
+PAGE_NAMES = build_page_names(SHOW_FINETUNE_TAB)
+
+# One line for each page, shown when you hover its name in the sidebar.
+PAGE_TOOLTIPS = {
+    "Start": "Pick a model, start it, and open the chat",
+    "Models": "See your models, download new ones, and tune them",
+    "Code": "Use your model with coding tools, resume sessions, search old chats",
+    "Voice & Vision": "Talk out loud, ask about pictures, watch your screen",
+    "Fine-tune": "Train a model on your own data",
+    "Settings": "Features, coding tools, phone access and about",
+}
+
+
+class _HideWhenEmptyLabel(QtWidgets.QLabel):
+    """A status chip that takes no room while it has nothing to say."""
+
+    def __init__(self, text=""):
+        super().__init__(text)
+        self.setVisible(bool(text))
+
+    def setText(self, text):
+        super().setText(text)
+        self.setVisible(bool(text))
+
+
+class _SharedLabel(QtWidgets.QLabel):
+    """A status line that other pages can mirror.
+
+    Every page that can start an action shows the same outcome message, so a
+    failure is never hidden on a page the person is not looking at. A widget can
+    only live in one place, so each extra page asks for a mirror() copy and this
+    label keeps all of them in step.
+    """
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._mirrors = []
+
+    def mirror(self):
+        label = QtWidgets.QLabel(self.text())
+        label.setObjectName(self.objectName() or "muted")
+        label.setWordWrap(True)
+        label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Minimum
+        )
+        label.setToolTip(self.toolTip())
+        self._mirrors.append(label)
+        return label
+
+    def _each_mirror(self, action):
+        for label in list(self._mirrors):
+            try:
+                action(label)
+            except RuntimeError:  # the mirror's C++ widget is already gone
+                self._mirrors.remove(label)
+
+    def setText(self, text):  # noqa: N802 - Qt naming
+        super().setText(text)
+        self._each_mirror(lambda label: label.setText(text))
+
+    def setToolTip(self, text):  # noqa: N802 - Qt naming
+        super().setToolTip(text)
+        self._each_mirror(lambda label: label.setToolTip(text))
 
 
 APP_STYLE = """
@@ -180,6 +261,8 @@ QMainWindow, QWidget#shell { background: #1e1f22; }
    status lines). Text-bearing widgets carry no background of their own; the
    chip styles below still win via their objectName selectors. */
 QLabel, QCheckBox, QRadioButton { background: transparent; }
+/* Plain grouping widgets inside a panel (the Fine-tune steps) take the panel's colour. */
+QWidget#plainGroup { background: transparent; }
 QFrame#header, QFrame#sidebar, QFrame#panel {
     background: #2b2d30;
     border: 1px solid #35383d;
@@ -459,6 +542,33 @@ QProgressBar {
 }
 QProgressBar::chunk { background: #4f8cff; border-radius: 5px; }
 QToolTip { background: #2b2d30; color: #ffffff; border: 1px solid #555a63; }
+/* Sub-tabs inside a page (Models, Code, Voice & Vision). */
+QTabWidget#subTabs::pane { border: 0; top: -1px; }
+QTabWidget#subTabs > QTabBar::tab {
+    background: transparent;
+    color: #a7aeb8;
+    padding: 9px 18px;
+    margin-right: 4px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    font-weight: 600;
+}
+QTabWidget#subTabs > QTabBar::tab:hover { color: #ffffff; }
+QTabWidget#subTabs > QTabBar::tab:selected {
+    color: #ffffff;
+    border-bottom: 2px solid #4f8cff;
+}
+/* The "what is needed" banner on Voice & Vision. */
+QFrame#banner {
+    background: #3a3322;
+    border: 1px solid #6b5a2c;
+    border-radius: 8px;
+}
+QFrame#banner QLabel { color: #ffe3a1; }
+QPushButton#healthChip { padding: 6px 14px; }
+QPushButton#healthChip[healthState="PASS"] { color: #6ee7a8; }
+QPushButton#healthChip[healthState="WARNING"] { color: #ffd166; }
+QPushButton#healthChip[healthState="FAIL"] { color: #ff7b72; }
 """
 
 # M15.9 pass 3: the arrow/check glyphs are image assets (assets/ui/*,
@@ -550,6 +660,39 @@ def plain_tooltip_text(text):
     does not, the escaped form has nothing to interpret either.
     """
     return html.escape(str(text or ""), quote=False)
+
+
+def plain_speed(score_display):
+    """Speed cell in everyday words ("31.5 tokens per second")."""
+    text = str(score_display or "-").strip()
+    if text in ("", "-"):
+        return "Not measured yet"
+    return text.replace("tok/s", "tokens per second")
+
+
+def plain_total(text):
+    """The model-list footer in everyday words."""
+    return str(text or "").replace("Total:", "Disk space used:", 1)
+
+
+def plain_monitor_line(line):
+    """Rewrite the controller's compact monitor line without abbreviations."""
+    words = []
+    for part in str(line or "").split(" | "):
+        part = part.strip()
+        if part.startswith("gen ") and part.endswith(" tok/s"):
+            words.append("Writing " + part[4:-6] + " tokens per second")
+        elif part.startswith("prompt ") and part.endswith(" tok/s"):
+            words.append("Reading " + part[7:-6] + " tokens per second")
+        elif part.startswith("prompt ") and part.endswith(" tok"):
+            words.append("Read " + part[7:-4] + " tokens")
+        elif part.startswith("gen ") and part.endswith(" tok"):
+            words.append("Wrote " + part[4:-4] + " tokens")
+        elif part.startswith("ctx "):
+            words.append("Working memory " + part[4:])
+        else:
+            words.append(part)
+    return "  |  ".join(words)
 
 
 def append_plain(edit, text):
@@ -646,10 +789,11 @@ class _Sparkline(QtWidgets.QWidget):
 class MainWindow(QtWidgets.QMainWindow):
     """One LOCITIZE desktop window backed by an injected GuiController."""
 
-    def __init__(self, controller, health="unknown"):
+    def __init__(self, controller, health="unknown", health_report=None):
         super().__init__()
         self._gc = controller
         self._health = health
+        self._health_report = health_report
         self._ui = gui_controller.UiState()
         self._models = self._load_model_rows()
         self._selected_id = None
@@ -715,9 +859,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sysmon_thread.start()
 
         # First paint of the Fine-tune page. Both the state snapshot and the scan
-        # touch the filesystem (the studio checkout and the outputs tree, either of
+        # touch the filesystem (the trainer folder and the outputs tree, either of
         # which may sit on a disconnected drive), so both go through the queue and
-        # arrive as Results. The page already shows its neutral Stopped state from
+        # arrive as Results. The page already shows its neutral ready state from
         # _build_finetune_page, so nothing here blocks the Qt thread waiting.
         if hasattr(self._gc, "request_finetune_state"):
             self._gc.request_finetune_state()
@@ -776,63 +920,35 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stack = QtWidgets.QStackedWidget()
         self._stack.setObjectName("pageStack")
         self.pages = {}
-        builders = (
-            self._build_home_page,
-            self._build_models_page,
-            self._build_sessions_page,
-            self._build_finetune_page,
-            self._build_talk_page,
-            self._build_voice_page,
-            self._build_vision_page,
-            self._build_memory_page,
-            self._build_chat_page,
-            self._build_settings_page,
-        )
-        for name, builder in zip(PAGE_NAMES, builders, strict=True):
-            page = builder()
+        builders = {
+            "Start": self._build_start_page,
+            "Models": self._build_models_page,
+            "Code": self._build_code_page,
+            "Voice & Vision": self._build_voice_vision_page,
+            "Fine-tune": self._build_finetune_page,
+            "Settings": self._build_settings_page,
+        }
+        # The Fine-tune widgets are always built because the controller's
+        # fine-tune results update them by name; the page is only reachable from
+        # the sidebar when the flag is on (see SHOW_FINETUNE_TAB).
+        for name in builders:
+            if name not in PAGE_NAMES and name != "Fine-tune":
+                continue
+            page = builders[name]()
             page.setObjectName(f"page{name}")
-            self.pages[name] = page
-            self._stack.addWidget(page)
+            if name in PAGE_NAMES:
+                self.pages[name] = page
+                self._stack.addWidget(page)
+            else:
+                page.setParent(self._stack)
+                page.hide()
+                self._hidden_finetune_page = page
         content.addWidget(self._stack, 1)
         root.addLayout(content, 1)
         self.setCentralWidget(shell)
 
         self._sidebar.currentRowChanged.connect(self._on_sidebar_changed)
-        # Home connects model setup, existing work and chat.
-        self._sidebar.setCurrentRow(PAGE_NAMES.index("Home"))
-
-    def _build_home_page(self):
-        page = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(page)
-        layout.setContentsMargins(28, 28, 28, 28)
-        title = QtWidgets.QLabel("Your AI. Your models. Your work.")
-        title.setObjectName("pageTitle")
-        layout.addWidget(title)
-        description = QtWidgets.QLabel("Run a local model, start a conversation, or return to a coding session.")
-        description.setWordWrap(True)
-        layout.addWidget(description)
-        for heading, text, target in (
-            ("Choose a model", "Download, start and measure models on this computer.", "Models"),
-            ("Continue your work", "Find local coding sessions, preview transcripts and resume a project.", "Sessions"),
-            ("Start a conversation", "Open chat or launch a coding tool with the running model.", "Chat"),
-        ):
-            card = QtWidgets.QGroupBox(heading)
-            box = QtWidgets.QHBoxLayout(card)
-            label = QtWidgets.QLabel(text)
-            label.setWordWrap(True)
-            box.addWidget(label, 1)
-            button = QtWidgets.QPushButton("Open " + target)
-            button.clicked.connect(lambda _checked=False, name=target: self._sidebar.setCurrentRow(PAGE_NAMES.index(name)))
-            box.addWidget(button)
-            layout.addWidget(card)
-        info = QtWidgets.QLabel("Local inference stays on this computer. Downloads and external coding tools have their own network behavior. Voice, vision and fine-tuning are optional.")
-        info.setWordWrap(True)
-        layout.addWidget(info)
-        layout.addStretch(1)
-        about = QtWidgets.QPushButton("About and diagnostics")
-        about.clicked.connect(self._show_release_diagnostics)
-        layout.addWidget(about)
-        return page
+        self._sidebar.setCurrentRow(PAGE_NAMES.index("Start"))
 
     def _build_sessions_page(self):
         from sessions_ui import SessionsPage
@@ -844,30 +960,34 @@ class MainWindow(QtWidgets.QMainWindow):
         from release_info import VERSION, diagnostics
 
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("locitize " + VERSION)
+        dialog.setWindowTitle("About locitize " + VERSION)
         layout = QtWidgets.QVBoxLayout(dialog)
+        intro = QtWidgets.QLabel(
+            "This is the technical detail behind the app. If something is not "
+            "working, copy it and send it along with your question."
+        )
+        intro.setWordWrap(True)
+        intro.setObjectName("muted")
+        layout.addWidget(intro)
         text = QtWidgets.QPlainTextEdit()
         text.setReadOnly(True)
         text.setPlainText(diagnostics())
         layout.addWidget(text)
-        copy = QtWidgets.QPushButton("Copy diagnostics")
+        copy = QtWidgets.QPushButton("Copy to clipboard")
         copy.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(text.toPlainText()))
         layout.addWidget(copy)
         dialog.resize(600, 400)
         dialog.exec()
 
     def _build_header(self):
-        """Build the always-visible brand and live platform status line."""
+        """Build the always-visible brand, hardware, health and model status line."""
         frame = QtWidgets.QFrame()
         frame.setObjectName("header")
         layout = QtWidgets.QHBoxLayout(frame)
         layout.setContentsMargins(18, 12, 18, 12)
-        # Owner decision 2026-08-29: the LOGO IMAGE stays. The M15.9 pass
-        # briefly replaced it with a text mark, reading "fonts to match" as
-        # covering the wordmark - the owner corrected that: a logo is brand
-        # identity, not a UI font, and the 2026-08-23 image-only request
-        # stands. Degrades honestly (nothing shown, not a broken-image icon)
-        # if the asset is ever missing.
+        layout.setSpacing(10)
+        # Owner decision 2026-08-29: the LOGO IMAGE stays (a logo is brand
+        # identity, not a UI font). Degrades honestly if the asset is missing.
         if HEADER_LOGO_PATH.is_file():
             logo_pixmap = QtGui.QPixmap(str(HEADER_LOGO_PATH)).scaledToHeight(
                 32, QtCore.Qt.TransformationMode.SmoothTransformation
@@ -876,33 +996,46 @@ class MainWindow(QtWidgets.QMainWindow):
             logo_label.setPixmap(logo_pixmap)
             layout.addWidget(logo_label)
         layout.addStretch(1)
-        # Host RAM/GPU specs (owner request): static hardware facts, so this reads
-        # the controller's cached system_specs() once at build time rather than on
-        # every pump tick.
-        self._specs_label = QtWidgets.QLabel(
-            gui_controller.format_system_specs(self._gc.system_specs())
-        )
+        # The chips may shrink (and clip) when the window is narrow, but the
+        # button at the end never does: a widening status line used to push
+        # "Offload GPU" off the right edge (audit bug 5).
+        specs_text = gui_controller.format_system_specs(self._gc.system_specs())
+        self._specs_label = QtWidgets.QLabel(specs_text)
         self._specs_label.setObjectName("statusChip")
+        self._specs_label.setMinimumWidth(40)
+        self._specs_label.setToolTip("Your computer: memory and graphics card")
         layout.addWidget(self._specs_label)
+        # Health: a button so the reasons are one click away.
+        self._health_btn = QtWidgets.QPushButton()
+        self._health_btn.setObjectName("healthChip")
+        self._health_btn.setMinimumWidth(40)
+        self._health_btn.clicked.connect(self._show_health_details)
+        layout.addWidget(self._health_btn)
         self._header_status = QtWidgets.QLabel()
         self._header_status.setObjectName("statusChip")
+        self._header_status.setMinimumWidth(40)
         self._header_status.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
         layout.addWidget(self._header_status)
-        # Global quick-unload: frees GPU VRAM from any page without navigating to
-        # Models first. Reuses the same stop path/state as the Models page Stop
-        # button (request_stop() always targets whatever model is running, not
-        # whatever is merely selected), so behavior stays identical either way.
-        self._header_offload_btn = QtWidgets.QPushButton("Offload GPU")
+        # Global quick-unload: frees GPU memory from any page. Same stop path as
+        # the Stop button (request_free_gpu always targets what is running).
+        self._header_offload_btn = QtWidgets.QPushButton("Free up GPU")
         self._header_offload_btn.setObjectName("headerOffloadButton")
         self._header_offload_btn.setToolTip(
-            "Free GPU memory held by locitize: stop the running model and clear "
-            "any leftover locitize servers (a crashed session or a measurement "
-            "probe). Other apps are shown in the result but never touched."
+            "Free the graphics-card memory locitize is using: stop the running "
+            "model and clear any leftover locitize helpers. Other apps are "
+            "listed in the result but never touched."
         )
         self._header_offload_btn.clicked.connect(self._on_offload_gpu)
+        self._header_offload_btn.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed
+        )
+        self._header_offload_btn.setMinimumWidth(
+            self._header_offload_btn.sizeHint().width() + 10
+        )
         layout.addWidget(self._header_offload_btn)
+        self._update_health_chip()
         return frame
 
     def _build_sidebar(self):
@@ -912,9 +1045,6 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.setFixedWidth(176)
         layout = QtWidgets.QVBoxLayout(frame)
         layout.setContentsMargins(8, 12, 8, 12)
-        # Owner request 2026-08-21: was plain "muted" caption text; the same
-        # raised-chip badge as the header's status pills, so the sidebar picks
-        # up the same visual language instead of looking bare above the nav list.
         caption = QtWidgets.QLabel("locitize")
         caption.setObjectName("sidebarChip")
         caption.setContentsMargins(0, 0, 0, 0)
@@ -928,9 +1058,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sidebar.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         for name in PAGE_NAMES:
             self._sidebar.addItem(name)
+            self._sidebar.item(self._sidebar.count() - 1).setToolTip(
+                PAGE_TOOLTIPS.get(name, "")
+            )
         layout.addWidget(self._sidebar, 1)
-        # Owner request 2026-08-21: "Local. Private. Yours." removed - a bare
-        # tagline with no context of its own at the bottom of the nav rail.
         return frame
 
     @staticmethod
@@ -1006,27 +1137,61 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(subtitle_label)
         return page, layout
 
-    def _titled_panel(self, title, subtitle):
-        """A page-style column: a pageTitle and its muted description ABOVE a
-        panel box (M17.17). Every column on the split Models page - the inventory
-        and Get models - is built this way, so both read identically: title on
-        top, one-line description under it, then the bordered box of content.
-        Returns the column widget (to drop into the splitter) and the panel's
-        body layout (to fill with that column's content)."""
-        column = QtWidgets.QWidget()
-        stack = QtWidgets.QVBoxLayout(column)
-        stack.setContentsMargins(0, 0, 0, 0)
-        stack.setSpacing(12)
-        title_label = QtWidgets.QLabel(title)
-        title_label.setObjectName("pageTitle")
-        stack.addWidget(title_label)
-        subtitle_label = QtWidgets.QLabel(subtitle)
-        subtitle_label.setObjectName("muted")
-        subtitle_label.setWordWrap(True)
-        stack.addWidget(subtitle_label)
-        panel, body = self._panel()
-        stack.addWidget(panel, 1)
-        return column, body
+    @staticmethod
+    def _tab_body(hint=""):
+        """A sub-tab's content column: an optional muted hint, then the body."""
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(0, 12, 0, 0)
+        layout.setSpacing(12)
+        if hint:
+            label = QtWidgets.QLabel(hint)
+            label.setObjectName("muted")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        return tab, layout
+
+    @staticmethod
+    def _section(layout, title, hint=""):
+        """Add a bold section heading (and optional muted hint) to `layout`."""
+        label = QtWidgets.QLabel(title)
+        label.setObjectName("sectionTitle")
+        layout.addWidget(label)
+        if hint:
+            note = QtWidgets.QLabel(hint)
+            note.setObjectName("muted")
+            note.setWordWrap(True)
+            layout.addWidget(note)
+
+    @staticmethod
+    def _gate(widget, enabled, reason=""):
+        """Enable or disable a control and say WHY on hover when it is disabled.
+
+        A greyed-out button with no explanation reads as broken. The control's
+        normal tooltip is remembered on first use and restored when it re-enables.
+        """
+        base = widget.property("baseTip")
+        if base is None:
+            base = widget.toolTip()
+            widget.setProperty("baseTip", base)
+        widget.setEnabled(bool(enabled))
+        widget.setToolTip(base if enabled else (reason or base))
+
+    def _go_to(self, name, tab=None):
+        """Switch to a page (and optionally one of its sub-tabs) by name."""
+        if name in PAGE_NAMES:
+            self._sidebar.setCurrentRow(PAGE_NAMES.index(name))
+        if tab is not None:
+            widget = getattr(self, {
+                "Models": "_models_tabs",
+                "Code": "_code_tabs",
+                "Voice & Vision": "_vv_tabs",
+            }.get(name, "_unused"), None)
+            if widget is not None:
+                for index in range(widget.count()):
+                    if widget.tabText(index) == tab:
+                        widget.setCurrentIndex(index)
+                        break
 
     @staticmethod
     def _scrollable(page):
@@ -1061,38 +1226,28 @@ class MainWindow(QtWidgets.QMainWindow):
         return frame, layout
 
     def _build_models_page(self):
-        """Build model inventory, lifecycle controls, benchmark, and monitor."""
-        # M17.17: no single page-level title. Each column (the inventory and Get
-        # models) carries its OWN title + description above its own box, so the
-        # two halves read identically (owner request) instead of one page title
-        # over a section title buried inside the other box.
-        page = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(page)
-        layout.setContentsMargins(6, 4, 6, 6)
-        layout.setSpacing(12)
-        left_col, body = self._titled_panel(
+        """Models: a simple list, a download panel, and an Advanced tab.
+
+        Three sub-tabs keep every screenful short enough for a 1366x768 window
+        without anything clipping: "My models" (what you have), "Get models"
+        (find and download more), and "Advanced" (speed test, thinking level,
+        add/delete/refresh, and the per-model editor).
+        """
+        page, layout = self._page(
             "Models",
-            "Start, switch, stop, benchmark, and inspect the models already "
-            "registered on this machine.",
+            "The AI models on this computer. Pick one on the Start page to run it.",
         )
-        # M13: Source sits right after Model so the owner can tell a manually
-        # registered model from a discovered fine-tune without scrolling.
-        # Capabilities (owner request 2026-08-21) sits right next to Model - the
-        # "which one do I use" question is the whole point of this column, so it
-        # belongs beside the name, not buried after Status.
-        self._model_table = QtWidgets.QTableWidget(0, 9)
+        self._models_tabs = QtWidgets.QTabWidget()
+        self._models_tabs.setObjectName("subTabs")
+        self._models_tabs.setDocumentMode(True)
+        self._models_tabs.tabBar().setDrawBase(False)
+
+        # ---- My models -------------------------------------------------
+        mine, mine_layout = self._tab_body()
+        panel, body = self._panel()
+        self._model_table = QtWidgets.QTableWidget(0, 5)
         self._model_table.setHorizontalHeaderLabels(
-            [
-                "Model",
-                "Capabilities",
-                "Source",
-                "Size",
-                "On GPU",
-                "On CPU",
-                "Last gen tok/s",
-                "Context",
-                "Status",
-            ]
+            ["Model", "Size", "Fits your GPU?", "Speed", "Status"]
         )
         self._model_table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
@@ -1106,242 +1261,321 @@ class MainWindow(QtWidgets.QMainWindow):
         self._model_table.setAlternatingRowColors(True)
         self._model_table.verticalHeader().setVisible(False)
         header = self._model_table.horizontalHeader()
-        # M17.19 (owner request): columns are user-RESIZABLE (Interactive), each
-        # with a sensible default width - the Model column wide enough to read a
-        # full name - and no maximum cap, so a name can be dragged wider as far as
-        # wanted. The last section (Status) still stretches to absorb any leftover
-        # width on a wide window; if the chosen widths exceed the panel the table
-        # gets its OWN horizontal scrollbar (below), so a squeezed name is now the
-        # owner's choice to widen, not a hard clip.
         header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
-        default_widths = {
-            0: 240,  # Model - wide enough for a full name by default
-            1: 110,  # Capabilities
-            2: 96,   # Source
-            3: 80,   # Size
-            4: 92,   # On GPU
-            5: 92,   # On CPU
-            6: 104,  # Last gen tok/s
-            7: 84,   # Context
-        }
-        for column, width in default_widths.items():
-            if column < self._model_table.columnCount():
-                header.resizeSection(column, width)
-        # With resizable columns the total can exceed the panel; let the table
-        # scroll horizontally on demand rather than clip.
+        for column, width in {0: 300, 1: 90, 2: 150, 3: 190}.items():
+            header.resizeSection(column, width)
         self._model_table.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         header.sectionClicked.connect(self._on_sort)
         self._model_table.currentCellChanged.connect(self._on_select_model)
-        # DEFECT-QA-M14-3: a floor of roughly a header plus four rows. Without
-        # one this table would happily shrink to nothing inside the scroll area
-        # below, and an inventory with no visible rows is not an inventory.
         self._model_table.setMinimumHeight(MODEL_TABLE_MIN_HEIGHT)
         self._attach_empty_state(
             self._model_table,
-            "No models registered yet.\n"
-            "Use Get models below to download one, or Register a file you "
-            "already have.",
+            "No models yet.\nOpen the Get models tab to download one.",
         )
         body.addWidget(self._model_table, 1)
+        footer = QtWidgets.QHBoxLayout()
+        self._models_total = QtWidgets.QLabel("Total: -")
+        self._models_total.setObjectName("statusChip")
+        footer.addWidget(self._models_total)
+        self._use_model_btn = QtWidgets.QPushButton("Use this model")
+        self._use_model_btn.setObjectName("primaryButton")
+        self._use_model_btn.setToolTip("Go to the Start page with this model selected")
+        self._use_model_btn.clicked.connect(lambda: self._go_to("Start"))
+        footer.addWidget(self._use_model_btn)
+        footer.addStretch(1)
+        body.addLayout(footer)
+        self._models_note = self._model_status.mirror()
+        body.addWidget(self._models_note)
+        mine_layout.addWidget(panel, 1)
+        self._models_tabs.addTab(mine, "My models")
 
-        controls = QtWidgets.QHBoxLayout()
-        # Owner request 2026-09-02: pick a thinking level for THIS launch, the
-        # same one-launch override the terminal menu takes as "3 low". Editable
-        # on purpose: the accepted levels belong to the model's own chat
-        # template (Qwen3.8 takes xhigh/medium/low, gpt-oss takes low/medium/
-        # high), so a fixed dropdown would be wrong for half the registry. The
-        # listed items are the common cases; anything the grammar accepts can be
-        # typed. Index 0 is the do-nothing default, so Start behaves exactly as
-        # it always has unless the owner changes this.
-        self._thinking_combo = QtWidgets.QComboBox()
-        self._thinking_combo.setEditable(True)
-        self._thinking_combo.addItems(
-            [THINKING_AS_REGISTERED, "off", "low", "medium", "xhigh", "low/2048"]
+        # ---- Get models -------------------------------------------------
+        get_tab, get_layout = self._tab_body()
+        get_body = self._build_get_models_panel()
+        get_layout.addWidget(self._scrollable(get_body), 1)
+        self._models_tabs.addTab(get_tab, "Get models")
+
+        # ---- Advanced ---------------------------------------------------
+        self._models_tabs.addTab(self._build_models_advanced(), "Advanced")
+
+        layout.addWidget(self._models_tabs, 1)
+        return page
+
+    def _build_models_advanced(self):
+        """The Advanced tab: one model picker drives every section below it."""
+        tab, tab_layout = self._tab_body()
+        scroll_body = QtWidgets.QWidget()
+        column = QtWidgets.QVBoxLayout(scroll_body)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(10)
+
+        # -- Picker and summary -------------------------------------------
+        top, top_body = self._panel()
+        top_body.setContentsMargins(14, 10, 14, 10)
+        top_body.setSpacing(6)
+        pick_row = QtWidgets.QHBoxLayout()
+        pick_label = QtWidgets.QLabel("Model:")
+        pick_label.setObjectName("sectionTitle")
+        pick_row.addWidget(pick_label)
+        # The shared picker. It mirrors the My models selection both ways and
+        # every control on this tab acts on the model it shows.
+        self._settings_model = QtWidgets.QComboBox()
+        self._settings_model.setToolTip(
+            "Everything on this tab applies to this model. It follows the "
+            "selection on the My models tab."
         )
-        self._thinking_combo.setToolTip(
-            "Thinking level for the next Start, without changing your model "
-            "list. 'off' disables thinking, a level such as 'low' sets the "
-            "effort, and 'low/2048' also caps thinking at 2048 tokens. Levels "
-            "come from the model's own chat template."
-        )
-        controls.addWidget(QtWidgets.QLabel("Thinking:"))
-        controls.addWidget(self._thinking_combo)
-        self._start_btn = QtWidgets.QPushButton("Start")
-        self._start_btn.setObjectName("primaryButton")
-        self._start_btn.clicked.connect(self._on_start)
-        self._stop_btn = QtWidgets.QPushButton("Stop")
-        self._stop_btn.clicked.connect(self._on_stop)
-        self._chat_btn = QtWidgets.QPushButton("Chat")
-        self._chat_btn.setToolTip("Open the chat UI for the running model")
-        self._chat_btn.clicked.connect(self._on_chat)
-        self._refresh_models_btn = QtWidgets.QPushButton("Refresh")
+        for model in self._models:
+            self._settings_model.addItem(model["name"], model["id"])
+        self._settings_model.currentIndexChanged.connect(self._on_settings_model_changed)
+        pick_row.addWidget(self._settings_model, 1)
+        self._refresh_models_btn = QtWidgets.QPushButton("Refresh list")
         self._refresh_models_btn.setToolTip(
             "Reload your model list so new downloads appear"
         )
         self._refresh_models_btn.clicked.connect(self._on_refresh_models)
-        # M13: promote the selected DISCOVERED fine-tune into models.yaml. Only
-        # enabled for a discovered row - a registered row has nothing to promote.
-        self._register_btn = QtWidgets.QPushButton("Register")
+        pick_row.addWidget(self._refresh_models_btn)
+        top_body.addLayout(pick_row)
+        self._adv_summary = QtWidgets.QLabel("")
+        self._adv_summary.setObjectName("muted")
+        self._adv_summary.setWordWrap(True)
+        top_body.addWidget(self._adv_summary)
+        column.addWidget(top)
+
+        # -- Auto-tune ------------------------------------------------------
+        speed, speed_body = self._panel()
+        speed_body.setContentsMargins(14, 10, 14, 10)
+        speed_body.setSpacing(6)
+        self._section(
+            speed_body,
+            "Find the best settings",
+            "Tries this model at several working-memory sizes, keeps the "
+            "biggest your computer can hold, and measures its speed. Takes a "
+            "few minutes and uses the GPU.",
+        )
+        speed_row = QtWidgets.QHBoxLayout()
+        self._autotune_btn = QtWidgets.QPushButton("Auto-tune this model")
+        self._autotune_btn.setToolTip(
+            "Find the biggest working memory that really loads on this computer "
+            "for the model above, then measure its speed in tokens per "
+            "second. Takes a few minutes and starts the model several times."
+        )
+        self._autotune_btn.clicked.connect(self._on_autotune_context)
+        self._autotune_all_btn = QtWidgets.QPushButton("Auto-tune all")
+        self._autotune_all_btn.setToolTip(
+            "Auto-tune every model on your list, one after another. Takes a few "
+            "minutes per model; Stop cancels the rest."
+        )
+        self._autotune_all_btn.clicked.connect(self._on_autotune_all)
+        speed_row.addWidget(self._autotune_btn)
+        speed_row.addWidget(self._autotune_all_btn)
+        speed_row.addStretch(1)
+        speed_body.addLayout(speed_row)
+        # Why the buttons are grey, on the page rather than only in a tooltip: a
+        # disabled Auto-tune with a model running read as a broken button.
+        self._autotune_hint = QtWidgets.QLabel("")
+        self._autotune_hint.setObjectName("muted")
+        self._autotune_hint.setWordWrap(True)
+        self._autotune_hint.setVisible(False)
+        speed_body.addWidget(self._autotune_hint)
+        self._autotune_status = QtWidgets.QLabel("")
+        self._autotune_status.setObjectName("statusChip")
+        self._autotune_status.setWordWrap(True)
+        self._autotune_status.setVisible(False)
+        speed_body.addWidget(self._autotune_status)
+        self._autotune_pending = False
+        self._autotune_canceling = False
+        self._autotune_batch = False
+        self._models_monitor = _HideWhenEmptyLabel("")
+        self._models_monitor.setObjectName("statusChip")
+        self._models_monitor.setWordWrap(True)
+        self._models_monitor.setToolTip(
+            "Live numbers from the running model: how fast it writes (tokens "
+            "per second) and how full its working memory is."
+        )
+        speed_body.addWidget(self._models_monitor)
+        column.addWidget(speed)
+
+        # -- Thinking level ------------------------------------------------
+        think, think_body = self._panel()
+        think_body.setContentsMargins(14, 10, 14, 10)
+        think_body.setSpacing(6)
+        think_row = QtWidgets.QHBoxLayout()
+        think_title = QtWidgets.QLabel("Thinking level")
+        think_title.setObjectName("sectionTitle")
+        think_row.addWidget(think_title)
+        self._thinking_combo = QtWidgets.QComboBox()
+        for label, value in THINKING_CHOICES:
+            self._thinking_combo.addItem(label, value)
+        self._thinking_combo.setToolTip(
+            "How hard the model thinks before it answers. More thinking gives "
+            "better answers on hard questions but takes longer."
+        )
+        think_row.addWidget(self._thinking_combo, 1)
+        think_body.addLayout(think_row)
+        think_note = QtWidgets.QLabel(
+            "Applies the next time you press Start. Not every model can think."
+        )
+        think_note.setObjectName("muted")
+        think_note.setWordWrap(True)
+        think_body.addWidget(think_note)
+        column.addWidget(think)
+
+        # -- Edit this model -------------------------------------------------------
+        edit, edit_body = self._panel()
+        edit_body.setContentsMargins(14, 10, 14, 10)
+        edit_body.setSpacing(6)
+        self._edit_title = QtWidgets.QLabel("Edit this model")
+        self._edit_title.setObjectName("sectionTitle")
+        edit_body.addWidget(self._edit_title)
+        edit_hint = QtWidgets.QLabel("Changes apply the next time the model starts.")
+        edit_hint.setObjectName("muted")
+        edit_body.addWidget(edit_hint)
+        form = QtWidgets.QGridLayout()
+        form.setColumnStretch(0, 1)
+        gpu_label = QtWidgets.QLabel(
+            "GPU offload (more = faster, needs more graphics memory)"
+        )
+        gpu_label.setWordWrap(True)
+        gpu_label.setToolTip(
+            "How many layers of the model to keep on the graphics card (the "
+            "rest runs on the processor, more slowly). 999 or -1 means as "
+            "much as the card can hold."
+        )
+        form.addWidget(gpu_label, 0, 0)
+        self._gpu_edit = QtWidgets.QLineEdit()
+        self._gpu_edit.setMaximumWidth(140)
+        self._gpu_edit.setToolTip(gpu_label.toolTip())
+        self._gpu_edit.textChanged.connect(self._on_edit_change)
+        form.addWidget(self._gpu_edit, 0, 1)
+        ctx_label = QtWidgets.QLabel(
+            "Context size (how much text it can keep in mind)"
+        )
+        ctx_label.setWordWrap(True)
+        ctx_label.setToolTip(
+            "How much of a conversation the model can keep in mind at once, in "
+            "tokens (small pieces of words). Bigger remembers more but uses more "
+            "memory."
+        )
+        form.addWidget(ctx_label, 1, 0)
+        self._ctx_edit = QtWidgets.QLineEdit()
+        self._ctx_edit.setMaximumWidth(140)
+        self._ctx_edit.setToolTip(ctx_label.toolTip())
+        self._ctx_edit.textChanged.connect(self._on_edit_change)
+        form.addWidget(self._ctx_edit, 1, 1)
+        edit_body.addLayout(form)
+        action_row = QtWidgets.QHBoxLayout()
+        self._edit_error = QtWidgets.QLabel("")
+        self._edit_error.setObjectName("error")
+        self._edit_error.setWordWrap(True)
+        action_row.addWidget(self._edit_error, 1)
+        self._save_btn = QtWidgets.QPushButton("Save")
+        self._save_btn.setObjectName("primaryButton")
+        self._gate(self._save_btn, False, 'Nothing to save yet - change a value first, or fix the problem shown.')
+        self._save_btn.clicked.connect(self._on_save)
+        action_row.addWidget(self._save_btn)
+        edit_body.addLayout(action_row)
+
+        rename_form = QtWidgets.QGridLayout()
+        rename_form.setColumnStretch(1, 1)
+        rename_form.setColumnStretch(3, 2)
+        rename_form.addWidget(QtWidgets.QLabel("Short id"), 0, 0)
+        self._id_edit = QtWidgets.QLineEdit()
+        self._id_edit.setToolTip("A short name used inside locitize. Letters, numbers and dashes.")
+        self._id_edit.textChanged.connect(self._on_identity_change)
+        rename_form.addWidget(self._id_edit, 0, 1)
+        rename_form.addWidget(QtWidgets.QLabel("Display name"), 0, 2)
+        self._name_edit = QtWidgets.QLineEdit()
+        self._name_edit.textChanged.connect(self._on_identity_change)
+        rename_form.addWidget(self._name_edit, 0, 3)
+        edit_body.addLayout(rename_form)
+        identity_row = QtWidgets.QHBoxLayout()
+        self._identity_error = QtWidgets.QLabel("")
+        self._identity_error.setObjectName("error")
+        self._identity_error.setWordWrap(True)
+        identity_row.addWidget(self._identity_error, 1)
+        self._identity_save_btn = QtWidgets.QPushButton("Rename")
+        self._identity_save_btn.setObjectName("primaryButton")
+        self._gate(self._identity_save_btn, False, 'Nothing to rename yet - change the id or name first, or fix the problem shown.')
+        self._identity_save_btn.clicked.connect(self._on_save_identity)
+        identity_row.addWidget(self._identity_save_btn)
+        edit_body.addLayout(identity_row)
+
+        edit_body.addWidget(
+            QtWidgets.QLabel("What this model is good at (for example: vision, reasoning, tools)")
+        )
+        self._capabilities_edit = QtWidgets.QLineEdit()
+        self._capabilities_edit.textChanged.connect(self._on_capabilities_change)
+        edit_body.addWidget(self._capabilities_edit)
+        capabilities_row = QtWidgets.QHBoxLayout()
+        self._capabilities_error = QtWidgets.QLabel("")
+        self._capabilities_error.setObjectName("error")
+        self._capabilities_error.setWordWrap(True)
+        capabilities_row.addWidget(self._capabilities_error, 1)
+        self._capabilities_save_btn = QtWidgets.QPushButton("Save")
+        self._capabilities_save_btn.setObjectName("primaryButton")
+        self._gate(self._capabilities_save_btn, False, 'Nothing to save yet - change the list first.')
+        self._capabilities_save_btn.clicked.connect(self._on_save_capabilities)
+        capabilities_row.addWidget(self._capabilities_save_btn)
+        edit_body.addLayout(capabilities_row)
+        column.addWidget(edit)
+
+        # -- Manage -----------------------------------------------------------
+        manage, manage_body = self._panel()
+        manage_body.setContentsMargins(14, 10, 14, 10)
+        manage_body.setSpacing(6)
+        self._section(manage_body, "Manage this model")
+        manage_row = QtWidgets.QHBoxLayout()
+        self._register_btn = QtWidgets.QPushButton("Add to my models")
         self._register_btn.setToolTip(
-            "Add the selected fine-tune to your model list"
+            "Add this fine-tuned model to your model list"
         )
         self._register_btn.clicked.connect(self._on_register_selected)
-        # Owner request 2026-08-21: permanently delete a model's .gguf (and
-        # mmproj, if it has one) from disk, not just drop it from the list.
-        # #dangerButton gives it a visibly different (red-tinted) look from
-        # every other button here on purpose - the one control on this page
-        # that cannot be undone with another click.
-        self._delete_btn = QtWidgets.QPushButton("Delete")
+        self._register_btn.setVisible(False)
+        self._delete_btn = QtWidgets.QPushButton("Delete this model...")
         self._delete_btn.setObjectName("dangerButton")
         self._delete_btn.setToolTip(
             "Permanently delete this model's file(s) from disk and remove it "
             "from the list"
         )
         self._delete_btn.clicked.connect(self._on_delete_model)
-        # Owner request 2026-08-22: work out this model's largest usable context
-        # window automatically instead of hand-editing models.yaml per model.
-        # Opt-in per model on purpose - it performs several real model loads, so
-        # it must be something the owner asks for, never a side effect of
-        # selecting a row.
-        # Auto-tune and Benchmark are one action: tuning finds the context,
-        # then benchmarks the model at it, so the speed shown is the speed at
-        # the setting the model will actually run with.
-        self._autotune_btn = QtWidgets.QPushButton("Auto-tune")
-        self._autotune_btn.setToolTip(
-            "Find the largest context that really loads on this machine, write "
-            "it back with the right rope-scaling flags, then benchmark the model "
-            "at that context to measure its real tokens per second. Takes a few "
-            "minutes and starts the model several times."
-        )
-        self._autotune_btn.clicked.connect(self._on_autotune_context)
-        self._autotune_all_btn = QtWidgets.QPushButton("Auto-tune all")
-        self._autotune_all_btn.setToolTip(
-            "Auto-tune every model on your list, one after another: find each "
-            "one's largest context and measure its speed. Takes a few minutes "
-            "per model; Stop cancels the rest."
-        )
-        self._autotune_all_btn.clicked.connect(self._on_autotune_all)
-        for button in (
-            self._start_btn,
-            self._stop_btn,
-            self._chat_btn,
-            self._autotune_btn,
-            self._autotune_all_btn,
-            self._register_btn,
-            self._delete_btn,
-            self._refresh_models_btn,
-        ):
-            controls.addWidget(button)
-        controls.addStretch(1)
-        body.addLayout(controls)
-        # M15.9: these two chips lived at the end of the seven-button row above,
-        # and their combined minimum width pushed the page past the viewport -
-        # the ONLY horizontal scrollbar in the app. A status row of their own
-        # keeps the raised-chip look (owner request 2026-08-21) and lets the
-        # button row fit at every window width.
-        status_row = QtWidgets.QHBoxLayout()
-        self._models_total = QtWidgets.QLabel("Total: -")
-        self._models_total.setObjectName("statusChip")
-        status_row.addWidget(self._models_total)
-        self._model_status = QtWidgets.QLabel("ready")
-        self._model_status.setObjectName("statusChip")
-        # M18.8 (owner report: clicking Offload GPU resized the window): a long
-        # status line ("freed 1 server; ...; still held by other apps: ...")
-        # raised this label's preferred width, and Qt grew the WINDOW to honour
-        # it. Ignored horizontal policy means the chip takes whatever width the
-        # row gives it and never demands more - long text clips inside the chip
-        # (the full line is set as a tooltip where it matters) and the window
-        # geometry never moves because of a status message.
-        self._model_status.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Ignored,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
-        status_row.addWidget(self._model_status, 1)
-        body.addLayout(status_row)
+        manage_row.addWidget(self._register_btn)
+        manage_row.addWidget(self._delete_btn)
+        manage_row.addStretch(1)
+        manage_body.addLayout(manage_row)
+        column.addWidget(manage)
 
-        self._models_monitor = QtWidgets.QLabel("idle")
-        self._models_monitor.setObjectName("statusChip")
-        self._models_monitor.setWordWrap(True)
-        body.addWidget(self._models_monitor)
+        # -- Memory use ---------------------------------------------------------
+        memory, memory_body = self._panel()
+        self._add_system_meters(memory_body)
+        column.addWidget(memory)
+        column.addStretch(1)
 
-        # Auto-tune's own readout (owner request 2026-08-22). A separate label
-        # from _model_status and _models_monitor because it is the only thing on
-        # this page that runs for minutes: it needs room for a running trial log
-        # and a multi-part final summary, and it must not be overwritten by the
-        # monitor's once-per-tick metrics line. Hidden until a run starts, so it
-        # costs nothing visually the rest of the time.
-        self._autotune_status = QtWidgets.QLabel("")
-        self._autotune_status.setObjectName("statusChip")
-        self._autotune_status.setWordWrap(True)
-        self._autotune_status.setVisible(False)
-        body.addWidget(self._autotune_status)
-        # Two UI-thread-only flags backing the Stop button's auto-tune meaning.
-        # _autotune_pending covers the gap between the click and the ops worker
-        # actually picking the command up - without it Stop would be dead for
-        # that first moment, which is precisely when an owner who clicked by
-        # mistake wants it. _autotune_canceling latches the "I have asked" state
-        # so the button and the status line stop inviting a second click.
-        self._autotune_pending = False
-        self._autotune_canceling = False
-        # True from an "Auto-tune all" click until its final result: each
-        # model's own result must not end the run in the UI.
-        self._autotune_batch = False
-        # M17.14 (owner request): the inventory and "Get models" sit SIDE BY SIDE,
-        # each claiming half the width, instead of stacked one above the other -
-        # so the page is one screen wide instead of one long vertical scroll. A
-        # QSplitter lets the owner drag the divider to give either half more room;
-        # setChildrenCollapsible(False) keeps both halves always visible. The page
-        # stays wrapped in the scroll area (DEFECT-QA-M14-3): on a short window the
-        # split content is still reachable via the page scrollbar rather than
-        # clipping the catalog out of existence.
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        splitter.setObjectName("modelsSplitter")
-        splitter.setChildrenCollapsible(False)
-        splitter.addWidget(left_col)
-        splitter.addWidget(self._build_get_models_panel())
-        # M17.20: near-even split (owner request - the 60/40 lean left the
-        # inventory over-wide and squeezed Get models). Columns are resizable now,
-        # so the table no longer needs the extra room; a slight lean toward the
-        # inventory remains, and both halves grow equally on window resize. Still
-        # draggable.
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([1050, 950])  # ~52/48 toward the inventory; draggable
-        layout.addWidget(splitter, 1)
-        return self._scrollable(page)
+        scroll = self._scrollable(scroll_body)
+        tab_layout.addWidget(scroll, 1)
+        return tab
 
     def _build_get_models_panel(self):
-        """Build the M14.14 "Get models" section that lives under the model list.
-
-        Deliberately a second panel on the EXISTING Models page rather than a new
-        nav entry: finding a model and running a model are the same task, and a
-        stranger who has just installed LOCITIZE lands here with an empty list and
-        needs the next step in front of them.
+        """Build the "Get models" panel (a tab of the Models page).
 
         Nothing in this method touches the network. The page paints from the
         shipped catalog on disk; the only three controls that can cause egress
         are Search, selecting a search result, and Download (egress rule HF-1).
         """
-        # M17.17: same column shape as the inventory - "Get models" title and a
-        # one-line description ABOVE the box, then the box of controls - so the
-        # two halves of the page read identically. The title/description now live
-        # outside the panel (was a sectionTitle + blurb inside it).
-        col, body = self._titled_panel(
-            "Get models",
-            "Search huggingface.co for a model. locitize "
-            "contacts huggingface.co only when you press Search, pick a "
-            "repository, or confirm a download - never on its own.",
+        panel, body = self._panel()
+        self._section(
+            body,
+            "Find a model to download",
+            "locitize only contacts huggingface.co when you press Search, pick "
+            "a result, or confirm a download - never on its own.",
         )
         self._hub_enabled = bool(getattr(self._gc, "hub_enabled", lambda: True)())
 
         search_row = QtWidgets.QHBoxLayout()
         self._hub_query = QtWidgets.QLineEdit()
-        self._hub_query.setPlaceholderText("Search huggingface.co for a GGUF model")
-        # Enter is wired to the same handler as the button, not to a live-search
-        # signal: textChanged must never reach the network (HF-1).
+        self._hub_query.setPlaceholderText("Search huggingface.co for a model (GGUF)")
         self._hub_query.returnPressed.connect(self._on_hub_search)
         self._hub_search_btn = QtWidgets.QPushButton("Search")
         self._hub_search_btn.clicked.connect(self._on_hub_search)
@@ -1350,21 +1584,14 @@ class MainWindow(QtWidgets.QMainWindow):
         body.addLayout(search_row)
 
         self._hub_repo_table = QtWidgets.QTableWidget(0, 4)
-        self._attach_empty_state(
-            self._hub_repo_table,
-            "Search huggingface.co above.",
-        )
+        self._attach_empty_state(self._hub_repo_table, "Search huggingface.co above.")
         self._hub_repo_table.setHorizontalHeaderLabels(
-            ["Repository", "Publisher", "Licence", "Where from"]
+            ["Model page", "Publisher", "Licence", "Where from"]
         )
         self._prepare_hub_table(self._hub_repo_table)
         self._hub_repo_table.currentCellChanged.connect(self._on_hub_repo_selected)
         body.addWidget(self._hub_repo_table)
 
-        # Owner request 2026-08-21: a search is capped per page (settings.yaml's
-        # models_hub.search_limit); Load more fetches huggingface.co's own next-page
-        # cursor (the Link: rel="next" response header) rather than raising the cap
-        # unboundedly. Hidden until a search reports a further page exists.
         self._hub_has_more = False
         load_more_row = QtWidgets.QHBoxLayout()
         self._hub_load_more_btn = QtWidgets.QPushButton("Load more results")
@@ -1377,10 +1604,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hub_file_table = QtWidgets.QTableWidget(0, 5)
         self._attach_empty_state(
             self._hub_file_table,
-            "Select a repository to list its downloadable files.",
+            "Select a result to list its downloadable files.",
         )
         self._hub_file_table.setHorizontalHeaderLabels(
-            ["File", "Quant", "Size", "Fits your GPU?", "Checksum"]
+            ["File", "Quality level", "Size", "Fits your GPU?", "Checksum"]
         )
         self._prepare_hub_table(self._hub_file_table)
         self._hub_file_table.currentCellChanged.connect(self._on_hub_file_selected)
@@ -1391,20 +1618,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hub_fit.setWordWrap(True)
         body.addWidget(self._hub_fit)
 
-        # M17.15: one tidy row - the two buttons grouped together, then a clear
-        # gap, then the checkbox, then stretch pushes the lot to the left so it
-        # reads as one organized line instead of scattered controls.
         controls = QtWidgets.QHBoxLayout()
         controls.setSpacing(8)
         self._hub_download_btn = QtWidgets.QPushButton("Download")
         self._hub_download_btn.setObjectName("primaryButton")
-        self._hub_download_btn.setEnabled(False)
+        self._hub_download_btn.setToolTip("Download the selected file")
+        self._gate(self._hub_download_btn, False, "Pick a file from the list first.")
         self._hub_download_btn.clicked.connect(self._on_hub_download)
         self._hub_cancel_btn = QtWidgets.QPushButton("Cancel")
         self._hub_cancel_btn.setToolTip("Cancel the download in progress")
-        self._hub_cancel_btn.setEnabled(False)
+        self._gate(self._hub_cancel_btn, False, "No download is running.")
         self._hub_cancel_btn.clicked.connect(self._on_hub_cancel)
-        self._hub_register_box = QtWidgets.QCheckBox("Add to my model list when finished")
+        self._hub_register_box = QtWidgets.QCheckBox("Add to my models when finished")
         self._hub_register_box.setChecked(True)
         controls.addWidget(self._hub_download_btn)
         controls.addWidget(self._hub_cancel_btn)
@@ -1424,16 +1649,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._hub_status.setWordWrap(True)
         body.addWidget(self._hub_status)
 
-        # M17.18 (owner request): the live RAM/VRAM monitor lives HERE, filling
-        # the empty lower area of the Get models box, instead of a separate page.
-        self._add_system_meters(body)
-
         if not self._hub_enabled:
-            # The honest disabled state: say which setting turns it back on, and
-            # make every control that could reach the network unusable.
             self._hub_status.setText(
-                "Model downloading is off. Re-run setup (locitize.vbs --setup) "
-                "or enable it in your settings file to turn it on."
+                "Downloading models is switched off. Turn it on in Settings > "
+                "Features, or re-run setup."
             )
             for widget in (
                 self._hub_query,
@@ -1442,8 +1661,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._hub_download_btn,
                 self._hub_cancel_btn,
             ):
-                widget.setEnabled(False)
-        return col
+                self._gate(widget, False, "Downloading models is switched off.")
+        return panel
 
     @staticmethod
     def _prepare_hub_table(table):
@@ -1457,15 +1676,10 @@ class MainWindow(QtWidgets.QMainWindow):
         table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setAlternatingRowColors(True)
         table.verticalHeader().setVisible(False)
-        # DEFECT-QA-M14-3: the maximum alone let this table collapse to a zero
-        # height viewport whenever the page was short of space, which is what
-        # happened at the app's own default window size: the three built-in
-        # catalog rows existed, were counted in the status line, and could not be
-        # seen or reached. The minimum is the header plus three rows, so the
-        # built-in catalog is always visible; the page scrolls when the window
-        # cannot fit everything (see _scrollable).
+        # A header plus about four rows: tall enough to read, short enough that
+        # both tables, the buttons and the status line fit a 1366x768 window.
         table.setMinimumHeight(HUB_TABLE_MIN_HEIGHT)
-        table.setMaximumHeight(150)
+        table.setMaximumHeight(170)
         header = table.horizontalHeader()
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
         for column in range(1, table.columnCount()):
@@ -1577,63 +1791,73 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
 
     def _build_finetune_page(self):
-        """Build the M13 Fine-tune page: studio lifecycle plus discovered models.
+        """Build the Fine-tune page: the guided four-step flow plus discovered models.
 
-        Two panels, both assembled from the existing shell primitives (no new QSS
-        class, color, or widget type is introduced): Panel A owns the studio's
-        start/stop/open lifecycle and its status chip, Panel B lists the fine-tuned
-        .gguf files discovered under the studio's outputs/ folder. Discovery works
-        whether or not the studio is running, which is the common case.
+        The flow (finetune_page.FineTuneFlow) picks a model, prepares and reviews a
+        dataset, trains and saves. Below it, the fine-tuned .gguf files discovered
+        in the outputs folder can be served, registered, saved or deleted.
         """
         page, layout = self._page(
             "Fine-tune",
-            "Run the fine-tuning studio and serve the models it has already "
-            "produced. The studio opens in your normal browser.",
+            "Teach a model your own material. You give it examples, it trains "
+            "a small add-on on this computer, and you get a new model to run "
+            "here. Nothing is uploaded.",
         )
 
-        # --- Panel A: studio lifecycle ---
-        studio, studio_body = self._panel()
-        studio_body.addWidget(QtWidgets.QLabel("Fine-tune studio"))
-        self._ft_chip = QtWidgets.QLabel("Stopped")
-        self._ft_chip.setObjectName("statusChip")
-        self._ft_chip.setWordWrap(True)
-        self._ft_chip.setTextInteractionFlags(
-            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        # --- What it needs ---
+        needs, needs_body = self._panel()
+        self._section(
+            needs_body,
+            "What you need",
+            "An NVIDIA graphics card with enough memory for the model you "
+            "train (a 3 to 4 billion parameter model needs about 6 to 8 GB "
+            "free), and the fine-tuning feature installed, which you add under "
+            "Settings > Features. Training takes from several minutes to a few "
+            "hours, and LoCiTiZe checks your graphics card before it starts.",
         )
-        studio_body.addWidget(self._ft_chip)
+        layout.addWidget(needs)
 
-        controls = QtWidgets.QHBoxLayout()
-        self._ft_start_btn = QtWidgets.QPushButton("Start")
-        self._ft_start_btn.setObjectName("primaryButton")
-        self._ft_start_btn.clicked.connect(self._on_finetune_start)
-        self._ft_stop_btn = QtWidgets.QPushButton("Stop")
-        self._ft_stop_btn.clicked.connect(self._on_finetune_stop)
-        self._ft_open_btn = QtWidgets.QPushButton("Open in browser")
-        self._ft_open_btn.clicked.connect(self._on_finetune_open)
-        for button in (self._ft_start_btn, self._ft_stop_btn, self._ft_open_btn):
-            controls.addWidget(button)
-        controls.addStretch(1)
-        studio_body.addLayout(controls)
+        # --- Install path (shown only while fine-tuning is not installed) ---
+        self._ft_install_panel, install_body = self._panel()
+        self._section(
+            install_body,
+            "Fine-tuning is not installed yet",
+            "Add it once and this page unlocks. The install downloads the "
+            "training tools (several gigabytes) and needs an NVIDIA graphics "
+            "card.",
+        )
+        install_row = QtWidgets.QHBoxLayout()
+        self._ft_install_btn = QtWidgets.QPushButton("Install fine-tuning")
+        self._ft_install_btn.setObjectName("primaryButton")
+        self._ft_install_btn.setToolTip(
+            "Opens the setup window so you can add the fine-tuning feature"
+        )
+        self._ft_install_btn.clicked.connect(self._on_open_setup_wizard)
+        self._ft_features_btn = QtWidgets.QPushButton("Open Settings > Features")
+        self._ft_features_btn.clicked.connect(lambda: self._go_to("Settings"))
+        install_row.addWidget(self._ft_install_btn)
+        install_row.addWidget(self._ft_features_btn)
+        install_row.addStretch(1)
+        self._ft_install_reason = QtWidgets.QLabel("")
+        self._ft_install_reason.setObjectName("muted")
+        self._ft_install_reason.setWordWrap(True)
+        install_body.addWidget(self._ft_install_reason)
+        install_body.addLayout(install_row)
+        self._ft_install_panel.setVisible(False)
+        layout.addWidget(self._ft_install_panel)
 
-        # The honesty warning lives in its own label so it can be shown on its own
-        # line without ever replacing the lifecycle state text.
-        self._ft_warning = QtWidgets.QLabel("")
-        self._ft_warning.setObjectName("error")
-        self._ft_warning.setWordWrap(True)
-        self._ft_warning.setVisible(False)
-        studio_body.addWidget(self._ft_warning)
+        # --- The guided flow: model, dataset, train, save ---
+        from finetune_page import FineTuneFlow
 
-        self._ft_log_label = QtWidgets.QLabel("")
-        self._ft_log_label.setObjectName("muted")
-        self._ft_log_label.setWordWrap(True)
-        self._ft_log_label.setVisible(False)
-        studio_body.addWidget(self._ft_log_label)
-        layout.addWidget(studio)
+        self._ft_flow = FineTuneFlow(
+            self, self._gc, _Sparkline, on_model_saved=self._on_finetune_flow_saved
+        )
+        layout.addWidget(self._ft_flow)
 
         # --- Panel B: discovered models ---
         found, found_body = self._panel()
         header_row = QtWidgets.QHBoxLayout()
-        header_row.addWidget(QtWidgets.QLabel("Fine-tuned models"))
+        header_row.addWidget(QtWidgets.QLabel("Your fine-tuned models"))
         header_row.addStretch(1)
         self._ft_rescan_btn = QtWidgets.QPushButton("Rescan")
         self._ft_rescan_btn.clicked.connect(self._on_finetune_rescan)
@@ -1658,8 +1882,8 @@ class MainWindow(QtWidgets.QMainWindow):
         ft_header = self._ft_table.horizontalHeader()
         self._attach_empty_state(
             self._ft_table,
-            "No fine-tuned models discovered yet.\n"
-            "Start the studio and train one, then Rescan.",
+            "No fine-tuned models yet.\n"
+            "Train one with the steps above; finished runs appear here.",
         )
         ft_header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
         for column in range(1, self._ft_table.columnCount()):
@@ -1680,6 +1904,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ft_register_btn.clicked.connect(self._on_finetune_register)
         self._ft_folder_btn = QtWidgets.QPushButton("Open folder")
         self._ft_folder_btn.clicked.connect(self._on_finetune_open_folder)
+        self._ft_save_btn = QtWidgets.QPushButton("Save a copy...")
+        self._ft_save_btn.setToolTip(
+            "Open the selected run in step 4 to save it to a folder of your choice"
+        )
+        self._ft_save_btn.clicked.connect(self._on_finetune_save_copy)
         # M18.7 (owner request): a run is deletable from the page it lives on.
         # dangerButton styling + a blocking confirmation, because a run is hours
         # of GPU time and this removes the whole folder from disk.
@@ -1690,7 +1919,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "from disk"
         )
         self._ft_delete_btn.clicked.connect(self._on_finetune_delete)
-        for button in (self._ft_serve_btn, self._ft_register_btn,
+        for button in (self._ft_serve_btn, self._ft_register_btn, self._ft_save_btn,
                        self._ft_delete_btn, self._ft_folder_btn):
             row_actions.addWidget(button)
         row_actions.addStretch(1)
@@ -1705,147 +1934,264 @@ class MainWindow(QtWidgets.QMainWindow):
         # worker for the scan so the filesystem walk never runs on the GUI thread.
         self._finetunes = []
         self._selected_finetune_id = None
-        self._apply_finetune_state({"status": "stopped", "reason": "", "url": None})
+        self._apply_finetune_state({"status": "ready", "reason": ""})
         self._refresh_finetune_buttons()
-        return page
+        # Four steps plus the run list are taller than a laptop screen.
+        self._ft_table.setMinimumHeight(220)
+        return self._scrollable(page)
 
-    def _build_talk_page(self):
-        """Build the assistant page around one mic control."""
+    def _build_code_page(self):
+        """Code: launch a coding tool on your model, resume sessions, search chats."""
         page, layout = self._page(
-            "Talk",
-            "Click Talk and speak. Talking over the reply also cuts in. "
-            "After each answer it listens again.",
+            "Code",
+            "Code with your local model, pick up a past coding session, or "
+            "search your earlier chats.",
         )
-
-        session, session_layout = self._panel()
+        card, body = self._panel()
+        self._section(
+            body,
+            "Code with your local model",
+            "Opens a terminal running a coding tool on your model, working in a "
+            "project folder you pick. If no model is running yet, the one "
+            "chosen on the Start page is started for you.",
+        )
         row = QtWidgets.QHBoxLayout()
-        self._assistant_start_btn = QtWidgets.QPushButton("Start assistant")
-        self._assistant_start_btn.setObjectName("primaryButton")
-        self._assistant_start_btn.clicked.connect(self._on_start_assistant)
-        self._assistant_end_btn = QtWidgets.QPushButton("End")
-        self._assistant_end_btn.clicked.connect(self._on_end_assistant)
-        self._assistant_end_btn.setEnabled(False)
-        self._interrupt_btn = QtWidgets.QPushButton("Interrupt")
-        self._interrupt_btn.clicked.connect(self._on_interrupt)
-        self._interrupt_btn.setEnabled(False)
-        self._assistant_speak = QtWidgets.QCheckBox("Speak replies")
-        self._assistant_speak.setChecked(True)
-        self._talk_voice = QtWidgets.QComboBox()
-        self._populate_voice_combo(self._talk_voice)
-        self._talk_voice.currentIndexChanged.connect(self._sync_voice_from_talk)
-        row.addWidget(self._assistant_start_btn)
-        row.addWidget(self._assistant_end_btn)
-        row.addWidget(self._interrupt_btn)
+        row.setSpacing(8)
+        self._code_harness_buttons = {}
+        for key, label in (
+            ("codex", "Codex"),
+            ("opencode", "OpenCode"),
+        ):
+            button = QtWidgets.QPushButton(label)
+            button.clicked.connect(lambda _checked=False, k=key: self._on_code_tool(k))
+            row.addWidget(button)
+            self._code_harness_buttons[key] = button
         row.addStretch(1)
-        row.addWidget(QtWidgets.QLabel("Voice"))
-        row.addWidget(self._talk_voice)
-        row.addWidget(self._assistant_speak)
-        session_layout.addLayout(row)
+        body.addLayout(row)
+        self._refresh_code_harness_buttons()
+        self._code_note = self._model_status.mirror()
+        body.addWidget(self._code_note)
 
-        self._assistant_status = QtWidgets.QLabel("Not running. Click Talk to start.")
-        self._assistant_status.setObjectName("muted")
-        session_layout.addWidget(self._assistant_status)
-        self._talk_btn = QtWidgets.QPushButton("Talk")
-        self._talk_btn.setObjectName("talkButton")
-        self._talk_btn.setEnabled(False)
-        self._talk_btn.clicked.connect(self._on_talk)
-        session_layout.addWidget(self._talk_btn)
-        self._talk_pulse = QtWidgets.QFrame()
-        self._talk_pulse.setObjectName("talkPulse")
-        self._talk_pulse.setProperty("talkState", "idle")
-        session_layout.addWidget(self._talk_pulse)
-
-        self._talk_monitor = QtWidgets.QLabel("idle")
-        self._talk_monitor.setObjectName("statusChip")
-        self._talk_monitor.setWordWrap(True)
-        session_layout.addWidget(self._talk_monitor)
-        voice_setup_btn = QtWidgets.QPushButton("Microphone and voices")
-        voice_setup_btn.clicked.connect(
-            lambda: self._sidebar.setCurrentRow(PAGE_NAMES.index("Voice Setup"))
+        release_row = QtWidgets.QHBoxLayout()
+        self._release_btn = QtWidgets.QPushButton("Release model")
+        self._release_btn.setToolTip(
+            "Tell locitize you are done with your coding terminals so the model "
+            "can be switched or stopped again."
         )
-        session_layout.addWidget(voice_setup_btn)
-        layout.addWidget(session)
-
-        conversation, conversation_layout = self._panel()
-        conversation_layout.addWidget(QtWidgets.QLabel("Conversation"))
-        self._conversation = QtWidgets.QTextEdit()
-        self._conversation.setReadOnly(True)
-        self._conversation.setPlaceholderText(
-            "Click Talk and speak. Turns show up here."
+        self._release_btn.clicked.connect(self._on_release_model)
+        release_row.addWidget(self._release_btn)
+        release_hint = QtWidgets.QLabel(
+            "While a coding terminal is open, locitize keeps its model loaded so "
+            "it is not switched out from under you. Press Release model when you "
+            "are finished. Open terminals keep running but lose their model."
         )
-        conversation_layout.addWidget(self._conversation, 1)
-        layout.addWidget(conversation, 1)
+        release_hint.setObjectName("muted")
+        release_hint.setWordWrap(True)
+        release_row.addWidget(release_hint, 1)
+        body.addLayout(release_row)
+        layout.addWidget(card)
 
-        shortcut = QtGui.QShortcut(QtGui.QKeySequence("Space"), page)
-        shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        shortcut.activated.connect(self._on_talk_shortcut)
+        self._code_tabs = QtWidgets.QTabWidget()
+        self._code_tabs.setObjectName("subTabs")
+        self._code_tabs.setDocumentMode(True)
+        self._code_tabs.tabBar().setDrawBase(False)
+        sessions = self._build_sessions_page()
+        sessions.layout().setContentsMargins(0, 12, 0, 0)
+        self._code_tabs.addTab(sessions, "Past sessions")
+
+        memory_tab, memory_layout = self._tab_body(
+            "Search what you have said to your local models. Leave the box "
+            "empty to see your most recent chats."
+        )
+        panel, mem_body = self._panel()
+        mem_row = QtWidgets.QHBoxLayout()
+        self._memory_query = QtWidgets.QLineEdit()
+        self._memory_query.setPlaceholderText("Search words, or leave blank for recent chats")
+        self._memory_query.returnPressed.connect(self._on_memory_search)
+        self._memory_btn = QtWidgets.QPushButton("Search")
+        self._memory_btn.setObjectName("primaryButton")
+        self._memory_btn.clicked.connect(self._on_memory_search)
+        mem_row.addWidget(self._memory_query, 1)
+        mem_row.addWidget(self._memory_btn)
+        mem_body.addLayout(mem_row)
+        self._memory_result = QtWidgets.QTextEdit()
+        self._memory_result.setReadOnly(True)
+        self._memory_result.setPlaceholderText("Your recent chats will appear here.")
+        mem_body.addWidget(self._memory_result, 1)
+        memory_layout.addWidget(panel, 1)
+        self._code_tabs.addTab(memory_tab, "Search past chats")
+        self._code_tabs.currentChanged.connect(self._on_code_tab_changed)
+        layout.addWidget(self._code_tabs, 1)
         return page
 
-    def _build_voice_page(self):
-        """Build speech-to-text capture and Kokoro voice audition controls."""
+    def _on_code_tab_changed(self, index):
+        """First visit to "Search past chats" shows the recent chats."""
+        if self._code_tabs.tabText(index) == "Search past chats" and not self._memory_visited:
+            self._memory_visited = True
+            self._on_memory_search()
+
+    def _on_code_tool(self, key):
+        """Open a coding tool: straight onto the running model, else via the
+        session dialog, which starts the chosen model first."""
+        if self._ui.running_model_id:
+            self._launch_harness_with_folder(key, False)
+        else:
+            self._sessions_page.local_launch(None, tool=key)
+
+    def _on_release_model(self):
+        """Release the coding-terminal reservation (the one Release button)."""
+        self._model_status.setText("Releasing the model...")
+        self._sessions_page.release_model()
+
+    def _refresh_code_harness_buttons(self):
+        """Enable each coding-tool button per a fresh PATH detection.
+
+        A detection failure must never break the window: the buttons then stay
+        disabled and say where to install the tool.
+        """
+        if not getattr(self, "_code_harness_buttons", None):
+            return
+        try:
+            installed = self._gc.detect_harnesses()
+        except Exception:  # noqa: BLE001 - degrade to disabled, never crash
+            installed = {}
+        if not isinstance(installed, dict):
+            installed = {}
+        for key, button in self._code_harness_buttons.items():
+            found = installed.get(key)
+            self._gate(
+                button,
+                bool(found),
+                "Not installed yet. Install it in Settings > Coding tools.",
+            )
+            if found:
+                button.setToolTip(f"Open {button.text()} on your local model")
+
+    def _build_phone_strip(self, column):
+        """Show the Tailscale Serve URL when one already fronts Open WebUI."""
+        self._phone_url_edit = None
+        self._phone_copy_btn = None
+        self._phone_hint = None
+        reader = getattr(self._gc, "phone_access", None)
+        access = reader() if callable(reader) else None
+        if access is None:
+            return
+        url = str(getattr(access, "url", "") or "")
+        if not url:
+            return
+        title = QtWidgets.QLabel("Chat from your phone")
+        title.setObjectName("sectionTitle")
+        column.addWidget(title)
+        row = QtWidgets.QHBoxLayout()
+        self._phone_url_edit = QtWidgets.QLineEdit(url)
+        self._phone_url_edit.setReadOnly(True)
+        self._phone_url_edit.setCursorPosition(0)
+        row.addWidget(self._phone_url_edit, 1)
+        self._phone_copy_btn = QtWidgets.QPushButton("Copy link")
+        self._phone_copy_btn.clicked.connect(self._on_copy_phone_url)
+        row.addWidget(self._phone_copy_btn)
+        column.addLayout(row)
+        self._phone_hint = QtWidgets.QLabel(
+            "Works on your own Tailscale network only. Open the Tailscale app on "
+            "the phone, then this link. A headset is more reliable than the "
+            "phone speaker for voice."
+        )
+        self._phone_hint.setObjectName("muted")
+        self._phone_hint.setWordWrap(True)
+        column.addWidget(self._phone_hint)
+
+    def _on_copy_phone_url(self):
+        """Copy the Tailscale phone URL to the clipboard as plain text."""
+        if self._phone_url_edit is None:
+            return
+        QtWidgets.QApplication.clipboard().setText(self._phone_url_edit.text())
+        if self._phone_hint is not None:
+            self._phone_hint.setText("Copied. Open it on the phone with Tailscale on.")
+
+    def _build_settings_page(self):
+        """Settings: app-level options only. Model options live on Models."""
         page, layout = self._page(
-            "Voice Setup",
-            "This is what Talk hears and speaks with. Test the microphone, pick "
-            "a voice, and set noise suppression for Open WebUI recordings.",
+            "Settings",
+            "What is installed, coding tools, phone access, microphone cleanup "
+            "and the app itself. Options for a single model are on the Models "
+            "page, under Advanced.",
         )
-        stt, stt_layout = self._panel()
-        stt_layout.addWidget(QtWidgets.QLabel("Speech to text"))
-        controls = QtWidgets.QHBoxLayout()
-        self._whisper_btn = QtWidgets.QPushButton("Start whisper server")
-        self._whisper_btn.clicked.connect(self._on_whisper)
-        self._listen_btn = QtWidgets.QPushButton("Listen (15s)")
-        self._listen_btn.clicked.connect(self._on_listen)
-        controls.addWidget(self._whisper_btn)
-        controls.addWidget(self._listen_btn)
-        controls.addStretch(1)
-        self._voice_status = QtWidgets.QLabel("idle")
-        self._voice_status.setObjectName("muted")
-        controls.addWidget(self._voice_status)
-        stt_layout.addLayout(controls)
-        self._transcript = QtWidgets.QTextEdit()
-        self._transcript.setReadOnly(True)
-        self._transcript.setPlaceholderText("Accepted transcript segments appear here.")
-        stt_layout.addWidget(self._transcript)
-        layout.addWidget(stt, 1)
 
-        tts, tts_layout = self._panel()
-        tts_layout.addWidget(QtWidgets.QLabel("Text to speech"))
-        voice_row = QtWidgets.QHBoxLayout()
-        voice_row.addWidget(QtWidgets.QLabel("Voice"))
-        self._voice_combo = QtWidgets.QComboBox()
-        self._populate_voice_combo(self._voice_combo)
-        self._voice_combo.currentIndexChanged.connect(self._sync_voice_from_voice_page)
-        self._speak_btn = QtWidgets.QPushButton("Speak test")
-        self._speak_btn.clicked.connect(self._on_speak)
-        self._audition_btn = QtWidgets.QPushButton("Audition all")
-        self._audition_btn.clicked.connect(self._on_audition)
-        voices_available = self._voice_combo.count() > 0
-        self._speak_btn.setEnabled(voices_available)
-        self._audition_btn.setEnabled(voices_available)
-        voice_row.addWidget(self._voice_combo)
-        voice_row.addWidget(self._speak_btn)
-        voice_row.addWidget(self._audition_btn)
-        voice_row.addStretch(1)
-        self._tts_status = QtWidgets.QLabel(
-            "ready" if voices_available else "no voices configured"
+        # ---- Features -------------------------------------------------
+        features_panel, features_body = self._panel()
+        self._section(
+            features_body,
+            "Features",
+            "What this computer has installed. Add anything missing with setup - "
+            "pieces that are already installed are never downloaded twice.",
         )
-        self._tts_status.setObjectName("muted")
-        voice_row.addWidget(self._tts_status)
-        tts_layout.addLayout(voice_row)
-        layout.addWidget(tts)
+        self._feature_rows_grid = QtWidgets.QGridLayout()
+        self._feature_rows_grid.setColumnStretch(0, 1)
+        features_body.addLayout(self._feature_rows_grid)
+        self._feature_state_note = QtWidgets.QLabel("checking this computer...")
+        self._feature_state_note.setObjectName("muted")
+        self._feature_state_note.setWordWrap(True)
+        features_body.addWidget(self._feature_state_note)
+        wizard_row = QtWidgets.QHBoxLayout()
+        self._open_wizard_btn = QtWidgets.QPushButton("Add features (setup)")
+        self._open_wizard_btn.setToolTip(
+            "Opens the setup window so you can add voice, chat or other pieces"
+        )
+        self._open_wizard_btn.clicked.connect(self._on_open_setup_wizard)
+        wizard_row.addWidget(self._open_wizard_btn)
+        wizard_row.addStretch(1)
+        features_body.addLayout(wizard_row)
+        layout.addWidget(features_panel)
 
+        # ---- Coding tools -------------------------------------------------
+        clis_panel, clis_body = self._panel()
+        self._section(
+            clis_body,
+            "Coding tools",
+            "Programs locitize can open on your model from the Code page. "
+            "Install any of them here.",
+        )
+        clis_grid = QtWidgets.QGridLayout()
+        clis_grid.setColumnStretch(1, 1)
+        self._cli_status_labels = {}
+        for row_index, (key, label) in enumerate(
+            (("codex", "Codex"), ("opencode", "OpenCode"))
+        ):
+            clis_grid.addWidget(QtWidgets.QLabel(label), row_index, 0)
+            status = QtWidgets.QLabel("checking...")
+            status.setObjectName("muted")
+            self._cli_status_labels[key] = status
+            clis_grid.addWidget(status, row_index, 1)
+            install_btn = QtWidgets.QPushButton("Install")
+            install_btn.clicked.connect(
+                lambda _checked=False, k=key, lb=label: self._confirm_and_install_harness(
+                    None, k, lb
+                )
+            )
+            clis_grid.addWidget(install_btn, row_index, 2)
+        clis_body.addLayout(clis_grid)
+        self._refresh_cli_status_rows()
+        layout.addWidget(clis_panel)
+
+        # ---- Phone access -----------------------------------------------------
+        phone_panel, phone_body = self._panel()
+        self._section(phone_body, "Phone access")
+        self._phone_access_note = QtWidgets.QLabel(self._phone_access_text())
+        self._phone_access_note.setObjectName("muted")
+        self._phone_access_note.setWordWrap(True)
+        phone_body.addWidget(self._phone_access_note)
+        layout.addWidget(phone_panel)
+
+        # ---- Noise suppression ----------------------------------------------------
         noise, noise_layout = self._panel()
-        noise_title = QtWidgets.QLabel("Noise suppression")
-        noise_title.setObjectName("sectionTitle")
-        noise_layout.addWidget(noise_title)
-        noise_hint = QtWidgets.QLabel(
-            "Filters Open WebUI microphone uploads on this machine. Balanced "
-            "is the default. Strong removes more fan/rumble. Off forwards the "
-            "recording unchanged. Native Talk uses the whisper-stream gate."
+        self._section(
+            noise_layout,
+            "Microphone cleanup (noise suppression)",
+            "Cleans up recordings from the chat page's microphone on this "
+            "computer. Balanced is the default. Strong removes more fan and "
+            "rumble. Off sends the recording unchanged. Talk uses its own "
+            "built-in cleanup.",
         )
-        noise_hint.setObjectName("muted")
-        noise_hint.setWordWrap(True)
-        noise_layout.addWidget(noise_hint)
         noise_row = QtWidgets.QHBoxLayout()
         noise_row.addWidget(QtWidgets.QLabel("Mode"))
         self._noise_combo = QtWidgets.QComboBox()
@@ -1869,13 +2215,521 @@ class MainWindow(QtWidgets.QMainWindow):
         noise_row.addWidget(self._noise_status)
         noise_layout.addLayout(noise_row)
         layout.addWidget(noise)
+
+        # ---- Health ----------------------------------------------------------------
+        health_panel, health_body = self._panel()
+        self._section(
+            health_body,
+            "Health",
+            "The checks locitize ran when it started. Click the Health chip at "
+            "the top of the window any time to see this again.",
+        )
+        self._health_detail = QtWidgets.QPlainTextEdit()
+        self._health_detail.setReadOnly(True)
+        self._health_detail.setMaximumHeight(150)
+        self._health_detail.setPlainText(self._health_details_text())
+        health_body.addWidget(self._health_detail)
+        layout.addWidget(health_panel)
+
+        # ---- About ----------------------------------------------------------------
+        about_panel, about_body = self._panel()
+        self._section(about_body, "About")
+        try:
+            from release_info import VERSION
+        except Exception:  # noqa: BLE001 - the page must paint without it
+            VERSION = ""
+        about_row = QtWidgets.QHBoxLayout()
+        about_label = QtWidgets.QLabel(
+            f"locitize {VERSION}".strip() + " - your AI, running on this computer."
+        )
+        about_label.setObjectName("muted")
+        about_row.addWidget(about_label, 1)
+        self._about_btn = QtWidgets.QPushButton("About and diagnostics")
+        self._about_btn.setToolTip("Version and technical details you can copy for support")
+        self._about_btn.clicked.connect(self._show_release_diagnostics)
+        about_row.addWidget(self._about_btn)
+        about_body.addLayout(about_row)
+        layout.addWidget(about_panel)
+
+        # ---- Uninstall ---------------------------------------------------------------
+        uninstall_panel, uninstall_body = self._panel()
+        self._section(uninstall_body, "Uninstall")
+        uninstall_row = QtWidgets.QHBoxLayout()
+        uninstall_hint = QtWidgets.QLabel(
+            "Remove locitize from this computer. You can keep your model files."
+        )
+        uninstall_hint.setObjectName("muted")
+        uninstall_hint.setWordWrap(True)
+        uninstall_row.addWidget(uninstall_hint, 1)
+        self._uninstall_btn = QtWidgets.QPushButton("Uninstall locitize...")
+        self._uninstall_btn.setObjectName("dangerButton")
+        self._uninstall_btn.setToolTip(
+            "Remove what setup installed (with the option to keep your model "
+            "files). Opens a separate window; locitize will close."
+        )
+        self._uninstall_btn.clicked.connect(self._on_uninstall)
+        uninstall_row.addWidget(self._uninstall_btn)
+        uninstall_body.addLayout(uninstall_row)
+        layout.addWidget(uninstall_panel)
+
+        if hasattr(self._gc, "request_feature_state"):
+            self._gc.request_feature_state()
+        layout.addStretch(1)
+        return self._scrollable(page)
+
+    def _phone_access_text(self):
+        """Plain status for the Settings > Phone access section."""
+        reader = getattr(self._gc, "phone_access", None)
+        access = reader() if callable(reader) else None
+        url = str(getattr(access, "url", "") or "") if access is not None else ""
+        if url:
+            return (
+                "Your phone link is ready and shown on the Start page with a "
+                "Copy button. It works on your own Tailscale network only."
+            )
+        return (
+            "Not set up. To chat from your phone, install Tailscale on this "
+            "computer and on the phone, sign in to both, and turn on Tailscale "
+            "Serve for locitize. The link then appears on the Start page."
+        )
+
+    def _health_label(self):
+        """Short word for the header chip."""
+        return {
+            "PASS": "Good",
+            "WARNING": "Needs attention",
+            "FAIL": "Problem",
+        }.get(str(self._health).upper(), "Not checked")
+
+    def _health_reasons(self):
+        """The startup checks that were not clean, as plain lines."""
+        report = self._health_report
+        results = getattr(report, "results", None) or []
+        lines = []
+        for result in results:
+            status = getattr(getattr(result, "status", None), "value", "")
+            if status == "PASS":
+                continue
+            line = f"{getattr(result, 'name', 'check')}: {getattr(result, 'detail', '')}"
+            remedy = getattr(result, "remedy", None)
+            if remedy:
+                line += f"  Fix: {remedy}"
+            lines.append(line)
+        return lines
+
+    def _health_details_text(self):
+        reasons = self._health_reasons()
+        if reasons:
+            return "\n\n".join(reasons)
+        if getattr(self._health_report, "results", None):
+            return "Every startup check passed."
+        return (
+            "No startup check details are available in this session. Open "
+            "About and diagnostics in Settings for the full technical report."
+        )
+
+    def _update_health_chip(self):
+        """Paint the header Health chip and its tooltip with the real reasons."""
+        label = self._health_label()
+        self._health_btn.setText(f"Health: {label}")
+        self._health_btn.setProperty("healthState", str(self._health).upper())
+        reasons = self._health_reasons()
+        if reasons:
+            tip = "Click for details.\n\n" + "\n".join(reasons[:4])
+        elif getattr(self._health_report, "results", None):
+            tip = "Every startup check passed. Click for details."
+        else:
+            tip = "Click for details about the startup checks."
+        self._health_btn.setToolTip(plain_tooltip_text(tip))
+        style = self._health_btn.style()
+        style.unpolish(self._health_btn)
+        style.polish(self._health_btn)
+
+    def _show_health_details(self):
+        """Explain the Health chip in a dialog: each check that needs attention."""
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Health")
+        layout = QtWidgets.QVBoxLayout(dialog)
+        headline = QtWidgets.QLabel(f"Health: {self._health_label()}")
+        headline.setObjectName("sectionTitle")
+        layout.addWidget(headline)
+        text = QtWidgets.QPlainTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(self._health_details_text())
+        layout.addWidget(text)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(560, 360)
+        harden_text_rendering(dialog).exec()
+
+    def _build_start_page(self):
+        """Start: pick a model, press one big button, then chat.
+
+        This replaces the old Home, Chat page and the model-start controls that
+        lived on Models. Everything a first-time user needs is on this screen.
+        """
+        page, layout = self._page(
+            "Start",
+            "Pick a model, press Start, then open the chat. Everything runs on "
+            "this computer.",
+        )
+        card, body = self._panel()
+        self._section(body, "1. Choose a model")
+        self._start_model_combo = QtWidgets.QComboBox()
+        self._start_model_combo.setAccessibleName("Model to run")
+        self._start_model_combo.currentIndexChanged.connect(self._on_start_combo_changed)
+        body.addWidget(self._start_model_combo)
+        self._start_fit_label = QtWidgets.QLabel("")
+        self._start_fit_label.setObjectName("muted")
+        self._start_fit_label.setWordWrap(True)
+        body.addWidget(self._start_fit_label)
+        self._start_empty_row = QtWidgets.QWidget()
+        empty_layout = QtWidgets.QHBoxLayout(self._start_empty_row)
+        empty_layout.setContentsMargins(0, 0, 0, 0)
+        empty_label = QtWidgets.QLabel("You do not have a model yet.")
+        empty_label.setObjectName("muted")
+        empty_layout.addWidget(empty_label)
+        get_btn = QtWidgets.QPushButton("Get a model")
+        get_btn.setObjectName("primaryButton")
+        get_btn.clicked.connect(lambda: self._go_to("Models", "Get models"))
+        empty_layout.addWidget(get_btn)
+        empty_layout.addStretch(1)
+        body.addWidget(self._start_empty_row)
+
+        buttons = QtWidgets.QHBoxLayout()
+        self._start_btn = QtWidgets.QPushButton("Start")
+        self._start_btn.setObjectName("primaryButton")
+        self._start_btn.setMinimumHeight(48)
+        self._start_btn.setMinimumWidth(200)
+        self._start_btn.clicked.connect(self._on_start)
+        self._stop_btn = QtWidgets.QPushButton("Stop")
+        self._stop_btn.setMinimumHeight(48)
+        self._stop_btn.setToolTip("Stop the running model and free its memory")
+        self._stop_btn.clicked.connect(self._on_stop)
+        buttons.addWidget(self._start_btn)
+        buttons.addWidget(self._stop_btn)
+        buttons.addStretch(1)
+        body.addLayout(buttons)
+        self._start_status_line = QtWidgets.QLabel("No model running")
+        self._start_status_line.setObjectName("statusChip")
+        self._start_status_line.setWordWrap(True)
+        body.addWidget(self._start_status_line)
+        # The one shared message line (errors, progress): every page that can
+        # raise an action shows a mirror of it so no outcome is hidden.
+        self._model_status = _SharedLabel("")
+        self._model_status.setObjectName("muted")
+        self._model_status.setWordWrap(True)
+        self._model_status.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Minimum,
+        )
+        self._chat_status = self._model_status
+        body.addWidget(self._model_status)
+        layout.addWidget(card)
+
+        chat_card, chat_body = self._panel()
+        self._section(chat_body, "2. Chat")
+        self._chat_hint = QtWidgets.QLabel("")
+        self._chat_hint.setObjectName("muted")
+        self._chat_hint.setWordWrap(True)
+        chat_body.addWidget(self._chat_hint)
+        chat_row = QtWidgets.QHBoxLayout()
+        self._chat_btn = QtWidgets.QPushButton("Open chat")
+        self._chat_btn.setObjectName("primaryButton")
+        self._chat_btn.setMinimumHeight(40)
+        self._chat_btn.setToolTip("Open the chat for the running model in your browser")
+        self._chat_btn.clicked.connect(self._on_chat)
+        chat_row.addWidget(self._chat_btn)
+        chat_row.addStretch(1)
+        chat_body.addLayout(chat_row)
+        self._build_phone_strip(chat_body)
+        layout.addWidget(chat_card)
+        layout.addStretch(1)
+        return self._scrollable(page)
+
+    def _model_name(self, model_id):
+        """Plain display name for a model id, falling back to the id."""
+        for model in self._models:
+            if model["id"] == model_id:
+                return str(model.get("name") or model_id)
+        return str(model_id or "")
+
+    def _gpu_total_mb(self):
+        try:
+            return self._gc.system_specs().gpu_vram_total_mb
+        except Exception:  # noqa: BLE001 - hardware facts must never break a page
+            return None
+
+    def _populate_start_combo(self):
+        """Rebuild the Start page's model picker from the cached model rows."""
+        combo = self._start_model_combo
+        combo.blockSignals(True)
+        combo.clear()
+        gpu_total = self._gpu_total_mb()
+        for model in self._models:
+            fit = gui_controller.format_fit(model.get("vram_need_mb"), gpu_total)
+            label = f"{model['name']}  -  {model.get('size_display', '-')}"
+            if fit == "Yes":
+                label += "  -  fits your GPU"
+            elif fit == "Partly":
+                label += "  -  partly on your GPU"
+            combo.addItem(label, model["id"])
+        index = combo.findData(self._selected_id)
+        if index < 0 and combo.count():
+            index = 0
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+        self._start_empty_row.setVisible(combo.count() == 0)
+        combo.setVisible(combo.count() > 0)
+        self._update_start_fit()
+
+    def _update_start_fit(self):
+        model = self._selected_model()
+        if model is None:
+            self._start_fit_label.setText("")
+            return
+        self._start_fit_label.setText(
+            gui_controller.describe_fit(model.get("vram_need_mb"), self._gpu_total_mb())
+        )
+
+    def _on_start_combo_changed(self, _index):
+        """Picking a model on Start selects the same row on Models."""
+        model_id = self._start_model_combo.currentData()
+        if model_id and model_id != self._selected_id:
+            self._selected_id = model_id
+            self._restore_model_selection()
+            self._note_selected_model()
+            settings_index = self._settings_model.findData(model_id)
+            if settings_index >= 0 and self._settings_model.currentIndex() != settings_index:
+                self._settings_model.blockSignals(True)
+                self._settings_model.setCurrentIndex(settings_index)
+                self._settings_model.blockSignals(False)
+            self._load_settings_model()
+            self._refresh_buttons()
+        self._update_start_fit()
+
+    def _build_voice_vision_page(self):
+        """Voice & Vision: talk, mic and voice setup, images and screen watching."""
+        page, layout = self._page(
+            "Voice & Vision",
+            "Talk to your model out loud, test your microphone and voices, ask "
+            "about a picture, or let it watch your screen.",
+        )
+        banner = QtWidgets.QFrame()
+        banner.setObjectName("banner")
+        banner_row = QtWidgets.QHBoxLayout(banner)
+        banner_row.setContentsMargins(14, 10, 14, 10)
+        self._vv_banner_label = QtWidgets.QLabel("")
+        self._vv_banner_label.setWordWrap(True)
+        banner_row.addWidget(self._vv_banner_label, 1)
+        self._vv_banner_btn = QtWidgets.QPushButton("")
+        self._vv_banner_btn.clicked.connect(self._on_vv_banner_fix)
+        banner_row.addWidget(self._vv_banner_btn)
+        self._vv_banner = banner
+        self._vv_banner_target = "Start"
+        layout.addWidget(banner)
+
+        self._vv_tabs = QtWidgets.QTabWidget()
+        self._vv_tabs.setObjectName("subTabs")
+        self._vv_tabs.setDocumentMode(True)
+        self._vv_tabs.tabBar().setDrawBase(False)
+        self._vv_tabs.addTab(self._build_talk_tab(), "Talk")
+        self._vv_tabs.addTab(self._build_voice_setup_tab(), "Voice and mic setup")
+        self._vv_tabs.addTab(self._build_vision_tab(), "Ask about an image")
+        self._vv_tabs.addTab(self._build_watch_tab(), "Watch my screen")
+        layout.addWidget(self._vv_tabs, 1)
         return page
 
-    def _build_vision_page(self):
-        """Build the owner-picked image path and read-only description surface."""
-        page, layout = self._page(
-            "Vision",
-            "Pick or drop an image, ask a question, or watch the screen against a goal.",
+    def _vv_missing_voice(self):
+        """Plain names of the voice pieces that are not installed (may be empty)."""
+        reader = getattr(self._gc, "voice_readiness", None)
+        if not callable(reader):
+            return []
+        try:
+            ready = reader() or {}
+        except Exception:  # noqa: BLE001 - never block a page on a probe
+            return []
+        missing = []
+        if not ready.get("listen", True):
+            missing.append("voice input")
+        if not ready.get("speak", True):
+            missing.append("voice replies")
+        return missing
+
+    def _update_vv_banner(self):
+        """One shared banner: what Voice & Vision still needs, with a fix button."""
+        if not hasattr(self, "_vv_banner"):
+            return
+        missing = self._vv_missing_voice()
+        if missing:
+            self._vv_banner_label.setText(
+                "Not installed yet: " + " and ".join(missing) + ". Add it in "
+                "Settings > Features, then restart locitize."
+            )
+            self._vv_banner_btn.setText("Open Settings")
+            self._vv_banner_target = "Settings"
+            self._vv_banner.setVisible(True)
+        elif not self._ui.running_model_id and not self._assistant_live:
+            self._vv_banner_label.setText(
+                "No model is running. Talk starts the model chosen on the Start "
+                "page for you; asking about an image or watching your screen "
+                "needs one."
+            )
+            self._vv_banner_btn.setText("Go to Start")
+            self._vv_banner_target = "Start"
+            self._vv_banner.setVisible(True)
+        else:
+            self._vv_banner.setVisible(False)
+
+    def _on_vv_banner_fix(self):
+        self._go_to(self._vv_banner_target)
+
+    def _build_talk_tab(self):
+        """Talk: one big mic control and the running conversation."""
+        tab, layout = self._tab_body(
+            "Click Talk and speak. Talking over the reply also cuts in. After "
+            "each answer it listens again."
+        )
+        session, session_layout = self._panel()
+        row = QtWidgets.QHBoxLayout()
+        self._assistant_start_btn = QtWidgets.QPushButton("Start voice chat")
+        self._assistant_start_btn.setObjectName("primaryButton")
+        self._assistant_start_btn.clicked.connect(self._on_start_assistant)
+        self._assistant_end_btn = QtWidgets.QPushButton("End")
+        self._assistant_end_btn.setToolTip("End the voice chat and release the model")
+        self._assistant_end_btn.clicked.connect(self._on_end_assistant)
+        self._gate(self._assistant_end_btn, False, 'Voice chat is not running.')
+        self._interrupt_btn = QtWidgets.QPushButton("Interrupt")
+        self._interrupt_btn.setToolTip("Stop the reply that is being spoken")
+        self._interrupt_btn.clicked.connect(self._on_interrupt)
+        self._gate(self._interrupt_btn, False, 'Nothing is being spoken.')
+        self._assistant_speak = QtWidgets.QCheckBox("Speak replies")
+        self._assistant_speak.setChecked(True)
+        self._talk_voice = QtWidgets.QComboBox()
+        self._populate_voice_combo(self._talk_voice)
+        self._talk_voice.currentIndexChanged.connect(self._sync_voice_from_talk)
+        row.addWidget(self._assistant_start_btn)
+        row.addWidget(self._assistant_end_btn)
+        row.addWidget(self._interrupt_btn)
+        row.addStretch(1)
+        row.addWidget(QtWidgets.QLabel("Voice"))
+        row.addWidget(self._talk_voice)
+        row.addWidget(self._assistant_speak)
+        session_layout.addLayout(row)
+
+        self._assistant_status = QtWidgets.QLabel("Not running. Click Talk to start.")
+        self._assistant_status.setObjectName("muted")
+        self._assistant_status.setWordWrap(True)
+        session_layout.addWidget(self._assistant_status)
+        self._talk_btn = QtWidgets.QPushButton("Talk")
+        self._talk_btn.setObjectName("talkButton")
+        self._gate(self._talk_btn, False, 'Press Start voice chat first.')
+        self._talk_btn.clicked.connect(self._on_talk)
+        session_layout.addWidget(self._talk_btn)
+        self._talk_pulse = QtWidgets.QFrame()
+        self._talk_pulse.setObjectName("talkPulse")
+        self._talk_pulse.setProperty("talkState", "idle")
+        session_layout.addWidget(self._talk_pulse)
+
+        self._talk_monitor = QtWidgets.QLabel("idle")
+        self._talk_monitor.setObjectName("statusChip")
+        self._talk_monitor.setWordWrap(True)
+        session_layout.addWidget(self._talk_monitor)
+        voice_setup_btn = QtWidgets.QPushButton("Microphone and voices")
+        voice_setup_btn.clicked.connect(
+            lambda: self._go_to("Voice & Vision", "Voice and mic setup")
+        )
+        session_layout.addWidget(voice_setup_btn)
+        layout.addWidget(session)
+
+        conversation, conversation_layout = self._panel()
+        conversation_layout.addWidget(QtWidgets.QLabel("Conversation"))
+        self._conversation = QtWidgets.QTextEdit()
+        self._conversation.setReadOnly(True)
+        self._conversation.setPlaceholderText("Click Talk and speak. Turns show up here.")
+        conversation_layout.addWidget(self._conversation, 1)
+        layout.addWidget(conversation, 1)
+
+        shortcut = QtGui.QShortcut(QtGui.QKeySequence("Space"), tab)
+        shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        shortcut.activated.connect(self._on_talk_shortcut)
+        return tab
+
+    def _build_voice_setup_tab(self):
+        """Voice and mic setup: test the microphone and pick a voice."""
+        tab, layout = self._tab_body(
+            "This is what Talk hears and speaks with. Test the microphone and "
+            "pick a voice."
+        )
+        stt, stt_layout = self._panel()
+        self._section(stt_layout, "Microphone (speech to text)")
+        controls = QtWidgets.QHBoxLayout()
+        self._whisper_btn = QtWidgets.QPushButton("Turn on voice input")
+        self._whisper_btn.setToolTip(
+            "Start or stop the part of locitize that turns your speech into text"
+        )
+        self._whisper_btn.clicked.connect(self._on_whisper)
+        self._listen_btn = QtWidgets.QPushButton("Test microphone (15 s)")
+        self._listen_btn.setToolTip("Listen for 15 seconds and show what it heard")
+        self._listen_btn.clicked.connect(self._on_listen)
+        controls.addWidget(self._whisper_btn)
+        controls.addWidget(self._listen_btn)
+        controls.addStretch(1)
+        stt_layout.addLayout(controls)
+        self._whisper_status = QtWidgets.QLabel("")
+        self._whisper_status.setObjectName("muted")
+        self._whisper_status.setWordWrap(True)
+        stt_layout.addWidget(self._whisper_status)
+        self._voice_status = QtWidgets.QLabel("")
+        self._voice_status.setObjectName("muted")
+        self._voice_status.setWordWrap(True)
+        stt_layout.addWidget(self._voice_status)
+        self._transcript = QtWidgets.QTextEdit()
+        self._transcript.setReadOnly(True)
+        self._transcript.setPlaceholderText("What it heard appears here.")
+        stt_layout.addWidget(self._transcript)
+        layout.addWidget(stt, 1)
+
+        tts, tts_layout = self._panel()
+        self._section(tts_layout, "Voice (text to speech)")
+        voice_row = QtWidgets.QHBoxLayout()
+        voice_row.addWidget(QtWidgets.QLabel("Voice"))
+        self._voice_combo = QtWidgets.QComboBox()
+        self._populate_voice_combo(self._voice_combo)
+        self._voice_combo.currentIndexChanged.connect(self._sync_voice_from_voice_page)
+        self._speak_btn = QtWidgets.QPushButton("Hear a sample")
+        self._speak_btn.clicked.connect(self._on_speak)
+        self._audition_btn = QtWidgets.QPushButton("Hear every voice")
+        self._audition_btn.clicked.connect(self._on_audition)
+        voices_available = self._voice_combo.count() > 0
+        no_voices = "No voices are installed. Add voice replies in Settings > Features."
+        self._speak_btn.setToolTip("Say a short sentence in the chosen voice")
+        self._audition_btn.setToolTip("Say the same sentence in every voice, one after another")
+        self._gate(self._speak_btn, voices_available, no_voices)
+        self._gate(self._audition_btn, voices_available, no_voices)
+        voice_row.addWidget(self._voice_combo)
+        voice_row.addWidget(self._speak_btn)
+        voice_row.addWidget(self._audition_btn)
+        voice_row.addStretch(1)
+        tts_layout.addLayout(voice_row)
+        self._tts_status = QtWidgets.QLabel(
+            "" if voices_available else "No voices installed yet."
+        )
+        self._tts_status.setObjectName("muted")
+        self._tts_status.setWordWrap(True)
+        tts_layout.addWidget(self._tts_status)
+        layout.addWidget(tts)
+        layout.addStretch(0)
+        return tab
+
+    def _build_vision_tab(self):
+        """Ask about an image: pick or drop a picture, then ask a question."""
+        tab, layout = self._tab_body(
+            "Pick or drop a picture and ask a question about it. locitize "
+            "switches to a model that can see images for this, so a model you "
+            "are chatting with may be swapped out."
         )
         panel, body = self._panel()
         panel.setAcceptDrops(True)
@@ -1899,408 +2753,50 @@ class MainWindow(QtWidgets.QMainWindow):
         self._vision_prompt.setPlaceholderText("Optional question about the image")
         self._vision_btn = QtWidgets.QPushButton("Describe")
         self._vision_btn.setObjectName("primaryButton")
-        self._vision_btn.setEnabled(False)
+        self._vision_btn.setToolTip("Ask the model about this picture")
+        self._gate(self._vision_btn, False, "Pick or drop an image first.")
         self._vision_btn.clicked.connect(self._on_describe)
         prompt_row.addWidget(self._vision_prompt, 1)
         prompt_row.addWidget(self._vision_btn)
         body.addLayout(prompt_row)
         self._vision_result = QtWidgets.QTextEdit()
         self._vision_result.setReadOnly(True)
-        self._vision_result.setPlaceholderText(
-            "Pick or drop an image, then Describe."
-        )
+        self._vision_result.setPlaceholderText("Pick or drop an image, then press Describe.")
         body.addWidget(self._vision_result, 1)
         layout.addWidget(panel, 1)
+        self._install_vision_drop(panel)
+        return tab
 
+    def _build_watch_tab(self):
+        """Watch my screen: speak up when the screen drifts from a stated goal."""
+        tab, layout = self._tab_body(
+            "Keeps a model that can see images ready and speaks up when your "
+            "screen drifts from the goal you type. It ends voice chat first, "
+            "because both need the GPU."
+        )
         eye, eye_layout = self._panel()
-        eye_title = QtWidgets.QLabel("Watch my screen")
-        eye_title.setObjectName("sectionTitle")
-        eye_layout.addWidget(eye_title)
-        eye_hint = QtWidgets.QLabel(
-            "Keeps a vision model warm and speaks when the screen drifts from "
-            "the goal you type. Stops Talk first because both need the GPU."
-        )
-        eye_hint.setObjectName("muted")
-        eye_hint.setWordWrap(True)
-        eye_layout.addWidget(eye_hint)
         self._second_eye_goal = QtWidgets.QLineEdit()
-        self._second_eye_goal.setPlaceholderText(
-            "What you are doing, e.g. learning Python"
-        )
+        self._second_eye_goal.setPlaceholderText("What you are doing, e.g. learning Python")
         eye_layout.addWidget(self._second_eye_goal)
         eye_row = QtWidgets.QHBoxLayout()
         self._second_eye_start_btn = QtWidgets.QPushButton("Start watching")
         self._second_eye_start_btn.setObjectName("primaryButton")
         self._second_eye_start_btn.clicked.connect(self._on_second_eye_start)
         self._second_eye_stop_btn = QtWidgets.QPushButton("Stop")
-        self._second_eye_stop_btn.setEnabled(False)
+        self._second_eye_stop_btn.setToolTip("Stop watching your screen")
+        self._gate(self._second_eye_stop_btn, False, "Not watching right now.")
         self._second_eye_stop_btn.clicked.connect(self._on_second_eye_stop)
         eye_row.addWidget(self._second_eye_start_btn)
         eye_row.addWidget(self._second_eye_stop_btn)
         eye_row.addStretch(1)
-        self._second_eye_status = QtWidgets.QLabel("not watching")
-        self._second_eye_status.setObjectName("muted")
-        eye_row.addWidget(self._second_eye_status)
         eye_layout.addLayout(eye_row)
+        self._second_eye_status = QtWidgets.QLabel("Not watching")
+        self._second_eye_status.setObjectName("muted")
+        self._second_eye_status.setWordWrap(True)
+        eye_layout.addWidget(self._second_eye_status)
         layout.addWidget(eye)
-        self._install_vision_drop(panel)
-        return page
-
-    def _build_chat_page(self):
-        """Build the dedicated Chat destination for the running model's web UI.
-
-        The chooser, the fallback logic, and the browser open all live in the
-        controller (request_chat); this page only offers the action and stays
-        disabled while no model is running, so the button can never open a dead
-        URL. It is the same intent the Models page's Open Chat button raises.
-        """
-        page, layout = self._page(
-            "Chat",
-            "Open a full chat window for the running model in your browser.",
-        )
-        panel, body = self._panel()
-        # M15.9: this page holds one action and two lines of text, and before
-        # this pass they sat in a strip at the top of a full-height empty panel
-        # - the largest single void in the app. The content now lives in a
-        # width-capped column, vertically centered by stretch on both sides, so
-        # the page reads as a deliberate focal card rather than an unfinished
-        # form.
-        body.addStretch(2)
-        column = QtWidgets.QVBoxLayout()
-        column.setSpacing(12)
-        self._chat_page_btn = QtWidgets.QPushButton("Open Chat")
-        self._chat_page_btn.setObjectName("primaryButton")
-        self._chat_page_btn.setMinimumHeight(44)
-        self._chat_page_btn.clicked.connect(self._on_chat)
-        column.addWidget(self._chat_page_btn)
-        hint = QtWidgets.QLabel(
-            "Start a model on Models first. Chat then opens the rich chat "
-            "application when it is installed, or the built-in model UI."
-        )
-        self._chat_hint = hint
-        hint.setObjectName("muted")
-        hint.setWordWrap(True)
-        hint.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
-        column.addWidget(hint)
-        self._build_phone_strip(column)
-
-        # M18.9 (owner report: "why don't I have my options anymore to start
-        # Claude Code / Codex / OpenCode"): the coding harnesses lived ONLY
-        # inside the chat-chooser dialog, so remembering a chat UI silently
-        # removed them. They now have a permanent home here - always visible,
-        # regardless of the remembered chat preference. A harness missing from
-        # PATH shows disabled with the exact install command in its tooltip,
-        # the same honesty rule as the chooser.
-        code_title = QtWidgets.QLabel("Code with your local model")
-        code_title.setObjectName("sectionTitle")
-        code_title.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
-        column.addSpacing(16)
-        column.addWidget(code_title)
-        code_hint = QtWidgets.QLabel(
-            "Opens a terminal running the harness against the running model, "
-            "working on a project folder you pick."
-        )
-        code_hint.setObjectName("muted")
-        code_hint.setWordWrap(True)
-        code_hint.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
-        column.addWidget(code_hint)
-        harness_row = QtWidgets.QHBoxLayout()
-        harness_row.setSpacing(8)
-        harness_row.addStretch(1)
-        self._chat_harness_buttons = {}
-        for key, label in (
-            ("claude", "Claude Code"),
-            ("codex", "Codex"),
-            ("opencode", "OpenCode"),
-        ):
-            button = QtWidgets.QPushButton(label)
-            button.clicked.connect(
-                lambda _checked=False, k=key: self._launch_harness_with_folder(k, False)
-            )
-            harness_row.addWidget(button)
-            self._chat_harness_buttons[key] = button
-        harness_row.addStretch(1)
-        column.addLayout(harness_row)
-        self._refresh_chat_harness_buttons()
-        # Chat outcomes (a fallback explanation, or an honest refusal such as "no
-        # model is running") land here as well as on the Models page's status line,
-        # so the owner sees them on whichever page they raised the action from.
-        self._chat_status = QtWidgets.QLabel("")
-        self._chat_status.setObjectName("muted")
-        self._chat_status.setWordWrap(True)
-        self._chat_status.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
-        column.addWidget(self._chat_status)
-        centered = QtWidgets.QHBoxLayout()
-        centered.addStretch(1)
-        holder = QtWidgets.QWidget()
-        holder.setObjectName("focusCard")
-        column.setContentsMargins(28, 24, 28, 24)
-        holder.setLayout(column)
-        holder.setMaximumWidth(560)
-        holder.setMinimumWidth(360)
-        centered.addWidget(holder)
-        centered.addStretch(1)
-        body.addLayout(centered)
-        body.addStretch(3)
-        body.addStretch(1)
-        layout.addWidget(panel, 1)
-        return page
-
-    def _build_phone_strip(self, column):
-        """Show the Tailscale Serve URL when one already fronts Open WebUI."""
-        self._phone_url_edit = None
-        self._phone_copy_btn = None
-        self._phone_hint = None
-        reader = getattr(self._gc, "phone_access", None)
-        access = reader() if callable(reader) else None
-        if access is None:
-            return
-        url = str(getattr(access, "url", "") or "")
-        if not url:
-            return
-        title = QtWidgets.QLabel("On your phone")
-        title.setObjectName("sectionTitle")
-        title.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
-        column.addSpacing(16)
-        column.addWidget(title)
-        row = QtWidgets.QHBoxLayout()
-        self._phone_url_edit = QtWidgets.QLineEdit(url)
-        self._phone_url_edit.setReadOnly(True)
-        self._phone_url_edit.setCursorPosition(0)
-        row.addWidget(self._phone_url_edit, 1)
-        self._phone_copy_btn = QtWidgets.QPushButton("Copy")
-        self._phone_copy_btn.clicked.connect(self._on_copy_phone_url)
-        row.addWidget(self._phone_copy_btn)
-        column.addLayout(row)
-        self._phone_hint = QtWidgets.QLabel(
-            "Same tailnet only. Open the Tailscale app on the phone, then this "
-            "URL. Speak to cut in while it is talking. A headset is more reliable "
-            "than the phone speaker."
-        )
-        self._phone_hint.setObjectName("muted")
-        self._phone_hint.setWordWrap(True)
-        self._phone_hint.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
-        column.addWidget(self._phone_hint)
-
-    def _on_copy_phone_url(self):
-        """Copy the Tailscale phone URL to the clipboard as plain text."""
-        if self._phone_url_edit is None:
-            return
-        QtWidgets.QApplication.clipboard().setText(self._phone_url_edit.text())
-        if self._phone_hint is not None:
-            self._phone_hint.setText("Copied. Open it on the phone with Tailscale on.")
-
-    def _build_memory_page(self):
-        """Build read-only conversation-memory search with an honest empty state."""
-        page, layout = self._page(
-            "Memory",
-            "Search past local conversations. Leave the query blank to show recent conversations.",
-        )
-        panel, body = self._panel()
-        row = QtWidgets.QHBoxLayout()
-        self._memory_query = QtWidgets.QLineEdit()
-        self._memory_query.setPlaceholderText("Search words, or leave blank for recent")
-        self._memory_query.returnPressed.connect(self._on_memory_search)
-        self._memory_btn = QtWidgets.QPushButton("Search")
-        self._memory_btn.setObjectName("primaryButton")
-        self._memory_btn.clicked.connect(self._on_memory_search)
-        row.addWidget(self._memory_query, 1)
-        row.addWidget(self._memory_btn)
-        body.addLayout(row)
-        self._memory_result = QtWidgets.QTextEdit()
-        self._memory_result.setReadOnly(True)
-        self._memory_result.setPlaceholderText(
-            "Recent conversations will appear here."
-        )
-        body.addWidget(self._memory_result, 1)
-        layout.addWidget(panel, 1)
-        return page
-
-    def _build_settings_page(self):
-        """Build per-model GPU layer and context editors over controller validation."""
-        page, layout = self._page(
-            "Settings",
-            "Launch settings apply the next time this model starts.",
-        )
-        panel, body = self._panel()
-        # M15.9 pass 2: the three Settings panels were anonymous boxes whose
-        # only identity was their first field label. Each now opens with a
-        # sectionTitle, so the page reads as three named sections of one form.
-        launch_title = QtWidgets.QLabel("Launch")
-        launch_title.setObjectName("sectionTitle")
-        body.addWidget(launch_title)
-        form = QtWidgets.QGridLayout()
-        form.addWidget(QtWidgets.QLabel("Model"), 0, 0)
-        self._settings_model = QtWidgets.QComboBox()
-        for model in self._models:
-            self._settings_model.addItem(model["name"], model["id"])
-        self._settings_model.currentIndexChanged.connect(self._on_settings_model_changed)
-        form.addWidget(self._settings_model, 0, 1, 1, 3)
-        gpu_label = QtWidgets.QLabel("GPU layers")
-        gpu_label.setToolTip(
-            "How many layers to keep on the GPU. 999 or -1 means fit as many "
-            "as this card can hold."
-        )
-        form.addWidget(gpu_label, 1, 0)
-        self._gpu_edit = QtWidgets.QLineEdit()
-        self._gpu_edit.textChanged.connect(self._on_edit_change)
-        form.addWidget(self._gpu_edit, 1, 1)
-        form.addWidget(QtWidgets.QLabel("Context size"), 1, 2)
-        self._ctx_edit = QtWidgets.QLineEdit()
-        self._ctx_edit.textChanged.connect(self._on_edit_change)
-        form.addWidget(self._ctx_edit, 1, 3)
-        body.addLayout(form)
-        action_row = QtWidgets.QHBoxLayout()
-        self._edit_error = QtWidgets.QLabel("")
-        self._edit_error.setObjectName("error")
-        self._edit_error.setWordWrap(True)
-        action_row.addWidget(self._edit_error, 1)
-        self._save_btn = QtWidgets.QPushButton("Save")
-        self._save_btn.setObjectName("primaryButton")
-        self._save_btn.setEnabled(False)
-        self._save_btn.clicked.connect(self._on_save)
-        action_row.addWidget(self._save_btn)
-        body.addLayout(action_row)
-
-        identity_panel, identity_body = self._panel()
-        identity_title = QtWidgets.QLabel("Identity")
-        identity_title.setObjectName("sectionTitle")
-        identity_body.addWidget(identity_title)
-        identity_form = QtWidgets.QGridLayout()
-        identity_form.addWidget(QtWidgets.QLabel("id"), 0, 0)
-        self._id_edit = QtWidgets.QLineEdit()
-        self._id_edit.textChanged.connect(self._on_identity_change)
-        identity_form.addWidget(self._id_edit, 0, 1)
-        identity_form.addWidget(QtWidgets.QLabel("name"), 0, 2)
-        self._name_edit = QtWidgets.QLineEdit()
-        self._name_edit.textChanged.connect(self._on_identity_change)
-        identity_form.addWidget(self._name_edit, 0, 3)
-        identity_body.addLayout(identity_form)
-        identity_action_row = QtWidgets.QHBoxLayout()
-        self._identity_error = QtWidgets.QLabel("")
-        self._identity_error.setObjectName("error")
-        self._identity_error.setWordWrap(True)
-        identity_action_row.addWidget(self._identity_error, 1)
-        self._identity_save_btn = QtWidgets.QPushButton("Rename")
-        self._identity_save_btn.setObjectName("primaryButton")
-        self._identity_save_btn.setEnabled(False)
-        self._identity_save_btn.clicked.connect(self._on_save_identity)
-        identity_action_row.addWidget(self._identity_save_btn)
-        identity_body.addLayout(identity_action_row)
-
-        # Owner request 2026-08-21: what a model is good for, so the Models page
-        # Capabilities column has something to show beyond the default "Chat". A
-        # separate panel/Save button (not folded into Rename above) because it
-        # carries none of the id-collision/draft-model-reference validation a
-        # rename does - any text is acceptable, including blank (plain chat).
-        capabilities_panel, capabilities_body = self._panel()
-        capabilities_title = QtWidgets.QLabel("Capabilities")
-        capabilities_title.setObjectName("sectionTitle")
-        capabilities_body.addWidget(capabilities_title)
-        capabilities_form = QtWidgets.QGridLayout()
-        capabilities_form.addWidget(
-            QtWidgets.QLabel("What this model can do (vision, reasoning, tools)"),
-            0, 0,
-        )
-        self._capabilities_edit = QtWidgets.QLineEdit()
-        self._capabilities_edit.textChanged.connect(self._on_capabilities_change)
-        capabilities_form.addWidget(self._capabilities_edit, 1, 0)
-        capabilities_body.addLayout(capabilities_form)
-        capabilities_action_row = QtWidgets.QHBoxLayout()
-        self._capabilities_error = QtWidgets.QLabel("")
-        self._capabilities_error.setObjectName("error")
-        self._capabilities_error.setWordWrap(True)
-        capabilities_action_row.addWidget(self._capabilities_error, 1)
-        self._capabilities_save_btn = QtWidgets.QPushButton("Save capabilities")
-        self._capabilities_save_btn.setObjectName("primaryButton")
-        self._capabilities_save_btn.setEnabled(False)
-        self._capabilities_save_btn.clicked.connect(self._on_save_capabilities)
-        capabilities_action_row.addWidget(self._capabilities_save_btn)
-        capabilities_body.addLayout(capabilities_action_row)
-
-        # M18.12 (owner request): features are manageable AFTER install. This
-        # panel shows what the machine has (the wizard's own detection, run on
-        # the ops worker), opens the setup wizard to add anything missed, and
-        # installs the coding CLIs directly - so forgetting a checkbox at
-        # install time never means living without the feature.
-        features_panel, features_body = self._panel()
-        features_title = QtWidgets.QLabel("Features")
-        features_title.setObjectName("sectionTitle")
-        features_body.addWidget(features_title)
-        features_hint = QtWidgets.QLabel(
-            "What this machine has installed. Add anything missing with the "
-            "setup wizard - already-installed pieces are never downloaded twice."
-        )
-        features_hint.setObjectName("muted")
-        features_hint.setWordWrap(True)
-        features_body.addWidget(features_hint)
-        self._feature_rows_grid = QtWidgets.QGridLayout()
-        self._feature_rows_grid.setColumnStretch(0, 1)
-        features_body.addLayout(self._feature_rows_grid)
-        self._feature_state_note = QtWidgets.QLabel("checking this machine...")
-        self._feature_state_note.setObjectName("muted")
-        features_body.addWidget(self._feature_state_note)
-        wizard_row = QtWidgets.QHBoxLayout()
-        self._open_wizard_btn = QtWidgets.QPushButton("Add features (open setup wizard)")
-        self._open_wizard_btn.clicked.connect(self._on_open_setup_wizard)
-        wizard_row.addWidget(self._open_wizard_btn)
-        # M18.16 (owner request): uninstalling must be as easy as installing.
-        # Opens the stdlib uninstaller in its own window; it offers to keep the
-        # user's model files and stops LOCITIZE's own services first.
-        self._uninstall_btn = QtWidgets.QPushButton("Uninstall locitize...")
-        self._uninstall_btn.setObjectName("dangerButton")
-        self._uninstall_btn.setToolTip(
-            "Remove what setup installed (with the option to keep your model "
-            "files). Opens a separate window; locitize will close."
-        )
-        self._uninstall_btn.clicked.connect(self._on_uninstall)
-        wizard_row.addWidget(self._uninstall_btn)
-        wizard_row.addStretch(1)
-        features_body.addLayout(wizard_row)
-
-        clis_title = QtWidgets.QLabel("Coding CLIs")
-        clis_title.setObjectName("sectionTitle")
-        features_body.addWidget(clis_title)
-        clis_hint = QtWidgets.QLabel(
-            "Terminal harnesses locitize can launch against your running model. "
-            "Install any of them right here."
-        )
-        clis_hint.setObjectName("muted")
-        clis_hint.setWordWrap(True)
-        features_body.addWidget(clis_hint)
-        clis_grid = QtWidgets.QGridLayout()
-        clis_grid.setColumnStretch(1, 1)
-        self._cli_status_labels = {}
-        for row_index, (key, label) in enumerate(
-            (("claude", "Claude Code"), ("codex", "Codex"), ("opencode", "OpenCode"))
-        ):
-            clis_grid.addWidget(QtWidgets.QLabel(label), row_index, 0)
-            status = QtWidgets.QLabel("checking...")
-            status.setObjectName("muted")
-            self._cli_status_labels[key] = status
-            clis_grid.addWidget(status, row_index, 1)
-            install_btn = QtWidgets.QPushButton("Install")
-            install_btn.clicked.connect(
-                lambda _checked=False, k=key, lb=label: self._confirm_and_install_harness(
-                    None, k, lb
-                )
-            )
-            clis_grid.addWidget(install_btn, row_index, 2)
-        features_body.addLayout(clis_grid)
-        self._refresh_cli_status_rows()
-
-        layout.addWidget(panel)
-        layout.addWidget(identity_panel)
-        layout.addWidget(capabilities_panel)
-        layout.addWidget(features_panel)
-        # Detection shells out; ask the ops worker once the page exists.
-        if hasattr(self._gc, "request_feature_state"):
-            self._gc.request_feature_state()
         layout.addStretch(1)
-        # M18.12: four stacked panels exceed a normal window; without a scroll
-        # area the Features/Coding CLIs panel clipped at the bottom edge
-        # (caught by the real-screenshot pass).
-        return self._scrollable(page)
+        return tab
 
     def _populate_voice_combo(self, combo):
         """Fill a voice picker from on-disk ids, showing human names."""
@@ -2343,12 +2839,12 @@ class MainWindow(QtWidgets.QMainWindow):
         elif self._settings_model.count() == 0:
             self._gpu_edit.setEnabled(False)
             self._ctx_edit.setEnabled(False)
-            self._save_btn.setEnabled(False)
+            self._gate(self._save_btn, False, 'Nothing to save yet - change a value first, or fix the problem shown.')
             self._id_edit.setEnabled(False)
             self._name_edit.setEnabled(False)
-            self._identity_save_btn.setEnabled(False)
+            self._gate(self._identity_save_btn, False, 'Nothing to rename yet - change the id or name first, or fix the problem shown.')
             self._capabilities_edit.setEnabled(False)
-            self._capabilities_save_btn.setEnabled(False)
+            self._gate(self._capabilities_save_btn, False, 'Nothing to save yet - change the list first.')
             self._delete_btn.setEnabled(False)
             self._autotune_btn.setEnabled(False)
             self._autotune_all_btn.setEnabled(False)
@@ -2369,20 +2865,20 @@ class MainWindow(QtWidgets.QMainWindow):
         return None
 
     def _on_refresh_models(self):
-        """Re-read models.yaml on demand (owner request 2026-08-13) so a model
-        registered while the desktop is open appears without a restart."""
+        """Reload the model list on demand (owner request 2026-08-13) so a model
+        added while the desktop is open appears without a restart."""
         try:
             self._gc.refresh_models()
             # refresh_models() returns the manual rows; re-read through the merged
             # loader so discovered fine-tunes survive a Refresh click.
             self._models = self._load_model_rows()
         except Exception as exc:
-            self._models_monitor.setText(f"refresh failed: {exc}")
+            self._models_monitor.setText(f"Could not reload the list: {exc}")
             return
         self._refresh_model_rows()
         self._restore_model_selection()
         self._models_monitor.setText(
-            f"model list refreshed ({len(self._models)} models)"
+            f"Model list reloaded ({len(self._models)} models)"
         )
 
     def _refresh_model_rows(self):
@@ -2390,60 +2886,68 @@ class MainWindow(QtWidgets.QMainWindow):
         rows = self._models
         if self._sort_col is not None:
             rows = gui_controller.sort_model_rows(rows, self._sort_col, self._sort_desc)
+        gpu_total = self._gpu_total_mb()
         self._model_table.blockSignals(True)
         self._model_table.setRowCount(len(rows))
         for row_index, model in enumerate(rows):
             status = self._status_for(model)
+            fit = gui_controller.format_fit(model.get("vram_need_mb"), gpu_total)
+            fit_text = {"Yes": "Yes", "Partly": "Partly (slower)"}.get(fit, "-")
             values = (
                 model["name"],
-                # Owner request 2026-08-21: "-" for a controller/test double that
-                # predates the field, same fallback style as source_display below.
-                model.get("capabilities_display", "Chat"),
-                # Rows from a controller that predates M13 (or a test double) have
-                # no source key; they are manual registry rows by definition.
-                model.get("source_display", "Registered"),
                 model["size_display"],
-                model["gpu_portion_display"],
-                model["cpu_portion_display"],
-                model["score_display"],
-                model.get("context_display", str(model.get("context_size", "-"))),
+                fit_text,
+                plain_speed(model.get("score_display", "-")),
                 status,
             )
+            tip_parts = []
+            capabilities = model.get("capabilities_display")
+            if capabilities:
+                tip_parts.append(f"Good for: {capabilities}")
+            if model.get("source_display") and model.get("source_display") != "Registered":
+                tip_parts.append(str(model["source_display"]))
+            if model.get("context_display"):
+                tip_parts.append(f"Working memory: {model['context_display']} tokens")
             for column, value in enumerate(values):
                 item = QtWidgets.QTableWidgetItem(str(value))
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, model["id"])
-                if column in (3, 4, 5, 6, 7):
+                if column == 1:
                     item.setTextAlignment(
                         QtCore.Qt.AlignmentFlag.AlignRight
                         | QtCore.Qt.AlignmentFlag.AlignVCenter
                     )
-                if column == 8:
-                    self._style_status_item(item, status)
-                # Benchmark column: any explanatory note remains attached as a
-                # tooltip so it survives a narrow/elided cell.
-                if column == 6 and model.get("score_note"):
-                    # Tooltips always sniff for markup (SEC-M14-1 policy).
-                    item.setToolTip(plain_tooltip_text(model["score_note"]))
-                if column == 7 and model.get("ctx_warning"):
-                    # M17.3: flag a context past the measured cliff - amber text
-                    # plus the full warning on hover, so a slow config is visible
-                    # in the inventory, not only after it is running.
+                if column == 0 and tip_parts:
+                    item.setToolTip(plain_tooltip_text("\n".join(tip_parts)))
+                if column == 2 and fit == "Partly":
                     item.setForeground(QtGui.QColor("#ffd166"))
-                    item.setText(str(value) + "  !")
+                if column == 4:
+                    self._style_status_item(item, status)
+                if column == 3 and model.get("score_note"):
+                    item.setToolTip(plain_tooltip_text(model["score_note"]))
+                if column == 3 and model.get("ctx_warning"):
+                    # A context past the measured cliff makes this model slow.
+                    item.setForeground(QtGui.QColor("#ffd166"))
                     item.setToolTip(plain_tooltip_text(model["ctx_warning"]))
                 self._model_table.setItem(row_index, column, item)
         self._model_table.blockSignals(False)
         self._restore_model_selection()
-        self._models_total.setText(gui_controller.total_size_display(self._models))
+        self._models_total.setText(
+            plain_total(gui_controller.total_size_display(self._models))
+        )
+        if hasattr(self, "_start_model_combo"):
+            self._populate_start_combo()
+        if hasattr(self, "_adv_summary"):
+            self._repopulate_advanced_picker()
+            self._update_advanced_header()
 
     @staticmethod
     def _style_status_item(item, status):
         """Use color as a secondary status cue while preserving explicit text."""
-        if status.startswith("RUNNING"):
+        if status == "Running":
             item.setForeground(QtGui.QColor("#6ee7a8"))
-        elif status in ("STARTING",):
+        elif status == "Starting":
             item.setForeground(QtGui.QColor("#ffd166"))
-        elif status in ("future", "location not set"):
+        elif status in ("Not available yet", "No file yet"):
             item.setForeground(QtGui.QColor("#8b9098"))
 
     def _restore_model_selection(self):
@@ -2467,20 +2971,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_sort(self, column_index):
         """Sort headers through the controller's stable model-row helper."""
-        # One key per column; None marks a column with no defined sort order.
-        # Source shifted every following column right by one in M13; Capabilities
-        # (owner request 2026-08-21) shifted every following column right again.
-        keys = (
-            "name",
-            "capabilities_display",
-            None,
-            "size",
-            "vram",
-            None,
-            "benchmark_tok_s",
-            "context",
-            "status",
-        )
+        keys = ("name", "size", None, "benchmark_tok_s", "status")
         column = keys[column_index]
         if column is None:
             return
@@ -2494,16 +2985,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def _status_for(self, model):
         """Render a textual model status from the pump-owned UI snapshot."""
         if not model["launchable"]:
-            return "location not set" if not model["location"] else "future"
+            return "No file yet" if not model["location"] else "Not available yet"
         if self._ui.running_model_id == model["id"]:
-            return (
-                f"RUNNING (port {self._ui.running_port})"
-                if self._ui.running_port
-                else "RUNNING"
-            )
+            return "Running"
         if self._ui.in_flight and self._selected_id == model["id"]:
-            return "STARTING"
-        return "STOPPED"
+            return "Starting"
+        return "Stopped"
 
     def _on_select_model(self, row, _column, _previous_row, _previous_column):
         """Use the selected row for lifecycle controls and sync Settings.
@@ -2522,13 +3009,33 @@ class MainWindow(QtWidgets.QMainWindow):
         if item is None:
             return
         self._selected_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        self._note_selected_model()
         settings_index = self._settings_model.findData(self._selected_id)
         if settings_index >= 0 and self._settings_model.currentIndex() != settings_index:
             self._settings_model.blockSignals(True)
             self._settings_model.setCurrentIndex(settings_index)
             self._settings_model.blockSignals(False)
         self._load_settings_model()
+        self._sync_start_combo()
         self._refresh_buttons()
+
+    def _sync_start_combo(self):
+        """Show the selected model in the Start page's picker."""
+        combo = getattr(self, "_start_model_combo", None)
+        if combo is None:
+            return
+        index = combo.findData(self._selected_id)
+        if index >= 0 and combo.currentIndex() != index:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+        self._update_start_fit()
+
+    def _note_selected_model(self):
+        """Tell the controller which model is picked so Talk can start it."""
+        notify = getattr(self._gc, "note_selected_model", None)
+        if callable(notify):
+            notify(self._selected_id)
 
     def _on_settings_model_changed(self, _index):
         """Make Settings selection authoritative and mirror it to the model table."""
@@ -2536,13 +3043,59 @@ class MainWindow(QtWidgets.QMainWindow):
         if model is None:
             return
         self._selected_id = model["id"]
+        self._note_selected_model()
         self._restore_model_selection()
         self._load_settings_model()
         self._refresh_buttons()
 
+    def _advanced_summary_text(self, model):
+        """One plain line: size, context, measured speed and GPU fit."""
+        if model is None:
+            return "No model picked."
+        parts = [str(model.get("size_display") or "-")]
+        context = model.get("context_size")
+        if context:
+            parts.append(f"{int(context):,} tokens of context")
+        speed = plain_speed(model.get("score_display", "-"))
+        parts.append(
+            speed.lower() if speed and speed not in ("-", "Not measured yet") else "speed not measured yet"
+        )
+        fit = gui_controller.format_fit(model.get("vram_need_mb"), self._gpu_total_mb())
+        if fit == "Yes":
+            parts.append("fits your GPU")
+        elif fit == "Partly":
+            parts.append("too big for your GPU alone (slower)")
+        if model.get("source") == "discovered":
+            parts.append("fine-tuned, not on your list yet")
+        return "  |  ".join(parts)
+
+    def _update_advanced_header(self):
+        """Refresh the summary line and the buttons that name the target model."""
+        model = self._settings_selected_model()
+        self._adv_summary.setText(self._advanced_summary_text(model))
+        name = model["name"] if model else ""
+        self._edit_title.setText(f"Edit {name}" if name else "Edit this model")
+        self._delete_btn.setText(f"Delete {name}..." if name else "Delete this model...")
+        self._register_btn.setVisible(
+            bool(model and model.get("source") == "discovered")
+        )
+
+    def _repopulate_advanced_picker(self):
+        """Rebuild the shared picker from the current model rows."""
+        combo = self._settings_model
+        combo.blockSignals(True)
+        combo.clear()
+        for model in self._models:
+            combo.addItem(model["name"], model["id"])
+        index = combo.findData(self._selected_id)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
     def _load_settings_model(self):
         """Prefill editors from persisted values without inventing dirty state."""
         model = self._settings_selected_model()
+        self._update_advanced_header()
         if model is None:
             return
         self._gpu_edit.blockSignals(True)
@@ -2575,93 +3128,150 @@ class MainWindow(QtWidgets.QMainWindow):
         return bool(self._autotune_pending or self._gc.autotune_in_progress())
 
     def _refresh_buttons(self):
-        """Apply controller-defined lifecycle states across both relevant pages."""
+        """Apply controller-defined lifecycle states across every page.
+
+        Every disabled control gets a hover explanation (see _gate): a greyed
+        button with no reason reads as broken.
+        """
         states = gui_controller.compute_button_states(self._ui)
         model = self._selected_model()
-        start_enabled = bool(states["start_enabled"] and model and model["launchable"])
+        running = self._ui.running_model_id
+        autotune = self._autotune_active()
+
         start_label = "Start"
-        if model is not None:
+        start_reason = ""
+        start_enabled = bool(states["start_enabled"])
+        if model is None:
+            start_enabled = False
+            start_reason = "Pick a model first."
+        elif not model["launchable"]:
+            start_enabled = False
+            start_reason = (
+                "This model has no file yet. Download it on the Models page, "
+                "under Get models."
+            )
+        else:
             start_label = gui_controller.start_label_for(model["id"], self._ui)
             if start_label == "Running":
                 start_enabled = False
+                start_reason = "This model is already running."
+        if not states["start_enabled"] and not start_reason:
+            start_reason = "Working - please wait a moment."
         self._start_btn.setText(start_label)
-        self._start_btn.setEnabled(start_enabled)
-        self._stop_btn.setEnabled(bool(states["stop_enabled"]))
-        # Offload GPU stays available even with no supervised model running (M17.8):
-        # it also clears LOCITIZE's OWN orphaned servers - a crashed session or a
-        # measurement probe - which the plain model-stop path cannot reach. The
-        # autotune/assistant-live rules below still switch it off where offloading
-        # would fight a run LOCITIZE is deliberately managing.
-        self._header_offload_btn.setEnabled(True)
-        chat_enabled = bool(states["chat_enabled"] or self._assistant_port)
-        self._chat_btn.setEnabled(chat_enabled)
-        # The Chat page's own button raises the identical intent, so it shares
-        # exactly one enablement rule with the Models page control.
-        self._chat_page_btn.setEnabled(chat_enabled)
-        self._update_chat_hint()
+        stop_enabled = bool(states["stop_enabled"])
+        stop_reason = (
+            "Working - please wait a moment." if self._ui.in_flight
+            else "No model is running."
+        )
+        offload_enabled = True
+        offload_reason = ""
+        probe = getattr(self._gc, "chat_needs_no_model", None)
+        no_model_chat = bool(callable(probe) and probe())
+        chat_enabled = bool(
+            states["chat_enabled"] or self._assistant_port
+            or (no_model_chat and not self._ui.in_flight)
+        )
+        chat_reason = (
+            "Working - please wait a moment." if self._ui.in_flight
+            else "Start a model first - chat needs a running model here."
+        )
         if not self._assistant_live:
-            can_start_talk = bool(model and model.get("launchable"))
-            self._talk_btn.setEnabled(can_start_talk)
+            self._gate(
+                self._talk_btn,
+                bool(model and model.get("launchable")),
+                "Pick a model on the Start page first.",
+            )
         if self._assistant_live:
-            # A live session owns its chat model; the owner ends the session before
-            # changing model lifecycle, while Chat remains safe and reachable.
-            self._start_btn.setEnabled(False)
-            self._stop_btn.setEnabled(False)
-            self._header_offload_btn.setEnabled(False)
-        if self._autotune_active():
-            # Owner request 2026-08-22: while an auto-tune holds the ops worker,
-            # Stop is the owner's only way out of a multi-minute run, so it is
-            # enabled here LAST - after every rule that would otherwise have
-            # switched it off. Start stays disabled: the tuner is already using
-            # the GPU. Once cancellation has been asked for, Stop goes flat so a
-            # second click cannot read as "it ignored me".
-            self._stop_btn.setEnabled(not self._autotune_canceling)
-            self._start_btn.setEnabled(False)
-            self._header_offload_btn.setEnabled(False)
+            # A live voice chat owns its model; end it before changing the model.
+            live = "A voice chat is using the model. End it on Voice & Vision first."
+            start_enabled, start_reason = False, live
+            stop_enabled, stop_reason = False, live
+            offload_enabled, offload_reason = False, live
+        if autotune:
+            # Stop is the only way out of a multi-minute speed test, so it is
+            # enabled LAST, after every rule that would switch it off.
+            busy = "A speed test is running. Press Stop to cancel it."
+            stop_enabled = not self._autotune_canceling
+            stop_reason = "Cancelling the speed test..."
+            start_enabled, start_reason = False, busy
+            offload_enabled, offload_reason = False, busy
+        self._gate(self._start_btn, start_enabled, start_reason)
+        self._gate(self._stop_btn, stop_enabled, stop_reason)
+        self._gate(self._header_offload_btn, offload_enabled, offload_reason)
+        self._chat_no_model_ok = no_model_chat
+        self._gate(self._chat_btn, chat_enabled, chat_reason)
+        self._update_chat_hint()
         self._refresh_model_exclusive_buttons()
         self._header_status.setText(self._health_line())
+        self._header_status.setToolTip(self._header_status.text())
+        self._update_vv_banner()
 
     def _refresh_model_exclusive_buttons(self):
         """Protect assistant-held models from Vision and benchmark switching."""
         model = self._selected_model()
-        # Register only applies to a discovered row; a registered row has nothing
-        # to promote, so the control stays visibly disabled rather than dead.
-        self._register_btn.setEnabled(
-            model is not None and model.get("source") == "discovered"
+        busy_voice = "A voice chat is using the model. End it on Voice & Vision first."
+        self._gate(
+            self._register_btn,
+            model is not None and model.get("source") == "discovered",
+            "Only a fine-tuned model that is not on your list yet can be added.",
         )
-        # Delete (owner request 2026-08-21): only a registered row has a
-        # models.yaml block to remove (mirrors the identity/capabilities
-        # editors' discovered-row refusal), and never the running model - its
-        # .gguf is an open file handle, so disabling here gives the honest
-        # reason up front instead of a failed unlink after a confirm click.
-        self._delete_btn.setEnabled(
+        # Delete: only a registered row has a list entry to remove, and never the
+        # running model, whose file is open.
+        if model is None:
+            delete_reason = "Pick a model first."
+        elif model.get("source") == "discovered":
+            delete_reason = "This fine-tuned model is not on your list, so there is nothing to delete here."
+        else:
+            delete_reason = "Stop the model before deleting it."
+        self._gate(
+            self._delete_btn,
             model is not None
             and model.get("source") != "discovered"
-            and self._ui.running_model_id != model.get("id")
+            and self._ui.running_model_id != model.get("id"),
+            delete_reason,
         )
-        # Auto-tune context (owner request 2026-08-22): same two structural
-        # refusals as Delete - a discovered row has no models.yaml block to write
-        # back into - plus one of its own: nothing may be running, because the
-        # tuner's own trial starts would collide with it on the reserved port.
-        self._autotune_btn.setEnabled(
+        if self._assistant_live:
+            tune_reason = busy_voice
+        elif self._autotune_active():
+            tune_reason = "A speed test is already running."
+        elif self._ui.running_model_id is not None:
+            tune_reason = "Stop the running model first - the test needs the GPU to itself."
+        elif model is None:
+            tune_reason = "Pick a model first."
+        else:
+            tune_reason = "This fine-tuned model is not on your list yet. Add it first."
+        self._gate(
+            self._autotune_btn,
             not self._assistant_live
             and model is not None
             and model.get("source") != "discovered"
             and self._ui.running_model_id is None
-            # ...and never while one is already running. Without this clause any
-            # button refresh during a tune (a monitor tick, a selection change)
-            # would hand the owner a second Auto-tune click that would queue a
-            # run behind the live one.
-            and not self._autotune_active()
+            and not self._autotune_active(),
+            tune_reason,
         )
-        self._autotune_all_btn.setEnabled(
+        hint = getattr(self, "_autotune_hint", None)
+        if hint is not None:
+            # A running tune shows its own progress; every other reason is shown.
+            text = "" if self._autotune_btn.isEnabled() or self._autotune_active() else tune_reason
+            hint.setText(text)
+            hint.setVisible(bool(text))
+        self._gate(
+            self._autotune_all_btn,
             not self._assistant_live
             and self._ui.running_model_id is None
             and not self._autotune_active()
-            and any(m.get("source") != "discovered" for m in self._models)
+            and any(m.get("source") != "discovered" for m in self._models),
+            busy_voice if self._assistant_live else (
+                "A speed test is already running." if self._autotune_active()
+                else "Stop the running model first - the test needs the GPU to itself."
+                if self._ui.running_model_id is not None
+                else "You have no models to test yet."
+            ),
         )
-        self._vision_btn.setEnabled(
-            not self._assistant_live and bool(self._vision_path.text())
+        self._gate(
+            self._vision_btn,
+            not self._assistant_live and bool(self._vision_path.text()),
+            busy_voice if self._assistant_live else "Pick or drop an image first.",
         )
 
     def _selected_context_size(self):
@@ -2673,42 +3283,37 @@ class MainWindow(QtWidgets.QMainWindow):
         return None
 
     def _health_line(self):
-        """Build the compact header from the same honest state as the monitor."""
-        running = self._ui.running_model_id or (
-            "assistant model" if self._assistant_port else "(none)"
-        )
-        visible_port = self._ui.running_port or self._assistant_port
-        port_text = f" port {visible_port}" if visible_port else ""
-        rate = "-"
-        context = "-"
+        """The header's model status, in plain words."""
+        running = self._ui.running_model_id
+        if not running and not self._assistant_port:
+            return "No model running"
+        name = self._model_name(running) if running else "Voice chat model"
         sample = self._ui.latest_metrics
-        if sample is not None and sample.metrics_available:
-            rate = "idle" if not sample.gen_tokens_s else f"{sample.gen_tokens_s:.1f} tok/s"
-            context = gui_controller._format_ctx(sample, self._selected_context_size())
-        return f"Health: {self._health} | model: {running}{port_text} | {rate} | ctx {context}"
+        if sample is not None and sample.metrics_available and sample.gen_tokens_s:
+            return f"{name} running - {sample.gen_tokens_s:.0f} tokens per second"
+        return f"{name} running"
 
     def _on_start(self):
         """Queue a start or switch and immediately render an honest working state."""
         model = self._selected_model()
         if model is None:
-            self._model_status.setText("select a model first")
+            self._model_status.setText("Pick a model first.")
             return
         if not model["launchable"]:
             self._model_status.setText(
-                "that model has no file to launch - use Register to point "
-                "at its .gguf"
+                "That model has no file yet. Download it on the Models page, "
+                "under Get models."
             )
             return
         picked, problems = self._selected_thinking(model["id"])
         if problems:
-            # Refuse rather than start at a level the owner did not choose - the
-            # same rule the terminal menu applies to "3 low/abc".
+            # Refuse rather than start at a level the person did not choose.
             self._model_status.setText(problems[0])
             return
         self._ui.in_flight = True
-        detail = f" ({picked})" if picked else ""
+        detail = f" (thinking: {picked})" if picked else ""
         self._model_status.setText(
-            f"working... starting {model['name']}{detail}"
+            f"Starting {model['name']}{detail}... the first start can take a minute."
         )
         self._refresh_buttons()
         self._gc.request_start(model["id"], reasoning=picked)
@@ -2722,31 +3327,29 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         from config import parse_reasoning_choice
 
-        text = self._thinking_combo.currentText().strip()
-        if not text or text == THINKING_AS_REGISTERED:
+        text = str(self._thinking_combo.currentData() or "").strip()
+        if not text:
             return None, []
         return parse_reasoning_choice(text, model_id)
 
     def _on_offload_gpu(self):
-        """Offload GPU (M17.8): free the VRAM LOCITIZE is holding.
+        """Free up GPU (M17.8): free the graphics memory locitize is holding.
 
-        While an auto-tune owns the GPU, this defers to the same cancel path Stop
-        uses - killing the tune's server out from under it would leave a
-        half-probed config, so the tune is asked to stop cleanly instead.
-        Otherwise it asks the controller to stop the running model AND sweep any
-        of LOCITIZE's own orphaned servers, then reports what it freed and what
-        (foreign) processes remain - the visibility the plain stop never gave.
+        While a speed test owns the GPU, this defers to the same cancel path Stop
+        uses - killing the test's server out from under it would leave a
+        half-measured setting, so it is asked to stop cleanly instead.
+        Otherwise the controller stops the running model AND clears any of
+        locitize's own leftover servers, then reports what it freed and which
+        other apps still hold the card.
         """
         if self._gc.autotune_in_progress():
             self._on_stop()
             return
-        self._model_status.setText(
-            "offloading GPU: stopping locitize's own servers ..."
-        )
+        self._model_status.setText("Freeing up the GPU...")
         self._gc.request_free_gpu()
 
     def _apply_gpu_free(self, result):
-        """Render the outcome of an Offload GPU sweep."""
+        """Render the outcome of a Free up GPU sweep."""
         self._ui.in_flight = False
         payload = result.payload or {}
         self._apply_running_snapshot(payload)
@@ -2754,37 +3357,37 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ui.latest_metrics = None
         self._render_monitor_text("idle")
         freed = int(payload.get("freed", 0))
-        others = payload.get("others") or []
+        stopped = payload.get("stopped_model")
+        others = sorted({o for o in (payload.get("others") or []) if not str(o).startswith("[")})
         vram = payload.get("vram_free_mb")
-        parts = [
-            f"freed {freed} locitize server(s)"
-            if freed
-            else "no locitize servers were holding the GPU"
-        ]
+        parts = []
+        if stopped:
+            parts.append(f"Stopped {self._model_name(stopped)}")
+        if freed:
+            parts.append(f"Cleared {freed} leftover locitize helper(s)")
+        if not parts:
+            parts.append("Nothing from locitize was using the GPU")
         if vram is not None:
-            parts.append(f"{vram:.0f} MB VRAM free")
+            parts.append(f"{vram / 1000:.1f} GB of GPU memory is free")
         if others:
-            shown = ", ".join(others[:4]) + ("..." if len(others) > 4 else "")
-            parts.append(f"still held by other apps: {shown}")
+            shown = ", ".join(others[:4]) + (" and more" if len(others) > 4 else "")
+            parts.append(f"other apps are still using it: {shown}")
         message = "; ".join(parts) + "."
         self._model_status.setText(message)
-        # The chip clips rather than resizing the window (M18.8); hover shows all.
+        # The line clips rather than resizing the window; hover shows all of it.
         self._model_status.setToolTip(message)
         self._refresh_model_rows()
         self._refresh_buttons()
 
     def _on_stop(self):
-        """Stop: cancel a running auto-tune if there is one, else stop the model.
+        """Stop: cancel a running speed test if there is one, else stop the model.
 
-        The auto-tune branch comes first and does NOT go through the command
-        queue (owner request 2026-08-22). An auto-tune holds the single ops
-        worker for several minutes, so a queued stop would sit unread until the
-        tune it was meant to interrupt had already finished - the owner would
-        press Stop and watch nothing happen. cancel_autotune() sets an event the
-        tune's trial loop polls directly, which is why this one control reaches
-        past the queue that everything else uses.
+        The speed-test branch comes first and does NOT go through the command
+        queue: a test holds the single ops worker for several minutes, so a
+        queued stop would sit unread until the test it was meant to interrupt had
+        finished. cancel_autotune() sets an event the test polls directly.
 
-        There is no ambiguity between the two meanings: an auto-tune only runs
+        There is no ambiguity between the two meanings: a speed test only runs
         when no model is running (request_autotune_context refuses otherwise),
         so at most one of these branches is ever applicable.
         """
@@ -2794,20 +3397,53 @@ class MainWindow(QtWidgets.QMainWindow):
             self._autotune_canceling = True
             self._autotune_status.setVisible(True)
             self._autotune_status.setText(
-                f"canceling the auto-tune of {model_id}: stopping the trial that "
-                f"is running now ..."
+                f"Cancelling the speed test of {model_id}: finishing the step "
+                f"that is running now..."
             )
-            self._model_status.setText("canceling auto-tune...")
+            self._model_status.setText("Cancelling the speed test...")
             self._refresh_buttons()
             return
         self._ui.in_flight = True
-        self._model_status.setText("working... stopping")
+        self._model_status.setText("Stopping...")
         self._refresh_buttons()
         self._gc.request_stop()
 
+    def _offer_release_and(self, then, model_id="", reasoning=None):
+        """Offer "Release and stop" when a coding terminal still holds the model.
+
+        Stop and Free up GPU refuse while a terminal launched from Code is using
+        the model; this is the one place that explains why and lets the person
+        continue, instead of sending them to another page to find Release.
+        """
+        action = {
+            "free_gpu": "free the GPU",
+            "start": "switch models",
+            "release": "continue",
+        }.get(then, "stop the model")
+        confirmed = QtWidgets.QMessageBox.question(
+            self,
+            "A coding terminal is using this model",
+            "You opened a coding tool (Codex or OpenCode) with this "
+            f"model, so locitize kept it loaded. Release it and {action}? "
+            "Terminals that are still open will lose their model.",
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if confirmed != QtWidgets.QMessageBox.StandardButton.Yes:
+            return False
+        self._ui.in_flight = then != "release"
+        self._model_status.setText("Releasing the model...")
+        self._refresh_buttons()
+        if then == "start":
+            self._gc.request_release_and(then, model_id, reasoning)
+        else:
+            self._gc.request_release_and(then)
+        return True
+
     def _on_chat(self):
         """Ask the controller to resolve and open the configured chat surface."""
-        self._model_status.setText("choosing an available chat interface...")
+        self._model_status.setText("Opening the chat...")
         self._gc.request_chat()
 
     def _on_autotune_context(self):
@@ -2821,7 +3457,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         model = self._selected_model()
         if model is None:
-            self._model_status.setText("select a model to auto-tune")
+            self._model_status.setText("Pick a model to auto-tune first.")
             return
         if not self._autotune_btn.isEnabled():
             # Same belt-and-braces guard Delete uses: a keyboard activation can
@@ -2829,14 +3465,13 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         confirmed = QtWidgets.QMessageBox.question(
             self,
-            "Auto-tune context",
-            f"Auto-tune the context window for '{model['id']}'?\n\n"
-            f"locitize will read the model's native context from its file, then "
-            f"start it several times at different context sizes to find the "
-            f"largest one this machine can actually load, and finally benchmark "
-            f"it at that size to measure its real speed (tokens per second). "
-            f"This takes a few minutes and uses the GPU throughout. The context "
-            f"is written back to models.yaml for this model only.",
+            "Auto-tune",
+            f"Auto-tune '{model['name']}'?\n\n"
+            f"locitize will start the model several times with different "
+            f"amounts of working memory to find the biggest amount this computer "
+            f"can really hold, then measure how fast it answers (tokens per "
+            f"second). This takes a few minutes and uses the GPU the whole time. "
+            f"The best setting is saved for this model only.",
             QtWidgets.QMessageBox.StandardButton.Yes
             | QtWidgets.QMessageBox.StandardButton.No,
             QtWidgets.QMessageBox.StandardButton.No,
@@ -2848,9 +3483,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._autotune_canceling = False
         self._autotune_status.setVisible(True)
         self._autotune_status.setText(
-            f"auto-tuning {model['id']}: starting ... (press Stop to cancel)"
+            f"Auto-tuning {model['name']}: starting... (press Stop to cancel)"
         )
-        self._model_status.setText(f"auto-tuning {model['id']}...")
+        self._model_status.setText(f"Auto-tuning {model['name']}...")
         self._gc.request_autotune_context(model["id"])
         # Immediately, so Stop becomes live in the same event as the click rather
         # than at whenever the next refresh happens to be.
@@ -2865,9 +3500,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self,
             "Auto-tune all models",
             f"Auto-tune all {count} models?\n\n"
-            f"Each model is started several times to find the largest context "
-            f"this machine can load, then benchmarked at that size for its real "
-            f"speed. That takes a few minutes per model - roughly "
+            f"Each model is started several times to find the biggest working "
+            f"memory this computer can hold, then its speed is measured. That "
+            f"takes a few minutes per model - roughly "
             f"{max(1, round(count * 4 / 60))} hour(s) for {count} - and uses the "
             f"GPU throughout. Press Stop at any time: the model in progress is "
             f"left unchanged and the rest are skipped.",
@@ -2882,9 +3517,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._autotune_canceling = False
         self._autotune_status.setVisible(True)
         self._autotune_status.setText(
-            f"auto-tuning all {count} models: starting ... (press Stop to cancel)"
+            f"Auto-tuning all {count} models: starting... (press Stop to cancel)"
         )
-        self._model_status.setText(f"auto-tuning all {count} models...")
+        self._model_status.setText(f"Auto-tuning all {count} models...")
         self._gc.request_autotune_all()
         self._refresh_buttons()
 
@@ -2896,13 +3531,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_buttons()
         self._autotune_status.setVisible(True)
         if not result.ok:
-            message = result.error or "auto-tune all failed"
-            self._autotune_status.setText(f"auto-tune all: {message}")
-            self._model_status.setText(f"auto-tune all: {message}")
+            message = result.error or "it did not finish"
+            self._autotune_status.setText(f"Auto-tune all: {message}")
+            self._model_status.setText(f"Auto-tune all: {message}")
             return
         p = result.payload
         text = (
-            f"auto-tune all finished: {p.get('tuned', 0)} of {p.get('total', 0)} "
+            f"Auto-tune all finished: {p.get('tuned', 0)} of {p.get('total', 0)} "
             f"models tuned"
         )
         if p.get("failed"):
@@ -2929,7 +3564,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # with trial chatter that would read as though Stop was ignored.
             return
         self._autotune_status.setText(
-            f"auto-tuning {result.payload.get('model_id', '')}: {line} "
+            f"Auto-tuning {result.payload.get('model_id', '')}: {line} "
             f"(press Stop to cancel)"
         )
 
@@ -2952,46 +3587,46 @@ class MainWindow(QtWidgets.QMainWindow):
             # Deliberately NOT phrased as a failure. Nothing went wrong: the
             # owner asked it to stop and their model was left exactly as it was.
             self._autotune_status.setText(
-                f"auto-tune of {model_id} canceled. Its context size and "
-                f"launch settings were left unchanged."
+                f"Auto-tune of {model_id} cancelled. Its settings were left "
+                f"unchanged."
             )
-            self._model_status.setText("auto-tune canceled")
+            self._model_status.setText("Auto-tune cancelled.")
             return
         if not result.ok:
-            message = result.error or "auto-tune failed"
-            self._autotune_status.setText(f"auto-tune of {model_id} failed: {message}")
-            self._model_status.setText(f"auto-tune failed: {message}")
+            message = result.error or "it did not finish"
+            self._autotune_status.setText(f"Auto-tune of {model_id} failed: {message}")
+            self._model_status.setText(f"Auto-tune failed: {message}")
             return
         native = result.payload.get("native_context")
         chosen = result.payload.get("chosen_context")
         previous = result.payload.get("previous_context")
         failure = result.payload.get("first_failure")
         trials = result.payload.get("trials") or []
-        yarn = (
-            f"context extended {result.payload.get('rope_scale')}x beyond "
-            "the trained window"
+        stretch = (
+            f"stretched {result.payload.get('rope_scale')}x past what the model "
+            "was trained on"
             if result.payload.get("yarn_applied")
-            else "no context extension needed (within the trained window)"
+            else "within what the model was trained on"
         )
         ceiling = (
-            f"largest that loaded: {chosen}"
+            f"biggest that loaded: {chosen}"
             + (f", smallest that failed: {failure}" if failure else "")
         )
         speed = result.payload.get("tokens_per_second")
         if speed is not None:
-            measured = f" Measured speed at that context: {float(speed):.1f} tokens/s."
-            headline = f"context {chosen}, {float(speed):.1f} tokens/s"
+            measured = f" Speed: {float(speed):.1f} tokens per second."
+            headline = f"working memory {chosen}, {float(speed):.1f} tokens per second"
         else:
             reason = result.payload.get("benchmark_error") or "not measured"
-            measured = f" Speed not measured ({reason})."
-            headline = f"context size now {chosen}"
+            measured = f" Speed was not measured ({reason})."
+            headline = f"working memory now {chosen}"
         self._autotune_status.setText(
-            f"auto-tune of {model_id} finished. Native context: {native}. "
-            f"{ceiling}. {yarn}. context_size {previous} -> {chosen}, written to "
-            f"models.yaml after {len(trials)} real starts.{measured} Applies the "
-            f"next time this model starts."
+            f"Auto-tune of {model_id} finished. The model was trained for {native}. "
+            f"{ceiling} ({stretch}). Working memory {previous} -> {chosen}, saved "
+            f"after {len(trials)} test starts.{measured} It applies the next time "
+            f"this model starts."
         )
-        self._model_status.setText(f"auto-tune finished: {headline}")
+        self._model_status.setText(f"Auto-tune finished: {headline}")
         # The row's cached context_size is now stale; re-read the registry so the
         # page shows what is really on disk rather than what it showed before.
         self._on_refresh_models()
@@ -3000,7 +3635,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Queue assistant startup with the chosen voice and output preference."""
         self._assistant_status.setText("Starting...")
         self._assistant_start_btn.setEnabled(False)
-        self._talk_btn.setEnabled(False)
+        self._gate(self._talk_btn, False, 'Press Start voice chat first.')
         self._gc.request_start_assistant(
             selected_voice_id(self._talk_voice), self._assistant_speak.isChecked()
         )
@@ -3008,9 +3643,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_end_assistant(self):
         """Queue session teardown and lock controls until the outcome arrives."""
         self._assistant_status.setText("ending session...")
-        self._assistant_end_btn.setEnabled(False)
-        self._talk_btn.setEnabled(False)
-        self._interrupt_btn.setEnabled(False)
+        self._gate(self._assistant_end_btn, False, 'Voice chat is not running.')
+        self._gate(self._talk_btn, False, 'Press Start voice chat first.')
+        self._gate(self._interrupt_btn, False, 'Nothing is being spoken.')
         self._gc.request_end_assistant()
 
     def _on_talk(self):
@@ -3034,13 +3669,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_whisper(self):
         """Queue the existing whisper service toggle."""
-        self._model_status.setText("working... toggling whisper server")
+        self._whisper_status.setText("working...")
         self._gc.request_whisper_toggle()
 
     def _on_listen(self):
         """Queue the existing fifteen-second microphone capture path."""
-        self._model_status.setText("listening for 15s - speak now")
-        self._voice_status.setText("listening for 15s - speak now")
+        self._voice_status.setText("Listening for 15 seconds - speak now")
         self._transcript.clear()
         self._gc.request_listen(15.0)
 
@@ -3140,7 +3774,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Drive Save enablement and validation from the controller's pure helper."""
         model = self._settings_selected_model()
         if model is None:
-            self._save_btn.setEnabled(False)
+            self._gate(self._save_btn, False, 'Nothing to save yet - change a value first, or fix the problem shown.')
             self._edit_error.clear()
             return
         state = gui_controller.compute_save_state(
@@ -3149,7 +3783,7 @@ class MainWindow(QtWidgets.QMainWindow):
             model["gpu_layers"],
             model["context_size"],
         )
-        self._save_btn.setEnabled(bool(state["enabled"]))
+        self._gate(self._save_btn, bool(state["enabled"]), 'Nothing to save yet - change a value first, or fix the problem shown.')
         self._edit_error.setText(state["error"] or "")
 
     def _on_save(self):
@@ -3164,7 +3798,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Drive Rename enablement and validation from the controller's pure helper."""
         model = self._settings_selected_model()
         if model is None:
-            self._identity_save_btn.setEnabled(False)
+            self._gate(self._identity_save_btn, False, 'Nothing to rename yet - change the id or name first, or fix the problem shown.')
             self._identity_error.clear()
             return
         existing_ids = [m["id"] for m in self._models]
@@ -3175,7 +3809,7 @@ class MainWindow(QtWidgets.QMainWindow):
             model["name"],
             existing_ids,
         )
-        self._identity_save_btn.setEnabled(bool(state["enabled"]))
+        self._gate(self._identity_save_btn, bool(state["enabled"]), 'Nothing to rename yet - change the id or name first, or fix the problem shown.')
         self._identity_error.setText(state["error"] or "")
 
     def _on_save_identity(self):
@@ -3190,11 +3824,11 @@ class MainWindow(QtWidgets.QMainWindow):
         """Enable Save capabilities only when the parsed tag list actually differs."""
         model = self._settings_selected_model()
         if model is None:
-            self._capabilities_save_btn.setEnabled(False)
+            self._gate(self._capabilities_save_btn, False, 'Nothing to save yet - change the list first.')
             self._capabilities_error.clear()
             return
         typed = gui_controller.parse_capabilities_text(self._capabilities_edit.text())
-        self._capabilities_save_btn.setEnabled(typed != list(model.get("capabilities", [])))
+        self._gate(self._capabilities_save_btn, typed != list(model.get("capabilities", [])), 'Nothing to save yet - change the list first.')
         self._capabilities_error.clear()
 
     def _on_save_capabilities(self):
@@ -3204,21 +3838,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._gc.save_model_capabilities(model["id"], self._capabilities_edit.text())
 
     # ---- M13 Fine-tune page ---------------------------------------------- #
-
-    def _on_finetune_start(self):
-        """Ask the controller to start the studio; buttons lock until it answers."""
-        self._ft_warning.setVisible(False)
-        self._apply_finetune_state({"status": "starting", "reason": "", "url": None})
-        self._gc.request_finetune_start()
-
-    def _on_finetune_stop(self):
-        """Ask the controller to stop the studio."""
-        self._set_finetune_buttons(False, False, False)
-        self._gc.request_finetune_stop()
-
-    def _on_finetune_open(self):
-        """Open the running studio in the owner's default browser."""
-        self._gc.request_finetune_open()
 
     def _on_finetune_rescan(self):
         """Re-run the discovery scan; the table keeps its rows until new ones land."""
@@ -3286,7 +3905,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if model is None or model.get("source") != "discovered":
             return
         self._register_btn.setEnabled(False)
-        self._model_status.setText(f"Registering {model['name']}...")
+        self._model_status.setText(f"Adding {model['name']} to your models...")
         self._gc.request_register_discovered(model["id"])
 
     def _on_delete_model(self):
@@ -3308,7 +3927,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self,
             "Delete model",
             f'Permanently delete "{model["name"]}"?\n\n'
-            f"This removes it from the model list AND deletes this file from "
+            f"This removes it from your list AND deletes these files from "
             f"disk:\n{file_list}\n\n"
             f"This cannot be undone.",
             QtWidgets.QMessageBox.StandardButton.Yes
@@ -3333,7 +3952,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         # Disabled until the answer comes back, so a repeated press cannot queue
         # a second call to the same rate-limited endpoint.
-        self._hub_search_btn.setEnabled(False)
+        self._gate(self._hub_search_btn, False, 'Searching is not available right now.')
         # A fresh search starts a new result set - the prior query's Load more
         # cursor no longer applies, so hide it until this search's own answer
         # says whether a further page exists.
@@ -3346,7 +3965,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Load more press: the same egress-on-explicit-action rule as Search."""
         if not self._hub_enabled or not self._hub_has_more:
             return
-        self._hub_load_more_btn.setEnabled(False)
+        self._gate(self._hub_load_more_btn, False, 'There are no more results.')
         self._hub_load_more_btn.setText("Loading more...")
         self._gc.request_hub_search_more()
 
@@ -3356,7 +3975,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if entry is None or not self._hub_enabled:
             return
         self._hub_file_table.setRowCount(0)
-        self._hub_download_btn.setEnabled(False)
+        self._gate(self._hub_download_btn, False, HUB_DOWNLOAD_REASON)
         self._hub_status.setText(f"Listing files in {entry['repo_id']}...")
         self._gc.request_hub_files(entry["repo_id"])
 
@@ -3364,7 +3983,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Show the fit arithmetic for the selected file. Pure local computation."""
         entry = self._selected_hub_file()
         if entry is None:
-            self._hub_download_btn.setEnabled(False)
+            self._gate(self._hub_download_btn, False, HUB_DOWNLOAD_REASON)
             self._hub_fit.setText("")
             return
         # DEFECT-QA-M14-2: browsing the file list during a download must not
@@ -3374,7 +3993,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # but not yet confirmed counts as busy too (NEW-QA-M14-7), so the gap
         # between pressing Download and the first progress line is not a window
         # in which the button comes back to life.
-        self._hub_download_btn.setEnabled(self._hub_busy_job() is None)
+        self._gate(self._hub_download_btn, self._hub_busy_job() is None, HUB_DOWNLOAD_REASON)
         fit = entry.get("fit") or {}
         lines = [fit.get("wording", "")]
         if fit.get("explanation") and fit.get("band") != "unknown":
@@ -3454,8 +4073,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # The id is adopted as "active" in _apply_hub_progress, i.e. only once
         # the controller has proved the transfer started.
         self._hub_pending_job = hub_job_id(repo["repo_id"], entry["filename"])
-        self._hub_download_btn.setEnabled(False)
-        self._hub_cancel_btn.setEnabled(True)
+        self._gate(self._hub_download_btn, False, HUB_DOWNLOAD_REASON)
+        self._gate(self._hub_cancel_btn, True, 'No download is running.')
         self._hub_progress.setValue(0)
         self._hub_progress.setVisible(True)
         self._hub_status.setText(f"Starting download of {entry['filename']}...")
@@ -3479,7 +4098,7 @@ class MainWindow(QtWidgets.QMainWindow):
         IMPLEMENTED); modelhub deletes the .partial on cancel, which is what the
         confirmation text the user just accepted says.
         """
-        self._hub_cancel_btn.setEnabled(False)
+        self._gate(self._hub_cancel_btn, False, 'No download is running.')
         self._hub_status.setText("Canceling...")
         self._gc.request_hub_cancel()
 
@@ -3517,7 +4136,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _apply_hub_search(self, result):
         """Render search results, or the honest offline/rate-limit line."""
-        self._hub_search_btn.setEnabled(self._hub_enabled)
+        self._gate(self._hub_search_btn, self._hub_enabled, 'Searching is not available right now.')
         if not result.ok:
             # The catalog rows stay exactly where they are: being offline must
             # not empty the page the user was already browsing.
@@ -3540,7 +4159,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not result.ok:
             # The rows already on screen (from the prior page) stay put; a
             # failed Load more press must not lose what was already found.
-            self._hub_load_more_btn.setEnabled(self._hub_has_more)
+            self._gate(self._hub_load_more_btn, self._hub_has_more, 'There are no more results.')
             self._hub_status.setText(
                 result.payload.get("reason") or result.error or "could not load more"
             )
@@ -3556,8 +4175,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Show/hide and (re)enable the Load more button to match server state."""
         self._hub_has_more = bool(has_more)
         self._hub_load_more_btn.setVisible(self._hub_has_more)
-        self._hub_load_more_btn.setEnabled(self._hub_has_more and self._hub_enabled)
-
+        self._gate(self._hub_load_more_btn, self._hub_has_more and self._hub_enabled, 'There are no more results.')
     def _apply_hub_files(self, result):
         """Render one repository's downloadable files."""
         self._hub_file_table.setRowCount(0)
@@ -3682,9 +4300,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._hub_active_job = None
         self._hub_pending_job = None
-        self._hub_cancel_btn.setEnabled(False)
+        self._gate(self._hub_cancel_btn, False, 'No download is running.')
         self._hub_progress.setVisible(False)
-        self._hub_download_btn.setEnabled(self._selected_hub_file() is not None)
+        self._gate(self._hub_download_btn, self._selected_hub_file() is not None, HUB_DOWNLOAD_REASON)
         if not result.ok:
             self._hub_status.setText(
                 payload.get("message") or result.error or "the download failed"
@@ -3706,7 +4324,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # mode of a future typo must be under-claiming, never over-claiming.
         parts.append(VERIFICATION_LABELS.get(rung, VERIFICATION_LABELS["none"]))
         if payload.get("registered"):
-            parts.append(f"Registered as '{payload.get('model_id')}'.")
+            parts.append(f"Added to your models as '{payload.get('model_id')}'.")
         elif payload.get("register_error"):
             parts.append(payload["register_error"])
         self._hub_status.setText(" ".join(parts))
@@ -3726,11 +4344,20 @@ class MainWindow(QtWidgets.QMainWindow):
             # Deleted between scan and click: an inline message, never a crash.
             self._ft_status.setText(f"could not open {folder}")
 
-    def _set_finetune_buttons(self, start, stop, open_browser):
-        """Set the three lifecycle buttons together (they are never mixed states)."""
-        self._ft_start_btn.setEnabled(bool(start))
-        self._ft_stop_btn.setEnabled(bool(stop))
-        self._ft_open_btn.setEnabled(bool(open_browser))
+    def _on_finetune_save_copy(self):
+        """Open the selected run in the guided flow's Save step."""
+        row = self._selected_finetune()
+        if row is None:
+            return
+        self._ft_flow.open_run(Path(row["path"]).parent)
+
+    def _on_finetune_flow_saved(self):
+        """A model was added to the list from the guided flow: refresh both lists."""
+        if hasattr(self._gc, "request_scan_finetunes"):
+            self._on_finetune_rescan()
+        refresh = getattr(self, "_on_refresh_models", None)
+        if refresh is not None:
+            refresh()
 
     def _refresh_finetune_buttons(self):
         """Enable the row actions only when a usable row is selected."""
@@ -3740,48 +4367,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ft_register_btn.setEnabled(has_row and not row.get("registered"))
         self._ft_delete_btn.setEnabled(has_row)
         self._ft_folder_btn.setEnabled(has_row)
+        self._ft_save_btn.setEnabled(has_row)
 
     def _apply_finetune_state(self, payload):
-        """Render one studio lifecycle snapshot (the exact state matrix, UX 3.1)."""
-        status = payload.get("status", "stopped")
-        reason = payload.get("reason", "") or ""
-        url = payload.get("url")
-        if status == "disabled":
-            # Not configured / unavailable: the reason string names the exact
-            # setting or env var that fixes it.
-            self._ft_chip.setText(reason or "Fine-tune studio is not configured.")
-            self._set_finetune_buttons(False, False, False)
-        elif status == "starting":
-            self._ft_chip.setText("Starting studio...")
-            self._set_finetune_buttons(False, False, False)
-        elif status == "running":
-            self._ft_chip.setText(f"Running - {url}")
-            self._set_finetune_buttons(False, True, True)
-        elif status == "error":
-            self._ft_chip.setText(reason or "Did not start - see logs/finetune_studio.log")
-            self._set_finetune_buttons(True, False, False)
-        else:
-            self._ft_chip.setText("Stopped")
-            self._set_finetune_buttons(True, False, False)
-        log_path = payload.get("log_path") or ""
-        self._ft_log_label.setText(f"log: {log_path}" if log_path else "")
-        self._ft_log_label.setVisible(bool(log_path))
+        """Show the install panel, with the reason, when fine-tuning cannot run here."""
+        disabled = payload.get("status") == "disabled"
+        self._ft_install_panel.setVisible(disabled)
+        self._ft_install_reason.setText(payload.get("reason", "") if disabled else "")
 
     def _apply_finetune_result(self, result):
-        """Apply a finetune_state Result, including the honest stop-time warning."""
-        payload = dict(result.payload)
-        if not result.ok and result.error:
-            payload["status"] = "error"
-            payload["reason"] = result.error
-        self._apply_finetune_state(payload)
-        # An informational message (e.g. the Open action when open_browser is off)
-        # goes to the page's status line so no click ever looks like it did nothing.
-        message = payload.get("message", "")
-        if message:
-            self._ft_status.setText(message)
-        warning = payload.get("warning", "")
-        self._ft_warning.setText(warning)
-        self._ft_warning.setVisible(bool(warning))
+        """Apply a finetune_state Result from the worker."""
+        if result.ok:
+            self._apply_finetune_state(result.payload)
+        elif result.error:
+            self._ft_status.setText(result.error)
 
     def _apply_finetune_models(self, result):
         """Render the discovered-models table (empty / error / populated states)."""
@@ -3848,8 +4447,8 @@ class MainWindow(QtWidgets.QMainWindow):
             # Only the failure path hands the controls back: the owner may want to
             # retry after fixing whatever the refusal named.
             self._refresh_finetune_buttons()
-            self._register_btn.setEnabled(True)
-            message = result.error or "could not register"
+            self._gate(self._register_btn, True, '')
+            message = result.error or "Could not add it to your models."
             self._ft_status.setText(message)
             self._model_status.setText(message)
             return
@@ -3882,6 +4481,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Render one controller Result; called only by the GUI-thread timer."""
         if result.kind == "session_launch":
             self._sessions_page.apply_launch_result(result)
+            self._model_status.setText(self._sessions_page.status.text())
             return
         kind = result.kind
         if kind == "status_line":
@@ -3913,10 +4513,28 @@ class MainWindow(QtWidgets.QMainWindow):
             # On success, say nothing here -- the header status chip already
             # shows "model: <id> port <port>", so repeating it was redundant.
             self._model_status.setText(
-                "" if result.ok else (result.error or "start failed")
+                "" if result.ok else (result.error or "The model did not start.")
             )
             self._refresh_model_rows()
             self._refresh_buttons()
+        elif kind in ("stop", "free_gpu") and (result.payload or {}).get("reserved"):
+            self._ui.in_flight = False
+            self._model_status.setText(result.error or "")
+            self._refresh_buttons()
+            self._offer_release_and(result.payload.get("then", "stop"))
+        elif kind == "free_gpu":
+            self._ui.in_flight = False
+            self._model_status.setText(result.error or "could not free the GPU")
+            self._refresh_buttons()
+        elif kind == "start" and not result.ok and (result.payload or {}).get("reserved"):
+            self._ui.in_flight = False
+            self._apply_running_snapshot(result.payload)
+            self._model_status.setText(result.error or "")
+            self._refresh_model_rows()
+            self._refresh_buttons()
+            self._offer_release_and(
+                "start", result.payload.get("model_id", ""), result.payload.get("reasoning")
+            )
         elif kind == "stop":
             self._ui.in_flight = False
             self._apply_running_snapshot(result.payload)
@@ -3924,7 +4542,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._ui.latest_metrics = None
             self._render_monitor_text("idle")
             self._model_status.setText(
-                "stopped" if result.ok else (result.error or "stop failed")
+                "Stopped." if result.ok else (result.error or "Could not stop the model.")
             )
             self._refresh_model_rows()
             self._refresh_buttons()
@@ -3937,13 +4555,13 @@ class MainWindow(QtWidgets.QMainWindow):
         elif kind == "whisper":
             self._ui.whisper_running = bool(result.payload.get("running"))
             self._whisper_btn.setText(
-                "Stop whisper server"
+                "Turn off voice input"
                 if self._ui.whisper_running
-                else "Start whisper server"
+                else "Turn on voice input"
             )
-            self._model_status.setText(
+            self._whisper_status.setText(
                 result.error
-                or ("whisper running" if self._ui.whisper_running else "whisper stopped")
+                or ("Voice input is on" if self._ui.whisper_running else "Voice input is off")
             )
         elif kind == "transcript":
             line = result.payload.get("line", "")
@@ -3951,11 +4569,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._voice_status.setText(line)
                 append_plain(self._transcript, line)
         elif kind == "listen":
-            self._model_status.setText(
-                "listen finished" if result.ok else (result.error or "listen failed")
+            self._voice_status.setText(
+                "Done listening" if result.ok else (result.error or "Listening failed")
             )
-            if not result.ok:
-                self._voice_status.setText(result.error or "listen failed")
         elif kind == "speak":
             voice = result.payload.get("voice", "")
             self._tts_status.setText(
@@ -4033,6 +4649,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self._append_conversation("You: ", result.payload.get("text", ""))
         elif kind == "assistant_reply":
             self._append_conversation("", result.payload.get("line", ""))
+        elif kind == "describe" and not result.ok and "coding terminal is still using" in (result.error or ""):
+            self._vision_result.setPlainText(
+                "A coding terminal is still using the model, so it cannot be "
+                "swapped for the picture model yet."
+            )
+            self._refresh_model_exclusive_buttons()
+            if self._offer_release_and("release"):
+                self._on_describe()
         elif kind == "describe":
             self._vision_result.setPlainText(
                 result.payload.get("answer", "")
@@ -4049,17 +4673,19 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         elif kind == "second_eye":
             running = bool(result.payload.get("running"))
-            self._second_eye_start_btn.setEnabled(not running)
-            self._second_eye_stop_btn.setEnabled(running)
+            self._gate(
+                self._second_eye_start_btn, not running, "Already watching your screen."
+            )
+            self._gate(self._second_eye_stop_btn, running, "Not watching right now.")
             if not result.ok:
-                self._second_eye_status.setText(result.error or "watch failed")
+                self._second_eye_status.setText(result.error or "Could not start watching.")
             elif running:
                 goal = result.payload.get("goal", "")
                 self._second_eye_status.setText(
-                    f"watching: {goal}" if goal else "watching"
+                    f"Watching: {goal}" if goal else "Watching your screen"
                 )
             else:
-                self._second_eye_status.setText("not watching")
+                self._second_eye_status.setText("Not watching")
         elif kind == "benchmark":
             self._apply_benchmark_result(result)
 
@@ -4070,32 +4696,36 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_chat_hint()
 
     def _update_chat_hint(self):
-        """Keep the Chat page hint honest about whether a model is running."""
+        """Keep the Start page's status line and chat hint honest about the model."""
         if not hasattr(self, "_chat_hint"):
             return
         running = self._ui.running_model_id
         if running:
+            name = self._model_name(running)
             self._chat_hint.setText(
-                f"{running} is running. Open Chat uses the rich UI when it is "
-                "installed, or the built-in model UI."
+                "Opens in your browser with the rich chat when it is installed, "
+                "or the built-in chat page."
             )
+            self._start_status_line.setText(f"{name} is running - ready to chat")
         else:
-            self._chat_hint.setText(
-                "Start a model on Models first. Chat then opens the rich chat "
-                "application when it is installed, or the built-in model UI."
+            if getattr(self, "_chat_no_model_ok", False):
+                self._chat_hint.setText(
+                    "Open the chat and pick any model there - it loads "
+                    "automatically. Or start one here first."
+                )
+            else:
+                self._chat_hint.setText("Start a model above first, then open the chat.")
+            self._start_status_line.setText(
+                "Starting..." if self._ui.in_flight else "No model running"
             )
 
     def _on_sidebar_changed(self, index):
-        """Switch pages and run first-visit actions (Memory search, header)."""
+        """Switch pages and run first-visit actions (session scan)."""
         self._stack.setCurrentIndex(index)
         name = PAGE_NAMES[index] if 0 <= index < len(PAGE_NAMES) else ""
-        if name == "Sessions":
+        if name == "Code":
             self._sessions_page.visit()
-        if hasattr(self, "_header_offload_btn"):
-            self._header_offload_btn.setVisible(name != "Talk")
-        if name == "Memory" and not self._memory_visited:
-            self._memory_visited = True
-            self._on_memory_search()
+        self._update_vv_banner()
 
     def _on_noise_mode_changed(self, _index=None):
         """Persist the Voice Setup noise-suppression preset."""
@@ -4114,9 +4744,9 @@ class MainWindow(QtWidgets.QMainWindow):
         """Start the screen watcher with the typed goal."""
         starter = getattr(self._gc, "request_second_eye_start", None)
         if not callable(starter):
-            self._second_eye_status.setText("Watch my screen is not available")
+            self._second_eye_status.setText("Watch my screen is not available here.")
             return
-        self._second_eye_status.setText("starting...")
+        self._second_eye_status.setText("Starting...")
         starter(self._second_eye_goal.text(), 1.0)
 
     def _on_second_eye_stop(self):
@@ -4124,7 +4754,7 @@ class MainWindow(QtWidgets.QMainWindow):
         stopper = getattr(self._gc, "request_second_eye_stop", None)
         if callable(stopper):
             stopper()
-            self._second_eye_status.setText("stopping...")
+            self._second_eye_status.setText("Stopping...")
 
     def _render_metrics(self, sample):
         """Render real metrics or an explicit unavailable message on all surfaces."""
@@ -4135,21 +4765,20 @@ class MainWindow(QtWidgets.QMainWindow):
             not getattr(sample, "metrics_available", False)
             and getattr(sample, "slots", None) is None
         ):
-            text = (
-                "this llama.cpp build does not report live speed; "
-                "Auto-tune still measures it"
-            )
+            text = ""
         else:
-            text = gui_controller.format_monitor_line(
-                sample, self._selected_context_size()
+            text = plain_monitor_line(
+                gui_controller.format_monitor_line(sample, self._selected_context_size())
             )
         self._render_monitor_text(text)
         self._header_status.setText(self._health_line())
+        self._header_status.setToolTip(self._header_status.text())
 
     def _render_monitor_text(self, text):
         """Keep the expanded Models and Talk monitor lines synchronized."""
-        self._models_monitor.setText(text)
-        self._talk_monitor.setText(text)
+        # The Models-tab chip stays hidden unless there are live numbers.
+        self._models_monitor.setText("" if text == "idle" else text)
+        self._talk_monitor.setText(text or "This model server does not report live speed.")
 
     def _apply_save_result(self, result):
         """Update the cached persisted values so the grey Save button confirms success."""
@@ -4168,6 +4797,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 break
         self._edit_error.clear()
         self._on_edit_change()
+        self._update_advanced_header()
 
     def _apply_identity_result(self, result):
         """Update cached model rows and the Settings picker after an id/name rename."""
@@ -4252,16 +4882,16 @@ class MainWindow(QtWidgets.QMainWindow):
             offer.setWindowTitle("Rich chat UI available")
             offer.setIcon(QtWidgets.QMessageBox.Icon.Information)
             offer.setText(
-                "The built-in chat just opened. locitize also supports Open "
-                "WebUI - conversation history, uploads, web search - but it is "
-                "not installed yet.\n\nInstall it from the setup wizard? (One "
-                "checkbox; about 2.6 GB. Chat keeps working either way.)"
+                "The simple built-in chat just opened. locitize also supports "
+                "Open WebUI - chat history, uploads, web search - but it is "
+                "not installed yet.\n\nInstall it from setup? (One tick box; "
+                "about 2.6 GB. Chat keeps working either way.)"
             )
             offer.setStandardButtons(
                 QtWidgets.QMessageBox.StandardButton.Yes
                 | QtWidgets.QMessageBox.StandardButton.No
             )
-            offer.button(QtWidgets.QMessageBox.StandardButton.Yes).setText("Open setup wizard")
+            offer.button(QtWidgets.QMessageBox.StandardButton.Yes).setText("Open setup")
             offer.button(QtWidgets.QMessageBox.StandardButton.No).setText("Not now")
             offer.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
             if harden_text_rendering(offer).exec() == QtWidgets.QMessageBox.StandardButton.Yes:
@@ -4290,58 +4920,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self._chat_status.setText(reason)
 
     def _show_chat_chooser(self):
-        """Render the controller-requested chat/harness choice as a modal dialog.
+        """Ask which chat page to open when more than one is available.
 
-        Owner request 2026-08-21: alongside the two built-in chat surfaces,
-        offer "Launch in Claude Code / Codex / OpenCode" - each opens a real
-        terminal running that CLI, pointed at the running model, working on a
-        folder the owner picks (the same "walk a project in a folder" the
-        harnesses already do against the real APIs). A harness not found on
-        PATH is offered disabled rather than hidden, so its absence is visible
-        and explained instead of silently missing.
+        Coding tools are no longer offered here: they live on the Code page, so
+        there is exactly one place to start one.
         """
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Choose a chat interface")
+        dialog.setWindowTitle("Choose a chat")
         dialog.setModal(True)
         layout = QtWidgets.QVBoxLayout(dialog)
-        layout.addWidget(QtWidgets.QLabel("Which chat interface would you like to open?"))
-        built_in = QtWidgets.QRadioButton("llama.cpp web UI (built-in, zero setup)")
-        rich = QtWidgets.QRadioButton("Open WebUI (rich chat, history)")
+        layout.addWidget(QtWidgets.QLabel("Which chat would you like to open?"))
+        built_in = QtWidgets.QRadioButton("Simple chat (built in, nothing to set up)")
+        rich = QtWidgets.QRadioButton("Open WebUI (richer chat with history)")
         built_in.setChecked(True)
         layout.addWidget(built_in)
         layout.addWidget(rich)
-
-        layout.addWidget(QtWidgets.QLabel("Launch in a coding harness (works on a project folder):"))
-        installed = self._gc.detect_harnesses()
-        harness_labels = {
-            "claude": "Claude Code",
-            "codex": "Codex",
-            "opencode": "OpenCode",
-        }
-        harness_buttons: dict[str, QtWidgets.QRadioButton] = {}
-        for key, label in harness_labels.items():
-            found = installed.get(key)
-            row = QtWidgets.QHBoxLayout()
-            button = QtWidgets.QRadioButton(label if found else f"{label} (not found on PATH)")
-            button.setEnabled(bool(found))
-            row.addWidget(button)
-            if not found:
-                # Owner request 2026-08-21: "the user should not have to do
-                # anything" - a missing harness gets an install path right
-                # here instead of a dead end. dialog.accept() first so the
-                # background install (harness_launch.install_harness, on the
-                # ops worker) is never blocked behind this modal dialog.
-                install_btn = QtWidgets.QPushButton("Install")
-                install_btn.clicked.connect(
-                    lambda _checked=False, k=key, lbl=label: self._confirm_and_install_harness(
-                        dialog, k, lbl
-                    )
-                )
-                row.addWidget(install_btn)
-            row.addStretch()
-            layout.addLayout(row)
-            harness_buttons[key] = button
-
         remember = QtWidgets.QCheckBox("Remember my choice")
         layout.addWidget(remember)
         buttons = QtWidgets.QDialogButtonBox(
@@ -4353,11 +4946,6 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(buttons)
         if harden_text_rendering(dialog).exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
-
-        for key, button in harness_buttons.items():
-            if button.isChecked():
-                self._launch_harness_with_folder(key, remember.isChecked())
-                return
         choice = "openwebui" if rich.isChecked() else "llamacpp"
         self._gc.open_chat(choice, remember.isChecked())
 
@@ -4365,55 +4953,30 @@ class MainWindow(QtWidgets.QMainWindow):
         """Ask for the project folder (defaulting to the remembered one), then
         queue the launch. The folder picker is per-launch on purpose - the
         remembered path is only a default, never silently reused without the
-        owner seeing which folder is about to be opened."""
+        person seeing which folder is about to be opened."""
         default_dir = self._gc.last_project_dir() or str(Path.home())
         project_dir = QtWidgets.QFileDialog.getExistingDirectory(
             self, "Choose a project folder", default_dir
         )
         if not project_dir:
             return
-        self._model_status.setText(f"launching {choice}...")
+        self._model_status.setText(f"Opening {choice}...")
         self._gc.request_launch_harness(choice, project_dir, remember)
 
     def _apply_launch_harness_result(self, result):
-        """Surface a harness launch's outcome, including the Claude-bridge's
+        """Surface a coding-tool launch's outcome, including the Claude bridge's
         stated tool-use limitation, without hiding a failure."""
         if not result.ok:
-            message = result.error or "could not launch harness"
-            self._model_status.setText(message)
-            self._chat_status.setText(message)
+            self._model_status.setText(result.error or "Could not open the coding tool.")
             return
         choice = result.payload.get("choice", "")
         note = result.payload.get("note", "")
-        message = f"{choice} launched in a new terminal"
-        self._model_status.setText(message)
-        self._chat_status.setText(note or message)
+        message = f"{choice} opened in a new terminal."
+        self._model_status.setText(f"{message} {note}".strip() if note else message)
 
     def _refresh_chat_harness_buttons(self):
-        """Enable each Chat-page harness button per a fresh PATH detection.
-
-        Defensive by the same rule as harness onboarding: a detection failure
-        (or a controller without the probe at all) must never break the window -
-        the buttons just stay disabled with the install hint.
-        """
-        if not getattr(self, "_chat_harness_buttons", None):
-            return
-        try:
-            installed = self._gc.detect_harnesses()
-        except Exception:  # noqa: BLE001 - degrade to disabled, never crash
-            installed = {}
-        if not isinstance(installed, dict):
-            installed = {}
-        for key, button in self._chat_harness_buttons.items():
-            found = installed.get(key)
-            button.setEnabled(bool(found))
-            if found:
-                button.setToolTip(f"found at {found}")
-            else:
-                button.setToolTip(
-                    "Not found on PATH. Install with: "
-                    + HARNESS_INSTALL_SUMMARIES.get(key, "")
-                )
+        """Back-compat name for the Code page's tool buttons."""
+        self._refresh_code_harness_buttons()
 
     def _apply_install_harness_result(self, result):
         """Surface an "Install <harness>" outcome (owner request 2026-08-21:
@@ -4486,7 +5049,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         script = Path(__file__).resolve().parent / "uninstall.py"
         if not script.is_file():
-            self._edit_error.setText(f"uninstaller not found at {script}")
+            self._feature_state_note.setText("The uninstaller was not found. Reinstall locitize, then try again.")
             return
         answer = QtWidgets.QMessageBox.warning(
             self,
@@ -4506,7 +5069,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except OSError as exc:
-            self._edit_error.setText(f"could not start the uninstaller: {exc}")
+            self._feature_state_note.setText(f"Could not start the uninstaller: {exc}")
             return
         self.close()
 
@@ -4528,10 +5091,10 @@ class MainWindow(QtWidgets.QMainWindow):
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 self._feature_state_note.setText("Setup wizard opened. Restart locitize after adding features.")
             except OSError as exc:
-                self._edit_error.setText(f"Could not open setup: {exc}")
+                self._feature_state_note.setText(f"Could not open setup: {exc}")
             return
         if not bat.is_file():
-            self._edit_error.setText(f"setup launcher not found at {bat}")
+            self._feature_state_note.setText("The setup launcher was not found. Reinstall locitize, then try again.")
             return
         try:
             # No console window: the wizard is a window of its own.
@@ -4545,7 +5108,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 "installing to use new features"
             )
         except OSError as exc:
-            self._edit_error.setText(f"could not open the setup wizard: {exc}")
+            self._feature_state_note.setText(f"Could not open setup: {exc}")
 
     def _confirm_and_install_harness(self, source_dialog, key, label):
         """One explicit confirmation naming the exact command, THEN install.
@@ -4586,48 +5149,11 @@ class MainWindow(QtWidgets.QMainWindow):
         message.setWordWrap(True)
         layout.addWidget(message)
         detail = QtWidgets.QLabel(
-            "First launch sets up its database and can take up to 5 minutes."
+            "The first start sets up its database and can take up to 5 minutes."
         )
         detail.setObjectName("muted")
         detail.setWordWrap(True)
         layout.addWidget(detail)
-        # M18.11 (owner request): every road to chat also shows the coding
-        # harnesses. This offer used to be a dead end - Start or Cancel - even
-        # though the model is running and a terminal harness needs nothing else.
-        # Same honesty rules as the chooser: missing-from-PATH shows disabled
-        # with the install command in the tooltip.
-        code_label = QtWidgets.QLabel("Or code in a terminal instead:")
-        code_label.setObjectName("muted")
-        layout.addWidget(code_label)
-        harness_row = QtWidgets.QHBoxLayout()
-        chosen: dict[str, str] = {}
-        try:
-            installed = self._gc.detect_harnesses()
-        except Exception:  # noqa: BLE001 - detection failure never breaks the offer
-            installed = {}
-        for key, label in (
-            ("claude", "Claude Code"),
-            ("codex", "Codex"),
-            ("opencode", "OpenCode"),
-        ):
-            button = QtWidgets.QPushButton(label)
-            found = (installed or {}).get(key)
-            button.setEnabled(bool(found))
-            button.setToolTip(
-                f"found at {found}" if found else
-                "Not found on PATH. Install with: "
-                + HARNESS_INSTALL_SUMMARIES.get(key, "")
-            )
-
-            def pick(_checked=False, k=key):
-                chosen["harness"] = k
-                dialog.reject()  # close WITHOUT starting Open WebUI
-
-            button.clicked.connect(pick)
-            harness_row.addWidget(button)
-        harness_row.addStretch(1)
-        layout.addLayout(harness_row)
-
         remember = QtWidgets.QCheckBox("Remember my choice")
         layout.addWidget(remember)
         buttons = QtWidgets.QDialogButtonBox(
@@ -4641,10 +5167,10 @@ class MainWindow(QtWidgets.QMainWindow):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         if harden_text_rendering(dialog).exec() == QtWidgets.QDialog.DialogCode.Accepted:
-            self._model_status.setText("starting Open WebUI; first launch can take up to 5 minutes...")
+            self._model_status.setText(
+                "Starting Open WebUI. The first start can take up to 5 minutes..."
+            )
             self._gc.start_openwebui_and_open(remember.isChecked())
-        elif chosen.get("harness"):
-            self._launch_harness_with_folder(chosen["harness"], False)
 
     def _on_assistant_started(self, payload):
         """Unlock session controls only after the controller reports readiness."""
@@ -4652,8 +5178,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._assistant_port = payload.get("port")
         self._apply_running_snapshot(payload)
         self._assistant_status.setText("Ready to listen")
-        self._assistant_end_btn.setEnabled(True)
-        self._interrupt_btn.setEnabled(True)
+        self._gate(self._assistant_end_btn, True, 'Voice chat is not running.')
+        self._gate(self._interrupt_btn, True, 'Nothing is being spoken.')
         self._set_talk_state("idle")
         self._refresh_model_rows()
         self._refresh_buttons()
@@ -4667,9 +5193,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._assistant_status.setText(message)
         self._listen_when_ready = False
         self._assistant_start_btn.setEnabled(True)
-        self._assistant_end_btn.setEnabled(False)
-        self._interrupt_btn.setEnabled(False)
-        self._talk_btn.setEnabled(False)
+        self._gate(self._assistant_end_btn, False, 'Voice chat is not running.')
+        self._gate(self._interrupt_btn, False, 'Nothing is being spoken.')
+        self._gate(self._talk_btn, False, 'Press Start voice chat first.')
         # The assistant temporarily disables model lifecycle controls. Recompute
         # the full button set here so Start/Switch and Stop recover after failure.
         self._refresh_buttons()
@@ -4679,11 +5205,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._assistant_live = False
         self._assistant_status.setText("Not running. Click Talk to start.")
         self._assistant_start_btn.setEnabled(True)
-        self._assistant_end_btn.setEnabled(False)
-        self._interrupt_btn.setEnabled(False)
+        self._gate(self._assistant_end_btn, False, 'Voice chat is not running.')
+        self._gate(self._interrupt_btn, False, 'Nothing is being spoken.')
         self._listen_when_ready = False
         self._talk_btn.setText("Talk")
-        self._talk_btn.setEnabled(False)
+        self._gate(self._talk_btn, False, 'Press Start voice chat first.')
         # Ending a session releases its model lock. The complete refresh restores
         # every lifecycle control from the last controller-owned snapshot.
         self._refresh_buttons()
@@ -4707,8 +5233,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._talk_btn.setText(labels.get(self._talk_state, "Talk"))
         if self._assistant_live:
             self._assistant_status.setText(status.get(self._talk_state, "Ready to listen"))
-        self._talk_btn.setEnabled(
-            self._assistant_live and self._talk_state in ("idle", "thinking", "speaking")
+        self._gate(
+            self._talk_btn,
+            self._assistant_live and self._talk_state in ("idle", "thinking", "speaking"),
+            "Press Start voice chat first." if not self._assistant_live
+            else "Wait for the reply to start, then you can cut in.",
         )
         self._talk_btn.setProperty("talkState", self._talk_state)
         self._talk_pulse.setProperty("talkState", self._talk_state)
@@ -4881,17 +5410,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if not missing:
             return
 
-        labels = {"claude": "Claude Code", "codex": "Codex", "opencode": "OpenCode"}
+        labels = {"codex": "Codex", "opencode": "OpenCode"}
         dialog = QtWidgets.QDialog(self)
-        dialog.setWindowTitle("Set up coding harnesses?")
+        dialog.setWindowTitle("Add coding tools?")
         dialog.setModal(True)
         layout = QtWidgets.QVBoxLayout(dialog)
         layout.addWidget(
             QtWidgets.QLabel(
-                "locitize can launch your local models inside these coding tools.\n"
+                "locitize can open your local models inside these coding tools.\n"
                 "The ones below aren't installed yet. Nothing is installed until\n"
-                "you check a box AND click OK - each one runs the exact command\n"
-                "shown beneath it:"
+                "you tick a box AND click OK - each one runs the exact command\n"
+                "shown beneath it. You can also do this later in\n"
+                "Settings > Coding tools."
             )
         )
         checkboxes: dict[str, QtWidgets.QCheckBox] = {}
@@ -4916,7 +5446,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         selected = [key for key, box in checkboxes.items() if box.isChecked()]
         for key in selected:
-            self._model_status.setText(f"installing {key}...")
+            self._model_status.setText(f"Installing {labels.get(key, key)}...")
             self._gc.request_install_harness(key)
 
     def _warn_if_run_active(self):
@@ -4983,7 +5513,7 @@ def _raise_existing_window():
         pass
 
 
-def run(controller, health="unknown"):
+def run(controller, health="unknown", health_report=None):
     """Build and run the native desktop, returning its event-loop exit code."""
     _log_launch("run() start")
     # Owner request 2026-08-21: a lock file (not a port/process check) is the
@@ -5027,7 +5557,7 @@ def run(controller, health="unknown"):
     if LOGO_ICO_PATH.is_file():
         app_icon = QtGui.QIcon(str(LOGO_ICO_PATH))
         app.setWindowIcon(app_icon)
-    window = MainWindow(controller, health)
+    window = MainWindow(controller, health, health_report)
     if LOGO_ICO_PATH.is_file():
         window.setWindowIcon(app_icon)
     window.start_controller()

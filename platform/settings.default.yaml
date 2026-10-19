@@ -177,7 +177,7 @@ chat:
   preferred_ui: openwebui
 
 chat_harness:
-  # "Launch in..." picker (owner request 2026-08-21): opens Claude Code, Codex,
+  # "Launch in..." picker (owner request 2026-08-21): opens Codex
   # or OpenCode in a new terminal, pointed at the running model, working on a
   # project folder the same way those CLIs walk any other repo. last_project_dir
   # is the folder the picker's browse dialog defaults to (remembered across
@@ -211,20 +211,14 @@ openwebui:
   voice_interruption: true
 
 finetune:
-  # The QLoRA fine-tuning studio ships vendored inside this repo at
-  # Codebase/finetune-studio, supervised as a managed loopback service, plus
-  # discovery of the .gguf models it produces. Works out of the box on a fresh
-  # clone with no external checkout required.
-  enabled: true                 # true lets the Fine-tune page start the studio
-  studio_dir: ""                # "" -> the bundled Codebase/finetune-studio copy (or LOCITIZE_FINETUNE_STUDIO_DIR for a different checkout)
+  # QLoRA fine-tuning from the desktop Fine-tune page. The trainer ships inside
+  # this repo at finetune-studio/trainer and runs in its own environment (added
+  # under Settings > Features), plus discovery of the .gguf models it produces.
+  enabled: true                 # true lets the Fine-tune page train models
+  studio_dir: ""                # "" -> the bundled finetune-studio folder (or LOCITIZE_FINETUNE_STUDIO_DIR for a different one)
   outputs_dir: ""               # "" -> <data root>/finetune/outputs (DEC-M14-9); or LOCITIZE_FINETUNE_OUTPUTS_DIR
-  python: ""                    # "" -> autodetect the studio's own venv interpreter
-  app_path: "app/app.py"        # Streamlit entry script, relative to studio_dir
-  port: 8501                    # loopback port (or LOCITIZE_PORTS_FINETUNE)
-  ready_timeout_s: 60           # readiness window for the Streamlit server
-  autostart: false              # RESERVED, NOT IMPLEMENTED - nothing reads this key yet
-  open_browser: true            # open the studio URL in your browser on Open
-  discovery_enabled: true       # scanning works even when the studio is not running
+  python: ""                    # "" -> autodetect the fine-tune environment interpreter
+  discovery_enabled: true       # list finished fine-tunes even with fine-tuning off
   default_context_size: 8192    # serving default for a discovered model
   default_gpu_layers: 999       # serving default for a discovered model
   active_run_window_s: 120      # a train.log written this recently means a run is live

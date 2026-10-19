@@ -32,11 +32,11 @@ class FixtureProvider:
 def test_metadata_identity_is_provider_scoped_and_persistent(tmp_path):
     store = SessionStore(tmp_path)
     store.update("codex", "same", title="Code", pinned=True)
-    store.update("claude", "same", title="Other")
+    store.update("opencode", "same", title="Other")
     store.update("codex", "same", notes="keep this", archived=True)
     rows = SessionStore(tmp_path).all()
     assert rows[("codex", "same")]["notes"] == "keep this"
-    assert rows[("claude", "same")] == {"title": "Other"}
+    assert rows[("opencode", "same")] == {"title": "Other"}
     assert rows[("codex", "same")]["pinned"]
 
 
@@ -83,7 +83,7 @@ def test_legacy_import_preserves_sources_and_ambiguous_ids(tmp_path):
     rename.write_text(json.dumps({"one": "Imported", "same": "Ambiguous"}))
     (legacy / "session_meta.json").write_text(json.dumps({"one": {"note": "A note", "tags": ["work"], "pinned": True}}))
     before = rename.read_bytes()
-    sessions = [Session("one", "codex", ""), Session("same", "codex", ""), Session("same", "claude", "")]
+    sessions = [Session("one", "codex", ""), Session("same", "codex", ""), Session("same", "opencode", "")]
     store = SessionStore(tmp_path / "data")
     assert store.import_portal(legacy, sessions) == 1
     assert store.import_portal(legacy, sessions) == 0
@@ -117,7 +117,7 @@ def test_export_fences_untrusted_markdown_and_preserves_source(tmp_path):
     assert source.read_text() == "original"
 
 
-@pytest.mark.parametrize("provider", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("provider", ["codex", "opencode"])
 def test_local_resume_uses_only_process_configuration(tmp_path, provider):
     before = set(tmp_path.iterdir())
     argv, env = build_local_launch(provider, str(tmp_path), "local-model", 8080, "session-123")

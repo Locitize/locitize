@@ -1,2 +1,0 @@
-streamlit>=1.38
-pypdf>=4.0

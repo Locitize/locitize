@@ -36,7 +36,7 @@ The platform has since grown; each addition documents itself where it lives:
 - **Portable config + data root (M14)** - settings/models live in the user
   data root, seeded on first run; the install tree is never written at
   runtime. `LOCITIZE_DATA_DIR` overrides. See `config.resolve_data_dir`.
-- **Chat harness launcher (M14)** - opens Claude Code / Codex / OpenCode in a
+- **Chat harness launcher (M14)** - opens Codex / OpenCode in a
   terminal against the running local model. See `harness_launch.py`.
 - **Context auto-tune with a throughput floor (M15.4)** - finds the largest
   context that loads AND still generates within 85% of a measured baseline.
@@ -447,7 +447,10 @@ Features panel that can add anything skipped at setup.
 
 The QLoRA studio ships bundled in `../finetune-studio/` and is enabled by
 default; the Fine-tune page starts and supervises it as a managed service.
-Training runs require Docker Desktop. Discovered runs appear on the page with
+Training runs natively on an NVIDIA GPU in the studio's own environment (CUDA
+PyTorch plus the QLoRA stack, installed by setup's "Fine-tune models"); there is
+no Docker. GGUF export uses llama.cpp's converter at the same release tag setup
+installs, then the installed `llama-quantize`. Discovered runs appear on the page with
 Serve / Register / Delete actions; outputs live under the data root at
 `finetune/outputs`.
 

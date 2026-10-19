@@ -106,15 +106,6 @@ def model_group_label(source: str, model: str = "") -> str:
     model = (model or "").strip()
     if model.startswith("<") and model.endswith(">"):
         model = ""
-    if source == "claude":
-        lower = model.lower()
-        if "opus" in lower:
-            return "Claude Code / Opus"
-        if "sonnet" in lower:
-            return "Claude Code / Sonnet"
-        if "haiku" in lower:
-            return "Claude Code / Haiku"
-        return f"Claude Code / {model}" if model else "Claude Code / Unknown"
     if source == "codex":
         return f"OpenAI / {model}" if model else "OpenAI / Codex"
     return model or "Unknown"

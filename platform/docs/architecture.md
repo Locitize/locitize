@@ -31,7 +31,7 @@ session ID. Source histories remain provider-owned. Imports validate before
 writing, preserve existing records, and create a recovery database copy.
 Backups cover annotations only; imports never relocate original transcripts.
 
-session_launch.py constructs per-process Codex, Claude Code, and OpenCode local
+session_launch.py constructs per-process Codex and OpenCode local
 configuration. Both Sessions and the existing Chat launcher use it. It does not
 grant tool permissions or impose process-wide network isolation.
 

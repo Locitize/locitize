@@ -1,14 +1,16 @@
 import argparse
 import json
 import os
-import subprocess
 import sys
-
-from unsloth import FastLanguageModel  # must import before trl/transformers/peft
 
 import torch
 from datasets import Dataset
+from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTConfig, SFTTrainer
+
+import gguf_export
+from common import load_4bit
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 
@@ -70,7 +72,6 @@ def main():
     out_root = os.path.join(args.output_dir, args.run_name)
     lora_dir = os.path.join(out_root, "lora_adapter")
     merged_dir = os.path.join(out_root, "merged_model")
-    gguf_path = os.path.join(out_root, f"{args.run_name}.{args.gguf_quant}.gguf")
     os.makedirs(out_root, exist_ok=True)
 
     log(f"Loading dataset from {args.dataset}")
@@ -78,11 +79,7 @@ def main():
     log(f"Dataset loaded: {len(dataset)} examples")
 
     log(f"Loading base model {args.model} (4-bit)")
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.model,
-        max_seq_length=args.max_seq_length,
-        load_in_4bit=True,
-    )
+    model, tokenizer = load_4bit(args.model)
 
     log("Formatting dataset with chat template")
 
@@ -92,38 +89,43 @@ def main():
         )
         return {"text": text}
 
-    formatted_dataset = dataset.map(format_example)
+    formatted_dataset = dataset.map(format_example, remove_columns=["messages"])
 
     log("Attaching LoRA adapters")
-    model = FastLanguageModel.get_peft_model(
-        model,
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    model = get_peft_model(model, LoraConfig(
         r=args.lora_r,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         lora_alpha=args.lora_r,
-        lora_dropout=0,
+        lora_dropout=0.0,
         bias="none",
-        use_gradient_checkpointing="unsloth",
-        max_seq_length=args.max_seq_length,
-    )
+        task_type="CAUSAL_LM",
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                        "gate_proj", "up_proj", "down_proj"],
+    ))
 
     log("Starting training")
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=formatted_dataset,
-        dataset_text_field="text",
-        max_seq_length=args.max_seq_length,
         args=SFTConfig(
             output_dir=os.path.join(out_root, "checkpoints"),
+            dataset_text_field="text",
+            max_length=args.max_seq_length,
             per_device_train_batch_size=args.batch_size,
             gradient_accumulation_steps=args.grad_accum,
             max_steps=args.max_steps,
             learning_rate=args.learning_rate,
-            optim="adamw_8bit",
+            optim="paged_adamw_8bit",
             weight_decay=0.01,
             lr_scheduler_type="linear",
+            warmup_steps=min(5, max(args.max_steps // 10, 0)),
             seed=3407,
+            bf16=True,
+            gradient_checkpointing=True,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
             logging_steps=1,
+            save_strategy="no",
             report_to="none",
         ),
     )
@@ -134,23 +136,26 @@ def main():
     model.save_pretrained(lora_dir)
     tokenizer.save_pretrained(lora_dir)
 
-    log(f"Merging LoRA into base model -> {merged_dir}")
-    model.save_pretrained_merged(merged_dir, tokenizer=tokenizer)
+    # Free the GPU before the merge: the merge reloads the base weights at full
+    # precision on the CPU, so nothing here needs VRAM any more.
+    del trainer, model
+    torch.cuda.empty_cache()
 
-    log(f"Converting merged model to GGUF ({args.gguf_quant}) -> {gguf_path}")
-    convert_script = "/workspace/llama.cpp/convert_hf_to_gguf.py"
-    outtype = "f16" if args.gguf_quant == "f16" else "f16"
-    tmp_gguf = os.path.join(out_root, f"{args.run_name}.f16.gguf")
-    subprocess.run(
-        [sys.executable, convert_script, merged_dir, "--outfile", tmp_gguf, "--outtype", outtype],
-        check=True,
+    log(f"Merging LoRA into base model -> {merged_dir}")
+    base = AutoModelForCausalLM.from_pretrained(
+        args.model, dtype=torch.bfloat16, device_map={"": "cpu"},
+        low_cpu_mem_usage=True,
     )
-    if args.gguf_quant != "f16":
-        quantize_bin = "/workspace/llama.cpp/build/bin/llama-quantize"
-        subprocess.run([quantize_bin, tmp_gguf, gguf_path, args.gguf_quant], check=True)
-        os.remove(tmp_gguf)
-    else:
-        gguf_path = tmp_gguf
+    merged = PeftModel.from_pretrained(base, lora_dir).merge_and_unload()
+    merged.save_pretrained(merged_dir, safe_serialization=True)
+    tokenizer.save_pretrained(merged_dir)
+    del merged, base
+
+    log(f"Converting merged model to GGUF ({args.gguf_quant})")
+    gguf_path = gguf_export.export_gguf(
+        merged_dir, out_root, args.run_name, args.gguf_quant,
+        python_exe=sys.executable, say=log,
+    )
 
     log("DONE")
     print(

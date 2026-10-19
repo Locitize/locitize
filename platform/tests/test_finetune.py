@@ -21,7 +21,6 @@ from pathlib import Path
 import finetune
 import pytest
 from config import FineTuneConfig, Model, Settings, append_model_entry
-from services import PortUnavailableError
 
 # One .gguf's worth of bytes; the exact value does not matter, only that files
 # with the same size compare equal and files with different sizes do not.
@@ -114,7 +113,7 @@ def test_blank_studio_dir_reports_unavailable_when_the_bundled_copy_is_missing(
     assert finetune.studio_dir(settings) is None
     ok, reason = finetune.studio_available(settings)
     assert ok is False
-    assert "bundled copy" in reason
+    assert "LOCITIZE_FINETUNE_STUDIO_DIR" in reason
 
 
 # --------------------------------------------------------------------------- #
@@ -204,11 +203,18 @@ def test_finetune_scan_missing_root_is_an_honest_empty_state(tmp_path):
     assert finetune.outputs_root(unset) == tmp_path / "finetune" / "outputs"
     result = finetune.scan_outputs(unset, use_cache=False)
     assert result.items == ()
-    assert "Could not read" in result.reason
+    # A folder that was never created is simply "nothing trained yet".
+    assert result.reason == ""
 
     missing = finetune.scan_outputs(_settings(tmp_path), use_cache=False)
     assert missing.items == ()
-    assert "Could not read" in missing.reason
+    assert missing.reason == ""
+
+    # A path that exists but is a FILE is still a real read error.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    clash = finetune._scan_uncached(unset, blocker)
+    assert "Could not read" in clash.reason
 
 
 def test_finetune_scan_caches_within_the_ttl(tmp_path, outputs_tree):
@@ -310,152 +316,57 @@ def test_finetune_dedup_skips_a_manual_row_whose_file_is_missing(tmp_path, outpu
 
 
 # --------------------------------------------------------------------------- #
-# The managed studio service spec
+# Is fine-tuning available: the trainer and its own environment
 # --------------------------------------------------------------------------- #
 
 
 def _installed_studio(tmp_path: Path) -> Settings:
-    """A fixture studio with an app script and its own interpreter."""
+    """A fixture studio folder with the trainer script and its own interpreter."""
     studio = tmp_path / "studio"
-    (studio / "app").mkdir(parents=True, exist_ok=True)
-    (studio / "app" / "app.py").write_text("# streamlit app\n", encoding="utf-8")
+    (studio / "trainer").mkdir(parents=True, exist_ok=True)
+    (studio / "trainer" / "train.py").write_text("# trainer\n", encoding="utf-8")
     interpreter = studio / ".venv" / "Scripts" / "python.exe"
     interpreter.parent.mkdir(parents=True, exist_ok=True)
     interpreter.write_bytes(b"MZ")
     return _settings(tmp_path)
 
 
-def test_finetune_studio_spec_is_loopback_only_and_carries_no_env(tmp_path):
-    """The spec binds 127.0.0.1, disables telemetry, and injects no SECRET.
-
-    M17.5: the child env now carries exactly one entry - the data-root PATH -
-    so the studio's deploy step targets the running install's real models.yaml.
-    A path is not a credential; the assertion is that nothing secret-shaped
-    (keys, tokens, passwords) is injected, not that the env is literally empty."""
+def test_finetune_available_with_the_trainer_and_its_own_interpreter(tmp_path):
+    """Ready means the trainer exists and runs on the studio venv, never on LOCITIZE's."""
     settings = _installed_studio(tmp_path)
-    spec = finetune.build_studio_spec(settings, log_path="logs/finetune_studio.log")
-    assert spec.name == "finetune-studio"
-    assert "--server.address" in spec.command
-    assert spec.command[spec.command.index("--server.address") + 1] == "127.0.0.1"
-    assert "0.0.0.0" not in spec.command
-    assert spec.command[spec.command.index("--server.port") + 1] == "8501"
-    assert spec.command[spec.command.index("--server.headless") + 1] == "true"
-    assert spec.command[spec.command.index("--browser.gatherUsageStats") + 1] == "false"
-    assert set(spec.env) == {"LOCITIZE_DATA_DIR"}
-    assert spec.env["LOCITIZE_DATA_DIR"] == str(settings.data_dir)
-    assert not any(
-        k for k in spec.env
-        if any(t in k.upper() for t in ("KEY", "TOKEN", "SECRET", "PASS"))
-    )
-    # TCP readiness on purpose: Streamlit's HTTP health path is version-fragile.
-    assert spec.health_path is None
-    assert spec.append_log is True
+    assert finetune.studio_available(settings) == (True, "")
+    assert finetune.trainer_dir(settings) == tmp_path / "studio" / "trainer"
+    interpreter = finetune.studio_interpreter(settings)
+    assert str(interpreter).endswith(str(Path(".venv") / "Scripts" / "python.exe"))
 
 
-def test_finetune_studio_uses_the_studios_own_interpreter(tmp_path):
-    """The child runs on the studio's venv, never on the LOCITIZE interpreter."""
-    settings = _installed_studio(tmp_path)
-    spec = finetune.build_studio_spec(settings)
-    assert spec.command[0].endswith(str(Path(".venv") / "Scripts" / "python.exe"))
-    assert spec.command[1:4] == ["-m", "streamlit", "run"]
-
-
-def test_finetune_studio_unavailable_states_name_the_missing_piece(tmp_path, monkeypatch):
+def test_finetune_unavailable_states_name_the_missing_piece(tmp_path, monkeypatch):
     """Every unavailable case returns a concrete remedy, not a bare 'unavailable'."""
     disabled = Settings(finetune=FineTuneConfig(enabled=False), base_dir=tmp_path)
     ok, reason = finetune.studio_available(disabled)
     assert not ok and "finetune.enabled" in reason
 
     # A blank studio_dir normally resolves to the bundled copy shipped in the
-    # repo; simulate a stripped-down checkout where that copy is absent so
-    # this case still exercises the "not found" remedy.
+    # repo; simulate a stripped-down checkout where that copy is absent.
     monkeypatch.setattr(finetune, "BUNDLED_STUDIO_DIR", tmp_path / "no-bundled-copy")
     unset = Settings(finetune=FineTuneConfig(enabled=True), base_dir=tmp_path)
     ok, reason = finetune.studio_available(unset)
     assert not ok and "LOCITIZE_FINETUNE_STUDIO_DIR" in reason
 
-    missing_app = _settings(tmp_path)
+    no_trainer = _settings(tmp_path)
     (tmp_path / "studio").mkdir(parents=True, exist_ok=True)
-    ok, reason = finetune.studio_available(missing_app)
-    assert not ok and "app.py" in reason
-
-    # An unusable studio must raise a ValueError carrying that remedy, never
-    # produce a half-built spec.
-    with pytest.raises(ValueError):
-        finetune.build_studio_spec(missing_app)
+    ok, reason = finetune.studio_available(no_trainer)
+    assert not ok and "trainer was not found" in reason
 
 
-def test_finetune_studio_url_is_loopback(tmp_path):
-    assert finetune.studio_url(_settings(tmp_path)) == "http://127.0.0.1:8501/"
-
-
-# --------------------------------------------------------------------------- #
-# Port reassignment (defect D-M13-1 / decision DEC-M13-2)
-# --------------------------------------------------------------------------- #
-
-
-class _FakeAllocator:
-    """Stand-in for services.PortAllocator that touches no real sockets.
-
-    `occupied` names the ports it refuses; anything else is handed back as-is
-    except the preferred port, for which it returns `fallback`.
-    """
-
-    def __init__(self, occupied: set[int], fallback: int) -> None:
-        self.occupied = occupied
-        self.fallback = fallback
-        self.calls: list[int] = []
-
-    def ensure_free(self, port: int) -> int:
-        self.calls.append(port)
-        return self.fallback if port in self.occupied else port
-
-
-def test_finetune_port_resolved_value_reaches_both_argv_and_spec(tmp_path):
-    """D-M13-1: the reassigned port must land in --server.port AND ServiceSpec.port.
-
-    This is the exact failure QA reproduced: the allocator resolved 8501 -> 8080
-    while the child was still told to bind 8501. Asserting both in one test means
-    the two can never drift apart unnoticed again.
-    """
+def test_finetune_without_its_environment_is_not_installed(tmp_path):
+    """No fine-tune venv means "not installed" - never LOCITIZE's own interpreter,
+    which has no torch and could only fail later and less clearly."""
     settings = _installed_studio(tmp_path)
-    allocator = _FakeAllocator(occupied={8501}, fallback=8080)
-    spec = finetune.build_studio_spec(settings, None, allocator)
-    argv_port = spec.command[spec.command.index("--server.port") + 1]
-    assert allocator.calls == [8501]
-    assert argv_port == "8080"
-    assert spec.port == 8080
-    # And neither carries the originally configured (occupied) port anywhere.
-    assert "8501" not in spec.command
-
-
-def test_finetune_port_default_path_is_unchanged_without_an_allocator(tmp_path):
-    """Regression guard: no allocator means exactly the pre-M13 spec."""
-    settings = _installed_studio(tmp_path)
-    spec = finetune.build_studio_spec(settings)
-    assert spec.command[spec.command.index("--server.port") + 1] == "8501"
-    assert spec.port == 8501
-
-
-def test_finetune_port_allocator_failure_propagates(tmp_path):
-    """A spec that cannot get a port must raise, never ship a misconfigured one."""
-
-    class _Exhausted:
-        def ensure_free(self, port: int) -> int:
-            raise PortUnavailableError("no free port in reserved range 8000-8099")
-
-    settings = _installed_studio(tmp_path)
-    with pytest.raises(PortUnavailableError):
-        finetune.build_studio_spec(settings, None, _Exhausted())
-
-
-def test_finetune_port_studio_url_reflects_the_resolved_port(tmp_path):
-    """The URL follows the port the studio really bound, not the configured one."""
-    settings = _settings(tmp_path)
-    assert finetune.studio_url(settings, 8080) == "http://127.0.0.1:8080/"
-    assert finetune.studio_url(settings) == "http://127.0.0.1:8501/"
-    # The host stays a hardcoded literal no matter what the caller passes.
-    assert finetune.studio_url(settings, 8080).startswith("http://127.0.0.1:")
+    (tmp_path / "studio" / ".venv" / "Scripts" / "python.exe").unlink()
+    assert finetune.studio_interpreter(settings) is None
+    ok, reason = finetune.studio_available(settings)
+    assert not ok and "Settings > Features" in reason
 
 
 def test_finetune_orphan_warning_is_the_verbatim_shipped_text():
@@ -466,7 +377,7 @@ def test_finetune_orphan_warning_is_the_verbatim_shipped_text():
     ).read_text(encoding="utf-8").strip()
     assert text == shipped
     assert "may still be running" in text
-    assert "container" in text.lower()
+    assert "gpu" in text.lower()
 
 
 def test_finetune_active_run_follows_the_train_log_mtime(tmp_path):

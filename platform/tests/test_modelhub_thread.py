@@ -502,19 +502,41 @@ def test_modelhub_thread_cancel_message_matches_real_behaviour():
     assert config.ModelsHubConfig().resume_enabled is False
 
 
-def test_modelhub_thread_is_the_only_new_thread_name():
-    """The threading contract gained exactly one row, named as designed."""
+def test_modelhub_thread_is_the_only_new_thread_name(monkeypatch):
+    """Dispatch creates exactly its named worker, regardless of other threads."""
+    from types import SimpleNamespace
+
     downloader = BlockingDownloader()
     controller = make_controller(downloader)
-    before = {t.name for t in threading.enumerate()}
-    controller._dispatch(
-        gui_controller.Command("hub_download", {"repo_id": "o/r", "filename": "m.gguf"})
-    )
-    assert downloader.entered.wait(timeout=2.0)
-    new = {t.name for t in threading.enumerate()} - before
-    assert new == {"locitize-model-download"}
-    downloader.release.set()
-    controller._hub_thread.join(timeout=3.0)
+    created = []
+
+    def tracked_thread(*args, **kwargs):
+        thread = threading.Thread(*args, **kwargs)
+        created.append(thread)
+        return thread
+
+    # Scope the spy to the controller, leaving subprocess reader threads and
+    # other background work on the real threading module.
+    monkeypatch.setattr(gui_controller, "threading", SimpleNamespace(
+        Thread=tracked_thread, Event=threading.Event, Lock=threading.Lock))
+    unrelated = threading.Thread(target=downloader.release.wait,
+                                 name="suite-background-reader", daemon=True)
+    try:
+        controller._dispatch(
+            gui_controller.Command("hub_download", {"repo_id": "o/r", "filename": "m.gguf"})
+        )
+        assert downloader.entered.wait(timeout=2.0)
+        unrelated.start()
+        assert [thread.name for thread in created] == ["locitize-model-download"]
+        assert created[0] is controller._hub_thread
+    finally:
+        downloader.release.set()
+        if controller._hub_thread is not None:
+            controller._hub_thread.join(timeout=3.0)
+        if unrelated.ident is not None:
+            unrelated.join(timeout=3.0)
+    assert not controller._hub_thread.is_alive()
+    assert not unrelated.is_alive()
 
 
 def test_modelhub_thread_shutdown_errors_reach_the_application_log(caplog):

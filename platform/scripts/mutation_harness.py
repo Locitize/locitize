@@ -600,8 +600,8 @@ MUTATIONS: list[Mutation] = [
         "selecting another file re-arms Download during a live download "
         "(DEFECT-QA-M14-2, the reachability half)",
         "desktop.py",
-        "        self._hub_download_btn.setEnabled(self._hub_busy_job() is None)",
-        "        self._hub_download_btn.setEnabled(True)",
+        "        self._gate(self._hub_download_btn, self._hub_busy_job() is None, HUB_DOWNLOAD_REASON)",
+        "        self._gate(self._hub_download_btn, True, HUB_DOWNLOAD_REASON)",
     ),
     Mutation(
         "Q3",
@@ -635,8 +635,8 @@ MUTATIONS: list[Mutation] = [
         "the Models page is returned unwrapped again, so nothing on it can be "
         "scrolled to (DEFECT-QA-M14-3, the reachability half)",
         "desktop.py",
-        "        return self._scrollable(page)",
-        "        return page",
+        "        get_layout.addWidget(self._scrollable(get_body), 1)",
+        "        get_layout.addWidget(get_body, 1)",
     ),
     Mutation(
         "Q4",
@@ -1267,8 +1267,8 @@ EXTRA_EDITS: dict[str, list[tuple[str, str]]] = {
     # shipped defect was both halves at once, so the mutation is both at once.
     "Q3": [
         (
-            "        return self._scrollable(page)",
-            "        return page",
+            "        get_layout.addWidget(self._scrollable(get_body), 1)",
+            "        get_layout.addWidget(get_body, 1)",
         ),
     ],
     "H4pre": [

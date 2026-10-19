@@ -1,8 +1,7 @@
 import argparse
 import json
 
-import torch
-from unsloth import FastLanguageModel
+from common import chat_reply, load_4bit
 
 
 def main():
@@ -13,28 +12,12 @@ def main():
     p.add_argument("--max-new-tokens", type=int, default=120)
     args = p.parse_args()
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.model_path,
-        max_seq_length=2048,
-        load_in_4bit=True,
-    )
-    FastLanguageModel.for_inference(model)
-
+    model, tokenizer = load_4bit(args.model_path)
     messages = []
     if args.system:
         messages.append({"role": "system", "content": args.system})
     messages.append({"role": "user", "content": args.prompt})
-
-    inputs = tokenizer.apply_chat_template(
-        messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
-    ).to("cuda" if torch.cuda.is_available() else "cpu")
-
-    outputs = model.generate(
-        input_ids=inputs, max_new_tokens=args.max_new_tokens, temperature=0.2, use_cache=True
-    )
-    prompt_length = inputs.shape[-1]
-    reply = tokenizer.decode(outputs[0, prompt_length:], skip_special_tokens=True)
-
+    reply = chat_reply(model, tokenizer, messages, args.max_new_tokens)
     print("[RESULT]" + json.dumps({"reply": reply}))
 
 

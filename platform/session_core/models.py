@@ -58,7 +58,7 @@ class Session:
     """One resumable local session, normalized across providers."""
 
     id: str
-    provider: str                      # claude | codex | grok | copilot
+    provider: str                      # codex | grok | copilot
     project: str                        # recorded cwd (string, may not exist)
     model: str = ""
     model_group: str = ""

@@ -239,3 +239,18 @@ def test_missing_architecture_key_refuses(tmp_path):
     with pytest.raises(GgufError) as excinfo:
         read_gguf_header(path)
     assert "general.architecture" in str(excinfo.value)
+
+
+def test_optional_layer_count_and_missing_layer_large_array(tmp_path):
+    model = tmp_path / "layers.gguf"
+    model.write_bytes(_build_gguf([_kv_string("general.architecture", "test"),
+        _kv_uint32("test.context_length", 131072), _kv_uint32("test.block_count", 48)]))
+    header = read_gguf_header(model, include_layer_count=True)
+    assert header.block_count == 48 and header.context_length == 131072
+    # Declared tokenizer array has no body: optional scanning must stop before
+    # it, rather than traverse/allocate the huge unneeded array.
+    array = _gguf_string("tokenizer.ggml.tokens") + struct.pack("<I", T_ARRAY) + struct.pack("<IQ", T_STRING, 50000000)
+    model.write_bytes(_build_gguf([_kv_string("general.architecture", "test"),
+        _kv_uint32("test.context_length", 131072), array]))
+    header = read_gguf_header(model, include_layer_count=True)
+    assert header.block_count is None and header.context_length == 131072

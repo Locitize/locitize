@@ -1,1 +1,1 @@
-A training container may still be running in Docker. Check `docker ps` or Docker Desktop.
+A training run may still be running and using your GPU. Closing LoCiTiZe does not stop it: it finishes on its own and appears under Your fine-tuned models next time. To stop it now, end the busy python.exe in Task Manager (Details tab).

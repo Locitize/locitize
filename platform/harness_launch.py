@@ -1,20 +1,7 @@
-"""Launch external coding harnesses (Claude Code, Codex, OpenCode) against a
-running LOCITIZE model (owner request 2026-08-21: "Launch in Claude Code /
-Codex / OpenCode" from the Chat picker, alongside the existing Open WebUI
-option).
+"""Launch Codex and OpenCode against local models with scoped process settings.
 
-Split from gui_controller.py the same way webui.py and config.py are split
-out: everything here is pure or narrowly side-effecting (file writes, one
-subprocess spawn, one shutil.which probe) and independently testable without
-a GUI, a running model, or the harness CLIs actually being installed.
-
-None of this touches a model's weights or LOCITIZE's own service lifecycle --
-it only points a THIRD-PARTY CLI at an OpenAI/Anthropic-compatible endpoint
-the running llama.cpp server already exposes natively (chat completions and
-responses for Codex/OpenCode; the Anthropic Messages API for Claude Code --
-no translation proxy needed, see the Claude Code section below). Every
-base_url used here is loopback-only, matching the rest of the platform's
-Permission Matrix section 7 discipline.
+Pure configuration helpers and narrow terminal/installer operations are kept
+outside the GUI so their behavior can be tested without a model or terminal.
 """
 
 from __future__ import annotations
@@ -34,14 +21,12 @@ except ImportError:  # non-Windows (test collection on CI, etc.)
     winreg = None  # type: ignore[assignment]
 
 # The four surfaces the Chat picker offers. "openwebui"/"llamacpp" are the
-# pre-existing built-in choices (webui.py); these three are the new harnesses.
-HARNESS_CLAUDE = "claude"
+# pre-existing built-in choices (webui.py); these two are external harnesses.
 HARNESS_CODEX = "codex"
 HARNESS_OPENCODE = "opencode"
-HARNESSES = (HARNESS_CLAUDE, HARNESS_CODEX, HARNESS_OPENCODE)
+HARNESSES = (HARNESS_CODEX, HARNESS_OPENCODE)
 
 _EXECUTABLE_NAMES = {
-    HARNESS_CLAUDE: "claude",
     HARNESS_CODEX: "codex",
     HARNESS_OPENCODE: "opencode",
 }
@@ -60,7 +45,7 @@ def detect_executable(harness: str) -> str | None:
 
 
 def detect_harnesses() -> dict[str, str | None]:
-    """Resolve all three harness executables in one pass, for the picker UI."""
+    """Resolve both harness executables in one pass, for the picker UI."""
     return {name: detect_executable(name) for name in HARNESSES}
 
 
@@ -371,100 +356,8 @@ def opencode_launch_argv(project_dir: str, model_id: str) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Claude Code: env-pointed straight at the running llama-server's native
-# Anthropic Messages API (llama.cpp PR #17570, merged 2025-11-28: llama-server
-# now serves POST /v1/messages itself). Confirmed empirically against a local
-# llama.cpp install new enough to include the PR: both the plain and
-# streaming forms returned correctly shaped Anthropic responses with no auth
-# header required. No translation proxy needed -- the earlier plan to write
-# one (claude_bridge.py) turned out to be solving an already-solved problem;
-# it added a whole extra HTTP-server subsystem, a second port, and a
-# tool-use-translation gap for zero benefit once llama-server's native
-# support was found and verified.
-#
-# This DOES depend on the owner's llama.cpp being new enough. A build older
-# than the PR's merge would 404 on /v1/messages; LOCITIZE has no reliable way
-# to introspect a third-party binary's exact build date, so this is not
-# probed before offering "Claude Code" in the picker. If claude CLI reports a
-# connection/route error, the fix is upgrading llama.cpp, not LOCITIZE code.
-# --------------------------------------------------------------------------- #
-
-
-# Owner-observed defect 2026-08-21: Claude Code's full tool surface (its own
-# built-ins plus every configured MCP server) produces a JSON-schema/tool
-# definition too large or too irregular for llama-server's grammar compiler
-# -- confirmed against the owner's real config: "API Error: 400 ... Failed to
-# initialize samplers: failed to parse grammar" and, separately, "Pattern
-# must start with '^' and end with '$'" (an MCP tool's own unanchored regex,
-# which upstream llama.cpp confirms it cannot relax -- github.com/ggml-org/
-# llama.cpp maintainers state there is no server-side flag to disable this).
-# Neither is fixable in LOCITIZE's own code. What IS fixable: a local coding
-# session never needed the owner's MCP servers (trading, BI, browser
-# control, ...) in the first place, and Claude Code exposes exactly the
-# scoping needed to drop them -- confirmed live: --strict-mcp-config (loads
-# zero MCP servers) plus a --tools allowlist limited to the handful of
-# built-ins a coding session actually uses got a real "PONG" back from the
-# owner's own local model, exit 0. Kept as a named constant, not inlined,
-# so if a future coding workflow genuinely needs one more built-in tool
-# (e.g. TodoWrite), it is a one-line change here rather than a hunt through
-# argv-building code.
-CLAUDE_LOCAL_SESSION_TOOLS = "Bash,Edit,Read,Write,Glob,Grep"
-
-
-def claude_launch_argv(model_id: str) -> list[str]:
-    """claude CLI invocation: ANTHROPIC_BASE_URL does the routing, --model
-    carries the running LOCITIZE model's real id, --strict-mcp-config and
-    --tools keep the request's tool schema inside llama-server's grammar
-    engine limits (see CLAUDE_LOCAL_SESSION_TOOLS above for why).
-
-    Owner-observed defect 2026-08-21: with no --model, claude's status line
-    displays its settings.json default ("sonnet") regardless of which
-    backend actually serves the session -- correct routing looked
-    indistinguishable from a subscription fallback. Passing --model here
-    fixes both the cosmetic label and sends the honest model name in the
-    request body (llama-server does not validate it, but "sonnet" was
-    always wrong to send).
-    """
-    return [
-        "claude",
-        "--model",
-        model_id,
-        "--strict-mcp-config",
-        "--tools",
-        CLAUDE_LOCAL_SESSION_TOOLS,
-    ]
-
-
-def claude_launch_env(model_base_url: str, context_size: int | None = None) -> dict[str, str]:
-    """ANTHROPIC_BASE_URL is the documented override the claude CLI (and the
-    anthropic-sdk it embeds) reads before falling back to api.anthropic.com.
-    Points straight at the running model's llama-server (e.g.
-    "http://127.0.0.1:8080"), the SAME server Codex/OpenCode already target
-    under /v1/chat/completions -- llama-server now answers both APIs itself.
-    ANTHROPIC_API_KEY must be non-empty for the CLI to skip its login flow;
-    llama-server does not check its value.
-
-    Owner-observed defect 2026-08-21: an unrecognized --model makes claude
-    assume a 200k-token window for its own auto-compact bookkeeping,
-    regardless of the running model's REAL context_size (models.yaml entries
-    range from 8192 to 32768 in this registry) -- claude's own warning names
-    the exact fix, CLAUDE_CODE_MAX_CONTEXT_TOKENS, so this sets it from the
-    model's actual registered context_size whenever the caller has it,
-    letting claude compact conversation history before it ever sends more
-    than the local model can actually accept.
-    """
-    env = {
-        "ANTHROPIC_BASE_URL": model_base_url,
-        "ANTHROPIC_API_KEY": "locitize-local",
-    }
-    if context_size:
-        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context_size)
-    return env
-
-
-# --------------------------------------------------------------------------- #
 # Spawning a visible, interactive terminal (the opposite of the CREATE_NO_WINDOW
-# console-flash fixes elsewhere in this codebase: these three ARE meant to be
+# console-flash fixes elsewhere in this codebase: these two ARE meant to be
 # seen and typed into).
 # --------------------------------------------------------------------------- #
 
@@ -645,7 +538,7 @@ def _read_registry_path(hive: int, subkey: str) -> str:
 def refreshed_search_path() -> str:
     """PATH merged with the live HKCU/HKLM registry Path values.
 
-    A native installer (Claude Code, Codex) or `npm install -g` updates the
+    A native installer (Codex) or `npm install -g` updates the
     registry immediately, but this already-running process's own os.environ
     PATH snapshot was taken at process start -- shutil.which(name) alone
     would report "not found" for a harness that was just installed a moment
@@ -685,7 +578,7 @@ def detect_executable_fresh(harness: str) -> str | None:
 def _run_powershell(script: str, timeout: int = _INSTALL_TIMEOUT_S) -> tuple[bool, str]:
     """Run one PowerShell command with no visible window.
 
-    The Claude Code and Codex native installers are silent, non-interactive
+    The Codex native installers are silent, non-interactive
     single-binary drops (irm | iex) -- CREATE_NO_WINDOW here is the same
     "the owner didn't ask to watch a console" reasoning as every other
     background subprocess in this platform (see health.py, services.py).
@@ -706,23 +599,6 @@ def _run_powershell(script: str, timeout: int = _INSTALL_TIMEOUT_S) -> tuple[boo
     return True, "ok"
 
 
-def install_claude_code() -> tuple[bool, str]:
-    """Official native installer, no Node.js required.
-
-    https://claude.ai/install.ps1 (verified current 2026 install path). Drops
-    a single binary and updates the user's PATH itself -- LOCITIZE writes
-    nothing extra; Claude Code needs no config file, only the
-    ANTHROPIC_BASE_URL set at launch time (see claude_launch_env above).
-    """
-    ok, detail = _run_powershell("irm https://claude.ai/install.ps1 | iex")
-    if not ok:
-        return False, f"Claude Code install failed: {detail}"
-    if detect_executable_fresh(HARNESS_CLAUDE) is None:
-        return False, (
-            "the installer ran but claude was not found afterward - "
-            "restart locitize and it should be picked up"
-        )
-    return True, "Claude Code installed"
 
 
 def install_codex() -> tuple[bool, str]:
@@ -835,7 +711,6 @@ def install_opencode() -> tuple[bool, str]:
 
 
 INSTALL_FUNCTIONS = {
-    HARNESS_CLAUDE: install_claude_code,
     HARNESS_CODEX: install_codex,
     HARNESS_OPENCODE: install_opencode,
 }

@@ -267,6 +267,10 @@ def detect_state(machine: Machine | None = None) -> tuple[dict[str, bool], Machi
     info.venv_python = venv_exe if has_venv else None
 
     paths = _settings_paths(info.data_root)
+    ft_exe = REPO_DIR / "finetune-studio" / ".venv" / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    ft_cuda = ft_exe.is_file() and torch_sees_cuda(ft_exe)
     state: dict[str, bool] = {
         "platform_venv": has_venv,
         "base_pip": has_venv and modules_present(venv_exe, ("yaml", "psutil")),
@@ -282,13 +286,17 @@ def detect_state(machine: Machine | None = None) -> tuple[dict[str, bool], Machi
         "first_model": _has_registered_model(info.data_root),
         "node_runtime": bool(_which("node")),
         "harness_clis": any(
-            _which(name) for name in ("claude", "codex", "opencode")
+            _which(name) for name in ("codex", "opencode")
         ),
         "caddy": bool(_which("caddy")),
         "webui_venv": (REPO_DIR / ".webui-venv").is_dir(),
         "webui_pip": _webui_installed(),
         "finetune_venv": (REPO_DIR / "finetune-studio" / ".venv").is_dir(),
-        "finetune_pip": False,
+        "finetune_pip": ft_exe.is_file() and modules_present(ft_exe, ("pypdf",)),
+        "finetune_torch_pip": ft_cuda,
+        "finetune_train_pip": ft_cuda and modules_present(
+            ft_exe, ("transformers", "peft", "trl", "accelerate", "bitsandbytes")
+        ),
     }
 
     if not info.has_nvidia:
@@ -435,8 +443,32 @@ PIP_SETS: dict[str, tuple[str, ...]] = {
         "torch==2.11.0+cu128", "kokoro>=0.9.4",
     ),
     "webui_pip": (f"open-webui=={OPENWEBUI_VERSION}",),
-    "finetune_pip": ("streamlit>=1.30", "pypdf>=4.0"),
+    "finetune_pip": ("pypdf>=4.0",),
+    # Fine-tuning trains natively (no Docker) in the studio's own venv. torch
+    # comes first and from the CUDA index, exactly like kokoro_pip_cuda: cu128 is
+    # the build with Blackwell (sm_120, RTX 50-series) kernels and 2.11.0+cu128 is
+    # the one already proven on the reference card. Plain pip, not uv, because
+    # the set passes its own index flags.
+    "finetune_torch_pip": (
+        "--index-url", "https://download.pytorch.org/whl/cu128",
+        "--extra-index-url", "https://pypi.org/simple",
+        "torch==2.11.0+cu128",
+    ),
+    # The QLoRA stack, pinned to the set that was run end to end on the reference
+    # machine (see finetune-studio/README.md). Installed AFTER torch so the
+    # resolver keeps the CUDA wheel. Plain PyPI, so uv installs it.
+    "finetune_train_pip": (
+        "transformers==5.18.0", "peft==0.21.2", "trl==1.14.1",
+        "accelerate==1.15.0", "bitsandbytes==0.50.2", "datasets==5.0.1",
+        "sentencepiece==0.2.2", "protobuf==7.36.2", "numpy==2.4.6",
+    ),
 }
+
+# The llama.cpp release setup installs. Pinned (not "latest") because fine-tune
+# GGUF export fetches convert_hf_to_gguf.py from this same tag: converter and
+# llama-quantize must be one release. finetune-studio/trainer/gguf_export.py
+# carries the same value as its fallback and a test keeps them equal.
+LLAMA_CPP_TAG = "b11406"
 
 
 def create_venv(target: Path | str, base_python: str | None = None) -> StepResult:
@@ -737,6 +769,7 @@ def install_llama_cpp(
     confirm_unverified: bool = False,
     say: Callable[[str], None] | None = None,
     tag: str = "",
+    local_only: bool = False,
 ) -> tuple[StepResult, str]:
     """Fetch, verify, and unpack llama.cpp. Returns (result, llama-server path).
 
@@ -744,8 +777,17 @@ def install_llama_cpp(
     thing, so re-running setup after a partial install costs one directory scan.
     """
     note = say or (lambda _text: None)
+    tag = tag or LLAMA_CPP_TAG
     target = Path(bin_dir) / "llama.cpp"
-    existing = find_llama_server([target])
+    def locate_server() -> str:
+        # Standalone helpers must not silently adopt a full app's or another
+        # tool's binary when proving their independent runtime acquisition.
+        if local_only:
+            executable = "llama-server.exe" if os.name == "nt" else "llama-server"
+            return next((str(path) for path in target.rglob(executable) if path.is_file()), "")
+        return find_llama_server([target])
+
+    existing = locate_server()
     if existing:
         return StepResult("llama_cpp", True, f"already present: {existing}", skipped=True), existing
 
@@ -814,7 +856,7 @@ def install_llama_cpp(
         except OSError:
             pass
 
-    server = find_llama_server([target])
+    server = locate_server()
     if not server:
         return (
             StepResult("llama_cpp", False, "unpacked archive contained no llama-server"),
@@ -1560,42 +1602,6 @@ def pair_mmproj(model_path: Path | str, allow_generic: bool = True) -> str:
     return ""
 
 
-def install_claude_local(say: Callable[[str], None] | None = None) -> StepResult:
-    """Put the claude-local shim beside the claude CLI (M21).
-
-    claude-local runs Claude Code against the model LOCITIZE is serving: it
-    finds the running llama-server on the loopback port range, reads the
-    loaded model's id and REAL context size from the server itself, and
-    launches claude with the Anthropic overrides scoped to that single
-    process - plain `claude` elsewhere still talks to Anthropic. The shim
-    lands in the directory that already holds claude.exe (which is on PATH
-    by construction), so no PATH edit, no settings.json change, nothing
-    global. Honest no-op when the claude CLI is not installed.
-    """
-    note = say or (lambda _t: None)
-    claude = shutil.which("claude")
-    if not claude:
-        return StepResult(
-            "claude_local", True,
-            "claude CLI not installed - claude-local shim skipped",
-            skipped=True,
-        )
-    target_dir = Path(claude).resolve().parent
-    source_dir = Path(__file__).resolve().parent / "scripts"
-    try:
-        for name in ("claude-local.cmd", "claude-local.ps1"):
-            source = source_dir / name
-            if not source.is_file():
-                return StepResult(
-                    "claude_local", False, f"shim source missing: {source}"
-                )
-            shutil.copyfile(source, target_dir / name)
-    except OSError as exc:
-        return StepResult(
-            "claude_local", False, f"could not install claude-local: {exc}"
-        )
-    note(f"   claude-local installed to {target_dir}")
-    return StepResult("claude_local", True, f"claude-local -> {target_dir}")
 
 
 def find_local_models(

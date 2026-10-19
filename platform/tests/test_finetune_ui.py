@@ -1,8 +1,8 @@
 """Controller, launcher, and Qt-view tests for the M13 fine-tune surface.
 
-Headless throughout: no Streamlit, no container runtime, no GPU, and the Qt tests
+Headless throughout: no trainer, no container runtime, no GPU, and the Qt tests
 use the offscreen platform (and skip cleanly where PySide6 is absent). They prove
-the parts a fixture-only scanner test cannot: the five new intents enqueue the
+the parts a fixture-only scanner test cannot: the fine-tune intents enqueue the
 right commands without blocking, the discovered-model guards refuse the writes
 they must refuse, the launcher's --terminal precedence holds, and the Fine-tune
 page renders each canned Result into the right widgets.
@@ -21,7 +21,6 @@ import gui_controller
 import pytest
 from config import FineTuneConfig, Model, Settings
 from gui_controller import GuiController
-from services import PortUnavailableError, ServiceStatus
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -51,44 +50,22 @@ class _FakeRegistry:
         return set()
 
 
-class _FakeStudio:
-    """Stands in for the studio's SingleServiceController.
-
-    `resolved_port` mirrors the real controller's property (services.py 662-664):
-    the port the child actually bound, or None before anything started. The
-    controller derives the studio URL from it, so tests must be able to move it.
-    """
-
-    def __init__(self, status=ServiceStatus.RUNNING, resolved_port=8501):
-        self.calls = []
-        self._status = status
-        self.resolved_port = resolved_port
-
-    def start(self):
-        self.calls.append("start")
-        return self._status
-
-    def stop(self):
-        self.calls.append("stop")
-        return ServiceStatus.STOPPED
-
-
 def _settings(tmp_path: Path, **overrides) -> Settings:
     cfg = FineTuneConfig(enabled=True, studio_dir=str(tmp_path / "studio"), **overrides)
     return Settings(finetune=cfg, base_dir=tmp_path)
 
 
 def _install_studio(tmp_path: Path) -> None:
-    """Make the fixture studio 'available': an app script plus its own interpreter."""
-    app = tmp_path / "studio" / "app" / "app.py"
-    app.parent.mkdir(parents=True, exist_ok=True)
-    app.write_text("# streamlit app\n", encoding="utf-8")
+    """Make fine-tuning 'available': the trainer script plus its own interpreter."""
+    train = tmp_path / "studio" / "trainer" / "train.py"
+    train.parent.mkdir(parents=True, exist_ok=True)
+    train.write_text("# trainer\n", encoding="utf-8")
     interpreter = tmp_path / "studio" / ".venv" / "Scripts" / "python.exe"
     interpreter.parent.mkdir(parents=True, exist_ok=True)
     interpreter.write_bytes(b"MZ")
 
 
-def _controller(tmp_path, studio=None, models=()) -> GuiController:
+def _controller(tmp_path, models=()) -> GuiController:
     return GuiController(
         _settings(tmp_path),
         _FakeRegistry(models),
@@ -96,7 +73,6 @@ def _controller(tmp_path, studio=None, models=()) -> GuiController:
         object(),
         _FakeManager(),
         fetch=lambda port, path: None,
-        finetune_controller_factory=(lambda: studio) if studio else None,
     )
 
 
@@ -108,17 +84,16 @@ def _clear_cache():
 
 
 # --------------------------------------------------------------------------- #
-# The five new intents (they only enqueue; nothing blocks the UI thread)
+# The fine-tune intents (they only enqueue; nothing blocks the UI thread)
 # --------------------------------------------------------------------------- #
 
 
 def test_finetune_intents_only_enqueue_commands(tmp_path):
     gc = _controller(tmp_path)
-    gc.request_finetune_start()
-    gc.request_finetune_stop()
-    gc.request_finetune_open()
+    gc.request_finetune_state()
     gc.request_scan_finetunes()
     gc.request_register_discovered("ft:example")
+    gc.request_finetune_delete("ft:example")
     kinds = []
     while True:
         try:
@@ -126,250 +101,7 @@ def test_finetune_intents_only_enqueue_commands(tmp_path):
         except queue.Empty:
             break
         kinds.append(command.kind)
-    assert kinds == [
-        "finetune_start",
-        "finetune_stop",
-        "finetune_open",
-        "finetune_scan",
-        "finetune_register",
-    ]
-
-
-def test_finetune_start_publishes_starting_then_running(tmp_path):
-    """A real start pushes Starting first, then Running with the loopback URL."""
-    studio = _FakeStudio()
-    gc = _controller(tmp_path, studio=studio)
-    _install_studio(tmp_path)
-
-    gc._do_finetune_start()
-    states = []
-    while True:
-        try:
-            states.append(gc.result_q.get_nowait())
-        except queue.Empty:
-            break
-    assert [r.payload["status"] for r in states] == ["starting", "running"]
-    assert states[-1].payload["url"] == "http://127.0.0.1:8501/"
-    assert studio.calls == ["start"]
-
-
-def test_finetune_start_failure_is_an_honest_error_state(tmp_path):
-    """A studio that never goes ready lands in Error with the log path, no traceback."""
-    studio = _FakeStudio(status=ServiceStatus.STOPPED_ERROR)
-    gc = _controller(tmp_path, studio=studio)
-    _install_studio(tmp_path)
-
-    gc._do_finetune_start()
-    results = []
-    while True:
-        try:
-            results.append(gc.result_q.get_nowait())
-        except queue.Empty:
-            break
-    last = results[-1]
-    assert last.ok is False
-    assert "finetune_studio.log" in (last.error or "")
-    assert "Traceback" not in (last.error or "")
-
-
-# --------------------------------------------------------------------------- #
-# Port reassignment in the UI layer (defect D-M13-1 / decision DEC-M13-2)
-# --------------------------------------------------------------------------- #
-
-
-def test_finetune_port_state_url_follows_the_resolved_port(tmp_path):
-    """Running on a reassigned port must be advertised as that port, not 8501."""
-    studio = _FakeStudio(resolved_port=8080)
-    gc = _controller(tmp_path, studio=studio)
-    _install_studio(tmp_path)
-
-    gc._do_finetune_start()
-    payload = gc.finetune_state()
-    assert payload["status"] == "running"
-    assert payload["url"] == "http://127.0.0.1:8080/"
-    assert payload["port"] == 8080
-
-
-def test_finetune_port_state_url_is_none_when_not_running(tmp_path):
-    """A stopped studio advertises no URL at all, only the port it would try."""
-    studio = _FakeStudio(resolved_port=8080)
-    gc = _controller(tmp_path, studio=studio)
-    _install_studio(tmp_path)
-
-    gc._do_finetune_start()
-    gc._do_finetune_stop()
-    payload = gc.finetune_state()
-    assert payload["status"] == "stopped"
-    assert payload["url"] is None
-    assert payload["port"] == 8501
-
-
-def test_finetune_port_open_refuses_when_no_port_was_resolved(tmp_path):
-    """Fail-closed: no resolved port means no browser navigation, ever.
-
-    This is the trust tail SEC-M13-2 named - the Open button must never be able
-    to reach a port some foreign process happens to hold.
-    """
-    studio = _FakeStudio(resolved_port=None)
-    gc = _controller(tmp_path, studio=studio)
-    _install_studio(tmp_path)
-    gc._do_finetune_start()
-    # Force the status past the running gate so ONLY the port guard can refuse.
-    gc._finetune_status = "running"
-    while True:
-        try:
-            gc.result_q.get_nowait()
-        except queue.Empty:
-            break
-
-    with mock.patch.object(gui_controller.webbrowser, "open") as opened:
-        gc._do_finetune_open()
-    assert opened.call_count == 0
-    last = gc.result_q.get_nowait()
-    while True:
-        try:
-            last = gc.result_q.get_nowait()
-        except queue.Empty:
-            break
-    assert last.ok is False
-    assert "not running yet" in (last.error or "")
-
-
-def test_finetune_port_open_uses_the_resolved_port(tmp_path):
-    """The happy path opens exactly the reassigned port the studio bound."""
-    studio = _FakeStudio(resolved_port=8080)
-    gc = _controller(tmp_path, studio=studio)
-    _install_studio(tmp_path)
-    gc._do_finetune_start()
-
-    with mock.patch.object(gui_controller.webbrowser, "open") as opened:
-        gc._do_finetune_open()
-    opened.assert_called_once_with("http://127.0.0.1:8080/")
-
-
-def test_finetune_port_exhaustion_is_an_honest_remedy_not_a_traceback(tmp_path):
-    """PortUnavailableError becomes an actionable message, never a raw exception."""
-
-    class _Refusing:
-        resolved_port = None
-
-        def start(self):
-            raise PortUnavailableError("no free port in reserved range 8000-8099")
-
-    gc = _controller(tmp_path, studio=_Refusing())
-    _install_studio(tmp_path)
-    gc._do_finetune_start()
-    results = []
-    while True:
-        try:
-            results.append(gc.result_q.get_nowait())
-        except queue.Empty:
-            break
-    last = results[-1]
-    assert last.ok is False
-    assert "No free loopback port" in (last.error or "")
-    assert "ports.range_end" in (last.error or "")
-    assert "Traceback" not in (last.error or "")
-
-
-# --------------------------------------------------------------------------- #
-# Log-path persistence (defect D-M13-2, UX Spec section 2 Panel A)
-# --------------------------------------------------------------------------- #
-
-
-def test_finetune_log_path_absent_until_a_start_is_attempted(tmp_path):
-    """Before any Start this session there is no log file to point at."""
-    gc = _controller(tmp_path, studio=_FakeStudio())
-    _install_studio(tmp_path)
-    assert gc.finetune_state()["log_path"] == ""
-
-
-def test_finetune_log_path_survives_stop(tmp_path):
-    """UX Spec Panel A: the line stays once started this session, not only while
-    Running. The log file outlives the process, so Stop must not hide it."""
-    gc = _controller(tmp_path, studio=_FakeStudio())
-    _install_studio(tmp_path)
-
-    gc._do_finetune_start()
-    running_path = gc.finetune_state()["log_path"]
-    assert running_path.endswith("finetune_studio.log")
-
-    gc._do_finetune_stop()
-    state = gc.finetune_state()
-    assert state["status"] == "stopped"
-    assert state["log_path"] == running_path
-
-
-def test_finetune_log_path_appears_after_a_failed_start(tmp_path):
-    """A start that spawned a child but never went ready still wrote the log."""
-    gc = _controller(tmp_path, studio=_FakeStudio(status=ServiceStatus.STOPPED_ERROR))
-    _install_studio(tmp_path)
-
-    gc._do_finetune_start()
-    assert gc.finetune_state()["status"] == "error"
-    assert gc.finetune_state()["log_path"].endswith("finetune_studio.log")
-
-
-def test_finetune_log_path_stays_hidden_when_no_child_was_spawned(tmp_path):
-    """Port exhaustion fails before launch, so there is no log to advertise."""
-
-    class _Refusing:
-        resolved_port = None
-
-        def start(self):
-            raise PortUnavailableError("no free port in reserved range 8000-8099")
-
-    gc = _controller(tmp_path, studio=_Refusing())
-    _install_studio(tmp_path)
-    gc._do_finetune_start()
-    assert gc.finetune_state()["log_path"] == ""
-
-
-def test_finetune_stop_warns_only_when_a_run_is_live(tmp_path):
-    """The limitation warning rides the stop that happens during a live run."""
-    studio = _FakeStudio()
-    gc = _controller(tmp_path, studio=studio)
-    _install_studio(tmp_path)
-    root = tmp_path / "finetune" / "outputs" / "live"
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "train.log").write_text("step 1\n", encoding="utf-8")
-    gc._finetune_started = True
-
-    gc._do_finetune_stop()
-    result = gc.result_q.get_nowait()
-    assert result.payload["warning"] == finetune.orphan_warning_text()
-
-    # No live run -> a plain Stopped state, never a blanket disclaimer.
-    gc._finetune_started = True
-    stale = (root / "train.log").stat().st_mtime - 10_000
-    os.utime(root / "train.log", (stale, stale))
-    gc._do_finetune_stop()
-    result = gc.result_q.get_nowait()
-    assert result.payload.get("warning", "") == ""
-    assert result.payload["status"] == "stopped"
-
-
-def test_finetune_stop_warns_on_a_log_written_this_instant(tmp_path):
-    """The stop-time warning must not be lost to filesystem/wall-clock skew.
-
-    Regression test for the flake that made this criterion nondeterministic: a
-    train.log whose mtime lands ahead of time.time() is the freshest possible
-    run, and must produce the warning rather than a bare clean-stop claim.
-    """
-    studio = _FakeStudio()
-    gc = _controller(tmp_path, studio=studio)
-    _install_studio(tmp_path)
-    root = tmp_path / "finetune" / "outputs" / "live"
-    root.mkdir(parents=True, exist_ok=True)
-    log = root / "train.log"
-    log.write_text("step 1\n", encoding="utf-8")
-    ahead = time.time() + 5.0
-    os.utime(log, (ahead, ahead))
-    gc._finetune_started = True
-
-    gc._do_finetune_stop()
-    result = gc.result_q.get_nowait()
-    assert result.payload["warning"] == finetune.orphan_warning_text()
+    assert kinds == ["finetune_state", "finetune_scan", "finetune_register", "finetune_delete"]
 
 
 def test_finetune_run_active_reads_a_cache_and_never_touches_the_disk(tmp_path):
@@ -412,7 +144,7 @@ def test_finetune_state_is_available_as_a_queued_command(tmp_path):
     gc._dispatch(command)
     result = gc.result_q.get_nowait()
     assert result.kind == "finetune_state"
-    assert result.payload["status"] == "stopped"
+    assert result.payload["status"] == "ready"
     assert result.payload["run_active"] is False
 
 
@@ -575,7 +307,33 @@ def qapp():
     from PySide6 import QtWidgets
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    yield app, desktop
+    # The Fine-tune page is hidden from the sidebar by default while it is
+    # rebuilt; these tests exercise it, so switch it on for the window.
+    previous = desktop.PAGE_NAMES
+    desktop.PAGE_NAMES = desktop.build_page_names(True)
+    try:
+        yield app, desktop
+    finally:
+        desktop.PAGE_NAMES = previous
+
+
+def test_finetune_tab_is_a_normal_page_by_default(qapp):
+    app, desktop = qapp
+    assert desktop.SHOW_FINETUNE_TAB is True
+    assert "Fine-tune" in desktop.build_page_names()
+    assert desktop.build_page_names()[-2:] == ("Fine-tune", "Settings")
+    assert desktop.build_page_names().index("Fine-tune") == desktop.build_page_names().index("Voice & Vision") + 1
+    assert "Fine-tune" not in desktop.build_page_names(False)
+    desktop.PAGE_NAMES = desktop.build_page_names(False)
+    window = desktop.MainWindow(_ViewController(), health="OK")
+    assert "Fine-tune" not in window.pages
+    # The page's widgets still exist so controller results never hit a missing
+    # attribute, but they are not reachable from the sidebar.
+    assert window._ft_flow is not None
+    assert window._sidebar.count() == len(desktop.PAGE_NAMES)
+    window.closeEvent(desktop.QtGui.QCloseEvent())
+    window.deleteLater()
+    app.processEvents()
 
 
 class _ViewController:
@@ -624,8 +382,7 @@ class _ViewController:
         # Counted so a test can prove the view never calls this synchronously:
         # on the real controller it walks the outputs tree (Architecture M13.7.4).
         self.state_calls += 1
-        return {"status": "stopped", "url": None, "port": 8501, "reason": "",
-                "log_path": "", "run_active": False}
+        return {"status": "ready", "reason": "", "run_active": False}
 
     def finetune_run_active(self):
         return self.run_active
@@ -672,32 +429,23 @@ def test_finetune_page_is_reachable_and_renders_each_state(qapp):
     assert "Fine-tune" in desktop.PAGE_NAMES
     assert "Fine-tune" in window.pages
 
-    window._apply_finetune_state({"status": "stopped", "reason": "", "url": None})
-    assert window._ft_chip.text() == "Stopped"
-    assert window._ft_start_btn.isEnabled()
-    assert not window._ft_stop_btn.isEnabled()
-    assert not window._ft_open_btn.isEnabled()
+    window._apply_finetune_state({"status": "ready", "reason": ""})
+    assert window._ft_install_panel.isHidden()
+    assert window._ft_flow.step == 1
 
-    window._apply_finetune_state({"status": "starting", "reason": "", "url": None})
-    assert window._ft_chip.text() == "Starting studio..."
-    # In flight: all three lifecycle controls are disabled together (no race).
-    assert not any(
-        button.isEnabled()
-        for button in (window._ft_start_btn, window._ft_stop_btn, window._ft_open_btn)
-    )
-
-    window._apply_finetune_state(
-        {"status": "running", "reason": "", "url": "http://127.0.0.1:8501/"}
-    )
-    assert window._ft_chip.text() == "Running - http://127.0.0.1:8501/"
-    assert window._ft_stop_btn.isEnabled() and window._ft_open_btn.isEnabled()
-
-    window._apply_finetune_state(
-        {"status": "disabled", "reason": "Fine-tune studio is not configured.",
-         "url": None}
-    )
-    assert "not configured" in window._ft_chip.text()
-    assert not window._ft_start_btn.isEnabled()
+    reason = "Fine-tuning is not installed yet. Add it under Settings > Features."
+    window._apply_finetune_state({"status": "disabled", "reason": reason})
+    # A clear install path, with the plain reason under it; Docker is never named.
+    assert not window._ft_install_panel.isHidden()
+    assert window._ft_install_btn.text() == "Install fine-tuning"
+    assert window._ft_install_reason.text() == reason
+    window._apply_finetune_state({"status": "ready", "reason": ""})
+    assert window._ft_install_panel.isHidden()
+    page_text = " ".join(
+        w.text() for w in window.pages["Fine-tune"].findChildren(desktop.QtWidgets.QLabel)
+    ).lower()
+    assert "docker" not in page_text
+    assert "nvidia" in page_text and "settings > features" in page_text
 
     window.closeEvent(desktop.QtGui.QCloseEvent())
     window.deleteLater()
@@ -770,9 +518,10 @@ def test_finetune_models_page_shows_source_and_gates_register(qapp):
         window._model_table.horizontalHeaderItem(i).text()
         for i in range(window._model_table.columnCount())
     ]
-    assert headers[:4] == ["Model", "Capabilities", "Source", "Size"]
-    assert window._model_table.item(0, 2).text() == "Registered"
-    assert window._model_table.item(1, 2).text() == "Discovered"
+    assert headers == ["Model", "Size", "Fits your GPU?", "Speed", "Status"]
+    # The source is no longer a column; a fine-tune found on disk says so on hover.
+    assert "Discovered" not in window._model_table.item(0, 0).toolTip()
+    assert "Discovered" in window._model_table.item(1, 0).toolTip()
 
     window._model_table.setCurrentCell(0, 0)
     assert not window._register_btn.isEnabled()
@@ -824,8 +573,8 @@ def test_finetune_discovered_throughput_cell_is_a_persisted_measurement(qapp):
             desktop.QtCore.Qt.ItemDataRole.UserRole
         ) == "ft:DemoGPT-v5"
     )
-    score_cell = window._model_table.item(discovered_row, 6)
-    assert score_cell.text() == "31.5 tok/s"
+    score_cell = window._model_table.item(discovered_row, 3)
+    assert score_cell.text() == "31.5 tokens per second"
     assert score_cell.toolTip() == ""
     assert "31.5 tok/s generation" in window._model_status.text()
 
@@ -843,8 +592,8 @@ def test_finetune_discovered_throughput_cell_is_a_persisted_measurement(qapp):
             desktop.QtCore.Qt.ItemDataRole.UserRole
         ) == "manual"
     )
-    assert window._model_table.item(registered_row, 6).text() == "44.0 tok/s"
-    assert window._model_table.item(registered_row, 6).toolTip() == ""
+    assert window._model_table.item(registered_row, 3).text() == "44.0 tokens per second"
+    assert window._model_table.item(registered_row, 3).toolTip() == ""
 
     window.closeEvent(desktop.QtGui.QCloseEvent())
     window.deleteLater()

@@ -1,7 +1,7 @@
 """Qwen Code session provider.
 
 Layout (verified against QwenLM/qwen-code source, mid-2026): current builds
-write Claude-style JSONL records to ``~/.qwen/projects/<sanitized-cwd>/chats/
+write line-delimited JSONL records to ``~/.qwen/projects/<sanitized-cwd>/chats/
 <sessionId>.jsonl``; older builds used ``~/.qwen/tmp/<sha256>/chats/``. Every
 line is one record: ``{uuid, parentUuid, sessionId, timestamp, type, cwd,
 message: {role, parts: [{text}]}, model?, usageMetadata?}``. Custom titles are

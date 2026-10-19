@@ -475,7 +475,7 @@ class ChatConfig:
 class ChatHarnessConfig:
     """"Launch in..." coding-harness picker settings (owner request 2026-08-21).
 
-    last_project_dir is the folder the Claude Code / Codex / OpenCode launch
+    last_project_dir is the folder the Codex / OpenCode launch
     options operate on, remembered across launches so the folder picker
     defaults to it instead of asking every time (the owner can still browse
     to a different folder on any given launch). Empty means "never launched
@@ -550,34 +550,29 @@ CALL_SILENCE_MAX_MS = 5000
 
 @dataclass
 class FineTuneConfig:
-    """Fine-tune studio + model-discovery settings (M13, Data Model section 13).
+    """Fine-tuning + model-discovery settings (M13, Data Model section 13).
 
-    LOCITIZE supervises an EXTERNAL fine-tuning studio (a Streamlit app in its own
-    checkout, running on its own interpreter) the same way it supervises Open
-    WebUI, and separately scans that studio's outputs/ tree for finished .gguf
-    models. Every default here is safe and off, and no machine-specific absolute
-    path is committed: the owner sets studio_dir locally or by env var.
+    The desktop Fine-tune page runs the trainer scripts (studio_dir/trainer) in
+    their own fine-tune environment, and separately scans the outputs tree for
+    finished .gguf models. Every default here is safe, and no machine-specific
+    absolute path is committed: the owner sets studio_dir locally or by env var.
 
     - enabled: false -> the Fine-tune page renders an honest disabled state and no
-      child process can be started
-    - studio_dir: absolute path to the llm-finetune-studio checkout (READ-ONLY to
-      LOCITIZE: it is only read and launched, never written to)
-    - outputs_dir: blank -> <studio_dir>/outputs
-    - python: blank -> autodetect the studio's own venv interpreter
-    - app_path: the Streamlit entry script, relative to studio_dir
-    - port / ready_timeout_s: the loopback port and its readiness window
-    - autostart: RESERVED, NOT IMPLEMENTED. No module reads this key; LOCITIZE never
-      starts the studio merely because LOCITIZE started, and setting it true changes
-      nothing today. Kept as a declared key so a future implementation does not
-      have to introduce it as a breaking settings change.
-    - open_browser: open the studio URL in the owner's browser on the Open action
+      trainer can be started
+    - studio_dir: the folder holding trainer/ and the fine-tune environment
+      (READ-ONLY to LOCITIZE: it is only read and run, never written to)
+    - outputs_dir: blank -> <data root>/finetune/outputs
+    - python: blank -> autodetect the fine-tune environment interpreter
+    - app_path, port, ready_timeout_s, autostart, open_browser: RETIRED with the
+      browser studio and ignored. Still declared so a settings.yaml written by an
+      older version loads without unknown-key warnings.
     - discovery_enabled: independent of `enabled`, so the owner can list and serve
-      their fine-tunes without ever starting Streamlit (the common case)
+      their fine-tunes even with fine-tuning turned off
     - default_context_size / default_gpu_layers: the serving defaults a discovered
       model gets, since it has no models.yaml row to read them from
     - active_run_window_s: how recently a run's train.log must have been written
       for LOCITIZE to treat that training run as live (gates the honest
-      container-runtime limitation warning on stop/close)
+      warning when the window closes during a run)
 
     No secrets: nothing in this block is or carries a credential.
     """
@@ -1654,6 +1649,10 @@ class RegistryWriteError(Exception):
     """
 
 
+from registry_lock import registry_locked
+
+
+@registry_locked
 def _edit_registry(
     base_dir: Path | str,
     transform: "Callable[[list[str], Path], str]",
@@ -1737,6 +1736,8 @@ def write_model_fields(
     model_id: str,
     gpu_layers: int,
     context_size: int,
+    *,
+    expected_fields: tuple[int, int] | None = None,
 ) -> None:
     """Rewrite ONLY a model's gpu_layers and context_size lines in models.yaml.
 
@@ -1779,6 +1780,14 @@ def write_model_fields(
         )
 
     def edit(lines: list[str], path: Path) -> str:
+        # Compare inside the writer lock so tuning never overwrites a GUI edit.
+        if expected_fields is not None:
+            parsed_before = yaml.safe_load("".join(lines))
+            row = next((r for r in parsed_before.get("models", [])
+                        if r.get("id") == model_id), None)
+            actual = None if row is None else (row.get("gpu_layers"), row.get("context_size"))
+            if actual != expected_fields:
+                raise ValueError("model settings changed concurrently; refusing to overwrite")
         start, end = _locate_model_block(lines, model_id)
         if start is None:
             raise ValueError(
@@ -1926,6 +1935,7 @@ def write_model_capabilities(
 
         cap_idx = _find_key_line(lines, start, end, "capabilities")
         if cap_idx is not None:
+            _drop_block_sequence(lines, cap_idx)
             lines[cap_idx] = _replace_value_line(lines[cap_idx], rendered, quote=False)
         else:
             # No existing line - insert one right after status:, a required
@@ -2226,6 +2236,7 @@ def write_model_tuning(
 
         args_idx = _find_key_line(lines, start, end, "server_args")
         if args_idx is not None:
+            _drop_block_sequence(lines, args_idx)
             lines[args_idx] = _replace_value_line(lines[args_idx], rendered, quote=False)
         else:
             # Same anchor and reasoning as write_model_capabilities: status: is
@@ -3037,6 +3048,45 @@ def _replace_scalar(line: str, new_value: Any) -> str:
     return f"{match.group(1)}{new_value}{match.group(3)}{newline}"
 
 
+def _drop_block_sequence(lines: list[str], key_idx: int) -> None:
+    """Remove the `- item` lines of a block-style list under lines[key_idx].
+
+    The list writers render a flow list (`key: ["a", "b"]`) onto the key's own
+    line. A hand-written models.yaml may instead hold the block form
+
+        server_args:
+        - --parallel
+        - "1"
+
+    and replacing only the key line left those `- ` lines dangling, so the
+    round-trip guard refused the write (owner-observed 2026-10-19: Auto-tune
+    "could not write the tuned settings"). Only acts when the key line carries
+    no value of its own; the items are the following lines that start with
+    "-" at the key's indent or deeper.
+    """
+    import re
+
+    key_line = lines[key_idx]
+    if re.sub(r"\s+#.*$", "", key_line.rstrip("\r\n")).split(":", 1)[1].strip():
+        return
+    indent = len(key_line) - len(key_line.lstrip())
+    end = key_idx + 1
+    while end < len(lines):
+        text = lines[end]
+        stripped = text.strip()
+        if not stripped:
+            end += 1
+            continue
+        if len(text) - len(text.lstrip()) >= indent and stripped.startswith("-"):
+            end += 1
+            continue
+        break
+    # Trailing blank lines belong to whatever follows, not to the list.
+    while end > key_idx + 1 and not lines[end - 1].strip():
+        end -= 1
+    del lines[key_idx + 1:end]
+
+
 def _replace_value_line(line: str, new_value: str, quote: bool) -> str:
     """Rewrite the value of a `[- ]key: <value>[  # comment]` line, spaces allowed.
 
@@ -3062,6 +3112,10 @@ def _replace_value_line(line: str, new_value: str, quote: bool) -> str:
         raise ValueError(f"cannot parse key/value line: {line!r}")
     prefix = key_match.group(1)
     rest = body[len(prefix):]
+    if not prefix.endswith((" ", "\t")):
+        # A key that had no value (`key:` heading a block list) needs the space
+        # YAML requires before a value on the same line.
+        prefix += " "
 
     comment_match = re.search(r"(\s+#.*)$", rest)
     comment = comment_match.group(1) if comment_match else ""

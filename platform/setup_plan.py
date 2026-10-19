@@ -168,7 +168,7 @@ REQUIREMENTS: dict[str, Requirement] = {
         ),
         Requirement(
             "harness_clis", KIND_WINGET, "Coding harness CLIs",
-            "Claude Code, Codex, and OpenCode, pointed at your local model.",
+            "Codex and OpenCode, pointed at your local model.",
             120,
         ),
         Requirement(
@@ -189,15 +189,26 @@ REQUIREMENTS: dict[str, Requirement] = {
             2600,
         ),
         Requirement(
-            "finetune_venv", KIND_VENV, "Fine-tune studio environment",
-            "An isolated venv for the bundled QLoRA studio.",
+            "finetune_venv", KIND_VENV, "Fine-tune environment",
+            "An isolated venv for the bundled QLoRA trainer.",
             None,
         ),
         Requirement(
-            "finetune_pip", KIND_PIP, "Fine-tune studio",
-            "Streamlit and the trainer front end. Training itself needs Docker, "
-            "which locitize does not install for you.",
-            400,
+            "finetune_pip", KIND_PIP, "Fine-tune document reader",
+            "Reads PDF files when you build a training dataset from documents.",
+            10,
+        ),
+        Requirement(
+            "finetune_torch_pip", KIND_PIP, "Fine-tune GPU engine (PyTorch)",
+            "The CUDA build of PyTorch that trains on your NVIDIA card, including "
+            "RTX 50-series. Large; needs an NVIDIA card with driver 570 or newer.",
+            2900,
+        ),
+        Requirement(
+            "finetune_train_pip", KIND_PIP, "Fine-tune training tools",
+            "transformers, peft, trl and bitsandbytes: the 4-bit LoRA stack that "
+            "trains the model and exports it as a GGUF. No Docker needed.",
+            700,
         ),
     )
 }
@@ -250,7 +261,7 @@ FEATURES: tuple[Feature, ...] = (
     ),
     Feature(
         "harnesses", "Code with a local model",
-        "Open Claude Code, Codex or OpenCode in a terminal, pointed at your own "
+        "Open Codex or OpenCode in a terminal, pointed at your own "
         "model instead of a cloud API.",
         requires=("node_runtime", "harness_clis"),
     ),
@@ -265,9 +276,9 @@ FEATURES: tuple[Feature, ...] = (
     ),
     Feature(
         "finetune", "Fine-tune models",
-        "The bundled QLoRA studio for training on your own data. Training runs "
-        "need Docker Desktop, installed separately.",
-        requires=("finetune_venv", "finetune_pip"),
+        "Train a model on your own data from the Fine-tune page, on your "
+        "NVIDIA GPU with no Docker. Large download (about 4 GB).",
+        requires=("finetune_venv", "finetune_pip", "finetune_torch_pip", "finetune_train_pip"),
     ),
     Feature(
         "secure_proxy", "https://locitize.local",

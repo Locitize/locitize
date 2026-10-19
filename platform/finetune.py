@@ -3,23 +3,22 @@
 This module is the whole non-UI half of Milestone 13, modeled on webui.py. It does
 four things and nothing else:
 
-- build_studio_spec / studio_url / studio_available: describe the external
-  llm-finetune-studio Streamlit app as a declarative ServiceSpec so the existing
-  ServiceManager / SingleServiceController stack can start, supervise, and reap it
-  exactly like Open WebUI, whisper, and Kokoro. services.py gains no code at all.
+- studio_dir / trainer_dir / studio_interpreter / studio_available: where the
+  trainer and its fine-tune environment are, and whether fine-tuning can run.
+  The desktop Fine-tune page (finetune_page, finetune_jobs) runs the trainer.
 - scan_outputs: read the studio's outputs/ tree and report the fine-tuned .gguf
   files found there as DiscoveredFineTune records, never writing anything back.
 - dedup_against_registry / to_model / register_id_for: fold a discovered file into
   an existing manually-registered models.yaml row when they are the same model, and
   turn a surviving discovered file into an ordinary config.Model so the proven
   llama.cpp serving path can start it unchanged.
-- orphan_warning_text / active_run: the honest limitation notice LOCITIZE must show
-  when it stops the studio while a training run is live (see below).
+- orphan_warning_text / active_run: the honest notice LOCITIZE shows when the
+  window closes while a training run is live (see below).
 
 Hard boundaries this module respects (Architecture M13.3, M13.9):
 
 - The studio checkout is READ-ONLY. Nothing here opens a path under it for write.
-- No process is spawned here (ServiceManager owns that), no Qt is imported, and no
+- No process is spawned here (finetune_jobs owns that), no Qt is imported, and no
   container runtime is ever invoked by LOCITIZE.
 - A discovered path is confined (resolve + must stay under the configured outputs
   root + must end in .gguf + must be non-empty) before it can reach a child's argv.
@@ -32,17 +31,10 @@ ASCII only.
 from __future__ import annotations
 
 import json
-import sys
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Protocol
-
 from config import BASE_DIR, FineTuneConfig, Model, Settings
-from services import ServiceSpec
-
-# Stable service identifier shared by the controller, the launcher, and tests.
-FINETUNE_SERVICE_NAME = "finetune-studio"
 
 # The llm-finetune-studio checkout ships vendored inside the LOCITIZE repo
 # (Codebase/finetune-studio) so a fresh git clone has a working Fine-tune page
@@ -111,8 +103,8 @@ _WARNING_FILE = "finetune_warning.txt"
 # same limitation in words that carry no forbidden literal, so a damaged install
 # degrades to an honest (if less specific) warning instead of silence.
 _WARNING_FALLBACK = (
-    "A training container may still be running in your container runtime. "
-    "locitize cannot stop a container it did not start; check your container list."
+    "A training run may still be running and using your GPU. "
+    "Check Task Manager for a python.exe busy on the GPU."
 )
 
 # root path string -> (monotonic timestamp, ScanResult).
@@ -183,13 +175,10 @@ def studio_dir(settings: Settings) -> Path | None:
     return BUNDLED_STUDIO_DIR if BUNDLED_STUDIO_DIR.is_dir() else None
 
 
-def studio_app_path(settings: Settings) -> Path | None:
-    """Absolute path of the studio's Streamlit entry script, or None when unset."""
+def trainer_dir(settings: Settings) -> Path | None:
+    """The trainer scripts (train.py, distill.py, ...) inside the studio folder."""
     base = studio_dir(settings)
-    if base is None:
-        return None
-    rel = (_cfg(settings).app_path or "app/app.py").strip()
-    return base / rel
+    return None if base is None else base / "trainer"
 
 
 def outputs_root(settings: Settings) -> Path | None:
@@ -231,12 +220,13 @@ def datasets_root(settings: Settings) -> Path | None:
 
 
 def studio_interpreter(settings: Settings) -> Path | None:
-    """Resolve the interpreter that runs the studio child.
+    """Resolve the interpreter of the fine-tune environment, or None.
 
-    Order (Architecture M13.4): finetune.python, then the studio's own .venv, then
-    its venv, then this process's interpreter as a last resort. LOCITIZE never adds
-    streamlit/torch/unsloth to its own requirements and never installs anything
-    into someone else's virtual environment.
+    Order (Architecture M13.4): finetune.python, then the packaged environment, then
+    the studio folder's own .venv / venv. There is no fallback to this process's
+    interpreter: the desktop's venv never has torch, so pretending it could train
+    would only fail later and less clearly. LOCITIZE never adds torch to its own
+    requirements and never installs anything into someone else's virtual environment.
     """
     cfg = _cfg(settings)
     explicit = (cfg.python or "").strip()
@@ -254,162 +244,37 @@ def studio_interpreter(settings: Settings) -> Path | None:
             candidate = base / rel
             if candidate.is_file():
                 return candidate
-    # Falling back to this interpreter is honest only if streamlit happens to be
-    # importable there; if it is not, the child exits fast and readiness times out
-    # into the page's Error state with the log path (failure mode F2).
-    return Path(sys.executable) if sys.executable else None
+    return None
 
 
 def studio_available(settings: Settings) -> tuple[bool, str]:
-    """(usable, reason) for the studio, with a concrete remedy in every failure.
+    """(usable, reason) for fine-tuning, with a concrete remedy in every failure.
 
-    Never raises and never returns a bare "unavailable": each false case names the
-    exact missing piece and the setting or env var that fixes it, because this
-    string is rendered verbatim as the page's disabled-state explanation.
+    Usable means the trainer scripts are present and the fine-tune environment
+    setup builds exists. Whether that environment has a working GPU stack is the
+    trainer's own preflight check, run when the owner picks a model. Never raises,
+    and the reason is rendered verbatim on the Fine-tune page.
     """
     cfg = _cfg(settings)
     if not cfg.enabled:
         return False, (
-            "Fine-tune studio is disabled. Set finetune.enabled: true in "
-            "settings.yaml to enable it."
+            "Fine-tuning is turned off. Set finetune.enabled: true in "
+            "settings.yaml to turn it on."
         )
-    base = studio_dir(settings)
-    if base is None:
+    trainer = trainer_dir(settings)
+    if trainer is None or not (trainer / "train.py").is_file():
         return False, (
-            f"Fine-tune studio was not found (expected the bundled copy at "
-            f"{BUNDLED_STUDIO_DIR}). Set finetune.studio_dir in settings.yaml "
-            f"or LOCITIZE_FINETUNE_STUDIO_DIR to point at a different checkout."
-        )
-    if not base.is_dir():
-        return False, (
-            f"Fine-tune studio directory '{base}' does not exist. Fix "
-            f"finetune.studio_dir in settings.yaml or LOCITIZE_FINETUNE_STUDIO_DIR."
-        )
-    app = studio_app_path(settings)
-    if app is None or not app.is_file():
-        return False, (
-            f"Fine-tune studio app '{app}' was not found. Check finetune.app_path "
-            f"in settings.yaml (it is relative to finetune.studio_dir)."
+            f"The fine-tune trainer was not found (expected it in "
+            f"{BUNDLED_STUDIO_DIR / 'trainer'}). Set finetune.studio_dir in "
+            f"settings.yaml or LOCITIZE_FINETUNE_STUDIO_DIR to a folder that has it."
         )
     interpreter = studio_interpreter(settings)
     if interpreter is None or not Path(interpreter).is_file():
         return False, (
-            "No usable Python interpreter was found for the fine-tune studio. "
-            "Create the studio's own virtual environment or set finetune.python "
-            "in settings.yaml to its python.exe."
+            "Fine-tuning is not installed yet. Add it under Settings > Features "
+            "(it installs the training tools into their own environment)."
         )
     return True, ""
-
-
-class PortResolver(Protocol):
-    """Anything that can turn a preferred port into a usable one.
-
-    Typed structurally (not as services.PortAllocator) so this module keeps its
-    one-way dependency on services.py and tests can inject a fake resolver
-    without touching real sockets (DEC-M13-2 requirement 1).
-    """
-
-    def ensure_free(self, port: int) -> int:  # pragma: no cover - interface only
-        ...
-
-
-def studio_url(settings: Settings, port: int | None = None) -> str:
-    """The loopback URL the studio serves on. The host is a hardcoded constant.
-
-    `port=None` keeps the configured port (the pre-M13 behaviour). Callers that
-    know the port the studio ACTUALLY bound - after port reassignment - pass it
-    here, so the URL shown and opened can never point at a port LOCITIZE did not
-    start on (DEC-M13-2 requirement 2, defect D-M13-1).
-
-    The host stays the hardcoded 127.0.0.1 literal: it is never settings-derived
-    and never caller-derived, so no caller can aim this URL off-machine (SEC-1).
-    """
-    effective = _cfg(settings).port if port is None else port
-    return f"http://127.0.0.1:{effective}/"
-
-
-def build_studio_spec(
-    settings: Settings,
-    log_path: str | None = None,
-    port_allocator: PortResolver | None = None,
-) -> ServiceSpec:
-    """Build the studio's ServiceSpec (the build_openwebui_spec analog).
-
-    Every security-relevant value is fixed here rather than derived from settings:
-    the bind address is the literal 127.0.0.1 (never 0.0.0.0, never settings-driven),
-    telemetry is switched off by flag, and the child environment is empty so no
-    LOCITIZE secret or credential can ever reach it.
-
-    Readiness deliberately uses health_path=None, which routes the existing
-    _default_readiness helper to its TCP-connect branch: Streamlit has renamed its
-    HTTP health endpoint across major versions, so a hardcoded path would make
-    readiness silently version-fragile (Architecture M13.4 / risk RC5).
-
-    Raises ValueError carrying studio_available()'s remedy string when the studio
-    cannot be launched, so an unusable studio is an honest disabled state rather
-    than a traceback.
-
-    Port resolution (DEC-M13-2, defect D-M13-1). Streamlit spells its port flag
-    --server.port, which services._command_with_port (matching the literal
-    --port) cannot rewrite, so a port reassigned at launch time never reached the
-    child. The fix resolves the port HERE, once, and writes that single value into
-    both the argv token and ServiceSpec.port so they cannot drift. The studio's
-    ManagedProcess is therefore built with no allocator - it must not resolve a
-    second time. PortUnavailableError propagates: a spec that silently carries an
-    unusable port would be worse than an honest failure.
-    """
-    ok, reason = studio_available(settings)
-    if not ok:
-        raise ValueError(reason)
-
-    cfg = _cfg(settings)
-    # One local, used twice below. Never re-derive either value from settings.
-    port = cfg.port if port_allocator is None else port_allocator.ensure_free(cfg.port)
-    interpreter = studio_interpreter(settings)
-    app = studio_app_path(settings)
-    base = studio_dir(settings)
-
-    command = [
-        str(interpreter),
-        "-m",
-        "streamlit",
-        "run",
-        str(app),
-        # Loopback constant, never settings-derived (Security boundary 1).
-        "--server.address",
-        "127.0.0.1",
-        "--server.port",
-        str(port),
-        # LOCITIZE decides when a browser opens, so the child must not open one itself.
-        "--server.headless",
-        "true",
-        # No usage telemetry leaves this machine.
-        "--browser.gatherUsageStats",
-        "false",
-    ]
-
-    return ServiceSpec(
-        name=FINETUNE_SERVICE_NAME,
-        command=command,
-        # Streamlit resolves the app's relative paths (datasets/, outputs/) from
-        # its working directory, so it must be the studio checkout.
-        cwd=str(base),
-        # No secrets, no injected credentials, ever. The ONLY thing passed is
-        # the data-root PATH (M17.5), so the studio's "deploy to LOCITIZE" step
-        # writes to the running install's real models.yaml instead of a guessed
-        # default - a path is not a secret, and without it a portable data root
-        # (locitize-data beside the install) is invisible to the child.
-        env={"LOCITIZE_DATA_DIR": str(settings.data_dir)},
-        # Same local as the --server.port token above: argv, readiness probe, and
-        # the status payload all read one value that cannot disagree.
-        port=port,
-        health_path=None,
-        log_path=log_path,
-        ready_timeout_s=float(cfg.ready_timeout_s),
-        stop_timeout_s=settings.services.stop_timeout_s,
-        # Append so a failed start does not destroy the previous trace.
-        append_log=True,
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -604,6 +469,10 @@ def scan_outputs(
 
 def _scan_uncached(settings: Settings, root: Path) -> ScanResult:
     """The real filesystem walk behind scan_outputs' TTL cache."""
+    if not root.exists():
+        # A fresh install has not trained anything yet: a missing folder is an
+        # empty list, not an error.
+        return ScanResult((), str(root), "")
     if not root.is_dir():
         return ScanResult((), str(root), f"Could not read `{root}`: not a directory.")
     try:
