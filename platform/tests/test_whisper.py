@@ -576,5 +576,5 @@ def test_whisper_server_spec_replaces_only_its_own_leftover_copy():
     copy, keyed on its own binary path so another app's whisper-server is never
     stopped, and never adopts one whose flags it cannot prove."""
     spec = build_whisper_server_spec(_server_settings())
-    assert spec.replace_marker == spec.command[0]
+    assert spec.replace_executable == spec.command[0]
     assert spec.reuse_marker is None

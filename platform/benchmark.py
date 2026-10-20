@@ -850,7 +850,7 @@ class BenchmarkRunner:
         *,
         http_post: Callable[[str, dict[str, Any], float], dict[str, Any]] | None = None,
         port_is_free: Callable[[int], bool] | None = None,
-        listener_cmdline: Callable[[int], str] | None = None,
+        listener_program: Callable[[int], str] | None = None,
         gpu_provider: Any = None,
         sys_provider: Any = None,
         results_dir: Path | str | None = None,
@@ -864,7 +864,7 @@ class BenchmarkRunner:
         self._settings = settings
         self._http_post = http_post or _default_http_post
         self._port_is_free = port_is_free or _default_port_is_free
-        self._listener_cmdline = listener_cmdline or _default_listener_cmdline
+        self._listener_program = listener_program or _default_listener_program
         self._gpu = gpu_provider
         self._sys = sys_provider
         self._results_dir = (
@@ -891,7 +891,7 @@ class BenchmarkRunner:
         """
         port = self._settings.ports.llama_cpp
         if not self._port_is_free(port):
-            raise BenchmarkConflictError(_port_conflict_message(port, self._listener_cmdline(port)))
+            raise BenchmarkConflictError(_port_conflict_message(port, self._listener_program(port)))
         self._assert_headroom()
 
     # Guard thresholds (M15.3). A benchmark run on a machine already out of
@@ -1316,21 +1316,23 @@ def _default_http_post(url: str, payload: dict[str, Any], timeout: float) -> dic
         return json.loads(handle.read().decode("utf-8"))
 
 
-def _default_listener_cmdline(port: int) -> str:
-    """Command line of the program on `port`, or "" when it cannot be read."""
-    from services import _default_listener_cmdline as describe
+def _default_listener_program(port: int) -> str:
+    """Executable path of the program listening on `port`, or "" if unknown."""
+    from services import default_listeners
 
-    return describe(port)
+    for listen_port, _pid, exe in default_listeners():
+        if listen_port == port:
+            return exe
+    return ""
 
 
-def _port_conflict_message(port: int, described: str) -> str:
+def _port_conflict_message(port: int, executable: str) -> str:
     """Say what holds the model port, naming the program when it is known.
 
     Only a llama-server is called a model: a stray whisper-server once held 8080
     and the old message sent the owner looking for a model that was not running.
     """
-    first = described.strip().split(" ")[0] if described.strip() else ""
-    program = Path(first.strip('"')).name if first else ""
+    program = Path(executable).name if executable else ""
     if program.lower().startswith("llama-server"):
         return (
             f"a model is running on port {port}; stop it or close locitize before "
@@ -1340,7 +1342,7 @@ def _port_conflict_message(port: int, described: str) -> str:
     holder = program or "another program"
     return (
         f"port {port}, which the benchmark needs for the model, is in use by "
-        f"{holder}; close it, or restart locitize, before benchmarking."
+        f"{holder}; close that program before benchmarking."
     )
 
 

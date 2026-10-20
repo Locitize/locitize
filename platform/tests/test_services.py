@@ -874,8 +874,8 @@ def _whisper_factory(created: dict, occupied: set[int] | None = None):
             kill_runner=lambda pid: None,
             port_allocator=alloc,
             poll_interval_s=0.01,
-            # A busy port here is a foreign listener; never read the real machine's.
-            listener_cmdline=lambda port: "",
+            # Never read (or act on) the real machine's listeners.
+            listeners=lambda: [],
         )
         created[spec.name] = (mp, proc)
         return mp
@@ -1123,69 +1123,84 @@ def test_reserved_service_ports_cover_every_service_and_the_proxy():
     }
 
 
+WHISPER_EXE = str(Path("app") / "whisper-server.exe")
+OTHER_EXE = str(Path("other") / "engine" / "whisper-server.exe")
+
+
 def _whisper_like_spec() -> ServiceSpec:
     return ServiceSpec(
         name="whisper_server",
-        command=[r"app\whisper-server.exe", "--port", "8091"],
+        command=[WHISPER_EXE, "--port", "8091"],
         port=8091,
-        replace_marker=r"app\whisper-server.exe",
+        replace_executable=WHISPER_EXE,
         ready_timeout_s=1.0,
         stop_timeout_s=0.5,
     )
 
 
-def test_a_leftover_copy_on_its_own_port_is_replaced_not_duplicated():
-    """2026-10-20: orphaned whisper-server copies stacked onto 8081 and 8080. A
-    leftover copy of the same binary on the port is stopped and a fresh one
-    starts on the service's own port."""
-    busy = {8091}
+def _launch_recorder(launched: list):
+    def launcher(**kwargs):
+        launched.append(list(kwargs["args"]))
+        return FakeProcess(poll_sequence=[None])
+
+    return launcher
+
+
+def test_leftover_copies_anywhere_in_the_range_are_replaced_not_duplicated():
+    """2026-10-20: orphaned whisper-server copies sat on 8091, 8081 and 8080, the
+    one on 8080 blocking the benchmark. Every copy of this exact executable in
+    the range is stopped, and a fresh one starts on the service's own port;
+    another program's copy on 8082 and anything outside the range are kept."""
+    table = {
+        (8091, 11): WHISPER_EXE,
+        (8081, 12): WHISPER_EXE,
+        (8080, 13): WHISPER_EXE,
+        (8082, 14): OTHER_EXE,
+        (4212, 15): WHISPER_EXE,
+    }
     killed: list[int] = []
     launched: list = []
 
     def kill(pid):
         killed.append(pid)
-        busy.discard(8091)
+        for key in [k for k in table if k[1] == pid]:
+            del table[key]
 
-    def launcher(**kwargs):
-        launched.append(list(kwargs["args"]))
-        return FakeProcess(poll_sequence=[None])
+    def busy():
+        return {port for port, _pid in table}
 
     mp = ManagedProcess(
         _whisper_like_spec(),
-        launcher=launcher,
+        launcher=_launch_recorder(launched),
         readiness=lambda spec, handle: True,
         kill_runner=kill,
-        port_allocator=PortAllocator(8080, 8099, "auto", is_free=lambda p: p not in busy),
-        listener_cmdline=lambda port: r"app/whisper-server.exe --model old --port 8091",
-        listener_pid=lambda port: 4242,
+        port_allocator=PortAllocator(8080, 8099, "auto", is_free=lambda p: p not in busy()),
+        listeners=lambda: [(port, pid, exe) for (port, pid), exe in table.items()],
         poll_interval_s=0.01,
     )
     assert mp.start() is ServiceStatus.RUNNING
-    assert killed == [4242]
+    assert sorted(killed) == [11, 12, 13]
     assert mp.resolved_port == 8091
     assert launched[0][launched[0].index("--port") + 1] == "8091"
 
 
-def test_another_programs_copy_is_never_stopped():
-    """Another app's whisper-server (a different binary path) is left alone; the
-    start falls back to reassignment, which still skips reserved ports."""
+def test_a_listener_that_changed_before_the_kill_is_left_alone():
+    """The listener is checked again right before the kill, so a pid that moved
+    on to another program in between is never touched."""
+    scans = iter([
+        [(8091, 21, WHISPER_EXE)],
+        [(8091, 21, OTHER_EXE)],
+    ])
     killed: list[int] = []
-    launched: list = []
-
-    def launcher(**kwargs):
-        launched.append(list(kwargs["args"]))
-        return FakeProcess(poll_sequence=[None])
-
     mp = ManagedProcess(
         _whisper_like_spec(),
-        launcher=launcher,
+        launcher=_launch_recorder([]),
         readiness=lambda spec, handle: True,
         kill_runner=killed.append,
         port_allocator=PortAllocator(
             8080, 8099, "auto", is_free=lambda p: p != 8091, reserved={8080, 8091},
         ),
-        listener_cmdline=lambda port: r"other/engine/whisper-server.exe --port 8091",
-        listener_pid=lambda port: 777,
+        listeners=lambda: next(scans, [(8091, 21, OTHER_EXE)]),
         poll_interval_s=0.01,
     )
     assert mp.start() is ServiceStatus.RUNNING
@@ -1193,7 +1208,27 @@ def test_another_programs_copy_is_never_stopped():
     assert mp.resolved_port == 8081
 
 
-def test_a_spec_without_replace_marker_never_stops_a_listener():
+def test_another_programs_copy_is_never_stopped():
+    """Another app's whisper-server (a different executable) is left alone; the
+    start falls back to reassignment, which still skips reserved ports."""
+    killed: list[int] = []
+    mp = ManagedProcess(
+        _whisper_like_spec(),
+        launcher=_launch_recorder([]),
+        readiness=lambda spec, handle: True,
+        kill_runner=killed.append,
+        port_allocator=PortAllocator(
+            8080, 8099, "auto", is_free=lambda p: p != 8091, reserved={8080, 8091},
+        ),
+        listeners=lambda: [(8091, 777, OTHER_EXE)],
+        poll_interval_s=0.01,
+    )
+    assert mp.start() is ServiceStatus.RUNNING
+    assert killed == []
+    assert mp.resolved_port == 8081
+
+
+def test_a_spec_without_replace_executable_never_stops_a_listener():
     killed: list[int] = []
     mp = ManagedProcess(
         _kokoro_like_spec(reuse_marker=None),
@@ -1201,8 +1236,7 @@ def test_a_spec_without_replace_marker_never_stops_a_listener():
         readiness=lambda spec, handle: True,
         kill_runner=killed.append,
         port_allocator=PortAllocator(8080, 8099, "auto", is_free=lambda p: p != 8092),
-        listener_cmdline=lambda port: "kokoro_server.py --port 8092",
-        listener_pid=lambda port: 99,
+        listeners=lambda: [(8092, 99, "python.exe")],
         poll_interval_s=0.01,
     )
     assert mp.start() is ServiceStatus.RUNNING

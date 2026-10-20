@@ -778,18 +778,19 @@ def test_benchmark_conflict_names_what_holds_the_model_port():
     the owner went looking for a model that was not running."""
     registry = ModelRegistry(ModelRegistryData(models=[_model()]), Settings())
 
-    def refusal(described):
+    def refusal(executable):
         runner = BenchmarkRunner(
             _RecordingController(), registry, Settings(),
             port_is_free=lambda port: False,
-            listener_cmdline=lambda port: described,
+            listener_program=lambda port: executable,
         )
         with pytest.raises(BenchmarkConflictError) as excinfo:
             runner.run(["m"], runs=1)
         return str(excinfo.value)
 
-    whisper = refusal(r'"bin\whisper.cpp\whisper-server.exe" --port 8080')
-    assert "whisper-server.exe" in whisper
+    # A path with a space must still name the right program.
+    whisper = refusal(str(Path("Program Files") / "whisper.cpp" / "whisper-server.exe"))
+    assert "in use by whisper-server.exe" in whisper
     assert "a model" not in whisper
-    assert "a model is running" in refusal(r"bin\llama.cpp\llama-server.exe -m x.gguf")
+    assert "a model is running" in refusal(str(Path("bin") / "llama-server.exe"))
     assert "another program" in refusal("")

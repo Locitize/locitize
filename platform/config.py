@@ -1449,6 +1449,7 @@ def _validate(
     owners: dict[int, list[str]] = {}
     for attr in ("llama_cpp", "whisper", "kokoro", "vision", "scheduler", "openwebui", "router"):
         owners.setdefault(getattr(ports, attr), []).append(attr)
+    owners.setdefault(settings.proxy.port, []).append("proxy")
     for port, names in sorted(owners.items()):
         if len(names) > 1:
             issues.append(

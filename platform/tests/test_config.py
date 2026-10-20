@@ -1061,3 +1061,13 @@ def test_two_services_on_one_port_are_reported(tmp_path):
         "8080 is assigned to more than one service (llama_cpp, whisper)" in issue.message
         for issue in issues
     )
+
+
+def test_the_proxy_sharing_a_service_port_is_reported(tmp_path):
+    _write(tmp_path, "settings.yaml", "version: 1\nproxy:\n  port: 8080\n")
+    _write(tmp_path, "models.yaml", VALID_MODELS)
+    _settings, _models, issues = Config.load(tmp_path)
+    assert any(
+        "8080 is assigned to more than one service (llama_cpp, proxy)" in issue.message
+        for issue in issues
+    )

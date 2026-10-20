@@ -19,6 +19,7 @@ Security invariants enforced here:
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -192,16 +193,15 @@ class ServiceSpec:
     # the old behaviour (llama-server must never adopt: a stray on its port is a
     # different model, which the stray guard handles).
     reuse_marker: str | None = None
-    # Replace-instead-of-duplicate (2026-10-20). When set, a start that finds the
-    # requested port held by a listener whose command line contains this marker
-    # stops that leftover copy and starts a fresh one on the same port, instead
-    # of moving the new copy to another port. Owner-observed: whisper-server
+    # Replace-instead-of-duplicate (2026-10-20). When set, a start first stops
+    # every listener in the reserved range whose executable is this exact file,
+    # then starts a fresh copy on its own port. Owner-observed: whisper-server
     # copies orphaned by earlier sessions stacked onto 8081 and 8080, and the
     # one on 8080 made the benchmark refuse because "a model" held it. A fresh
     # start always carries this session's flags, which an adopted copy would
-    # not prove. The marker is the binary's full path, so another program's
-    # copy of the same tool is never stopped.
-    replace_marker: str | None = None
+    # not prove. Matching the executable file, not a command-line substring,
+    # means another program's copy of the same tool is never stopped.
+    replace_executable: str | None = None
 
 
 # Injectable seams for testing --------------------------------------------- #
@@ -269,22 +269,37 @@ def build_readiness_url(port: int | None, health_path: str | None) -> str | None
     return f"http://{LOOPBACK_HOST}:{port}{health_path}"
 
 
-def _default_listener_pid(port: int) -> int | None:
-    """PID of whatever listens on loopback `port`, or None if unknown."""
+def default_listeners() -> list[tuple[int, int, str]]:
+    """(port, pid, executable path) for every listening TCP socket, from one scan.
+
+    Pairing each port with its process's executable in a single pass means a
+    decision about a listener never mixes facts from two different moments. A
+    process whose executable cannot be read is left out. Any failure returns [].
+    """
+    found: list[tuple[int, int, str]] = []
     try:
         import psutil
 
         for conn in psutil.net_connections(kind="inet"):
-            if (
-                conn.status == psutil.CONN_LISTEN
-                and conn.laddr
-                and conn.laddr.port == port
-                and conn.pid
-            ):
-                return int(conn.pid)
+            if conn.status != psutil.CONN_LISTEN or not conn.laddr or not conn.pid:
+                continue
+            try:
+                exe = psutil.Process(conn.pid).exe()
+            except Exception:  # noqa: BLE001 - gone or not readable: leave it out
+                continue
+            if exe:
+                found.append((int(conn.laddr.port), int(conn.pid), exe))
     except Exception:  # noqa: BLE001 - a probe never blocks a start
-        return None
-    return None
+        return []
+    return found
+
+
+def same_executable(a: str, b: str) -> bool:
+    """True when two paths name the same executable file."""
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+    except (OSError, ValueError):
+        return False
 
 
 def _default_listener_cmdline(port: int) -> str:
@@ -373,6 +388,10 @@ class PortAllocator:
     def is_free(self, port: int) -> bool:
         return self._is_free(port)
 
+    def covers(self, port: int) -> bool:
+        """True when `port` lies inside the reserved range."""
+        return self._start <= port <= self._end
+
     def ensure_free(self, port: int) -> int:
         """Return a usable port for the requested one.
 
@@ -419,11 +438,11 @@ class ManagedProcess:
         kill_confirm_timeout_s: float = 3.0,
         kill_max_attempts: int = 3,
         listener_cmdline: Callable[[int], str] | None = None,
-        listener_pid: Callable[[int], int | None] | None = None,
+        listeners: Callable[[], list[tuple[int, int, str]]] | None = None,
     ) -> None:
         self._spec = spec
         self._listener_cmdline = listener_cmdline or _default_listener_cmdline
-        self._listener_pid = listener_pid or _default_listener_pid
+        self._listeners = listeners or default_listeners
         # True when start() adopted an already-running healthy copy (reuse_marker)
         # instead of spawning one. There is no handle: this process did not launch
         # it, so stop() leaves it running and snapshot() probes it for liveness.
@@ -485,7 +504,7 @@ class ManagedProcess:
             )
             return self._status
 
-        self._replace_leftover_copy()
+        self._replace_leftover_copies()
 
         # Port preflight (Architecture 4.2 step 1).
         if spec.port is not None and self._allocator is not None:
@@ -584,41 +603,53 @@ class ManagedProcess:
             return False
         return bool(self._readiness(spec, None))
 
-    def _replace_leftover_copy(self) -> None:
-        """Stop a leftover copy of this service holding its own port.
+    def _replace_leftover_copies(self) -> None:
+        """Stop every leftover copy of this service's executable in the port range.
 
-        Acts only when the spec opts in (replace_marker + port), the port is
-        busy, and the listener's command line names the marker. Anything
-        unprovable leaves the listener alone, and the start falls through to the
-        normal reassignment.
+        Acts only when the spec opts in (replace_executable + port). A listener
+        is stopped only when its executable is this exact file, and each one is
+        checked again (same port, pid and executable) right before it is killed,
+        so a pid reused in between is never touched. Copies earlier sessions
+        pushed onto other ports (8080, 8081) are cleared too, not just the one on
+        the service's own port. Anything unprovable is left alone.
         """
         spec = self._spec
-        if not spec.replace_marker or spec.port is None or self._allocator is None:
+        if not spec.replace_executable or spec.port is None or self._allocator is None:
             return
-        if self._allocator.is_free(spec.port):
+
+        def leftovers() -> set[tuple[int, int]]:
+            try:
+                listeners = self._listeners()
+            except Exception:  # noqa: BLE001 - unprovable ownership means hands off
+                return set()
+            return {
+                (port, pid)
+                for port, pid, exe in listeners
+                if self._allocator.covers(port)
+                and same_executable(exe, spec.replace_executable)
+            }
+
+        stopped: list[int] = []
+        for port, pid in sorted(leftovers()):
+            if (port, pid) not in leftovers():
+                continue
+            self._log.info(
+                "service %s: stopping a leftover copy (pid %s) on port %s",
+                spec.name,
+                pid,
+                port,
+            )
+            self._kill_runner(pid)
+            stopped.append(port)
+        if not stopped:
             return
-        try:
-            described = self._listener_cmdline(spec.port) or ""
-            pid = self._listener_pid(spec.port)
-        except Exception:  # noqa: BLE001 - unprovable ownership means hands off
-            return
-        marker = spec.replace_marker.replace("\\", "/").lower()
-        if not pid or marker not in described.replace("\\", "/").lower():
-            return
-        self._log.info(
-            "service %s: stopping a leftover copy (pid %s) on port %s",
-            spec.name,
-            pid,
-            spec.port,
-        )
-        self._kill_runner(pid)
         deadline = time.monotonic() + self._kill_confirm_timeout
         while time.monotonic() < deadline:
-            if self._allocator.is_free(spec.port):
+            if all(self._allocator.is_free(port) for port in stopped):
                 return
             time.sleep(self._poll_interval)
         self._log.warning(
-            "service %s: the leftover copy on port %s did not exit", spec.name, spec.port
+            "service %s: a leftover copy did not exit (ports %s)", spec.name, stopped
         )
 
     def _await_ready(self) -> bool:
