@@ -85,6 +85,20 @@ def test_every_implied_feature_exists():
             assert key in setup_plan.FEATURES_BY_KEY
 
 
+def test_harness_choices_plan_only_the_selected_tools_and_opencode_node():
+    codex = setup_plan.plan_for(("harnesses",), harnesses=("codex",))
+    assert [step.key for step in codex.steps if step.key.startswith("harness_")] == [
+        "harness_codex"
+    ]
+    assert "node_runtime" not in {step.key for step in codex.steps}
+
+    opencode = setup_plan.plan_for(("harnesses",), harnesses=("opencode",))
+    assert {step.key for step in opencode.steps} >= {
+        "node_runtime", "harness_opencode"
+    }
+    assert "harness_claude" not in {step.key for step in opencode.steps}
+
+
 # --------------------------------------------------------------------------- #
 # Plan and sizing
 # --------------------------------------------------------------------------- #

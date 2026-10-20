@@ -3,10 +3,16 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+from download_model import pretrained_load_kwargs
 
-def load_4bit(model_name):
+
+def load_4bit(model_name, revision=""):
     """Load a causal LM quantized to 4-bit NF4 (the QLoRA recipe) on the GPU."""
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    source_kwargs = pretrained_load_kwargs(model_name, revision=revision)
+    tokenizer_kwargs = {
+        "revision": source_kwargs["revision"]
+    } if source_kwargs.get("revision") else {}
+    tokenizer = AutoTokenizer.from_pretrained(model_name, **tokenizer_kwargs)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     bnb = BitsAndBytesConfig(
@@ -17,7 +23,7 @@ def load_4bit(model_name):
     )
     model = AutoModelForCausalLM.from_pretrained(
         model_name, quantization_config=bnb, device_map={"": 0},
-        dtype=torch.bfloat16,
+        dtype=torch.bfloat16, **source_kwargs,
     )
     return model, tokenizer
 

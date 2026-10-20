@@ -12,10 +12,12 @@ are identified as such.
 Package installers, optional pip/npm environments, vendor coding CLI installers,
 browsers, Open WebUI plugins, and launched coding tools can make their own network
 requests. The desktop records explicit Open WebUI installer events, including the
-requested pin and expected package endpoints, but does not claim to observe every
-connection pip makes. The locitize egress ledger is not a machine-wide firewall or
-a complete record of those processes. Pointing inference at localhost does not disable a
-tool's telemetry, extensions, authentication, or network tools.
+requested pin and expected package endpoints, and the source URL before an
+explicitly selected vendor installer starts. It does not claim to observe every
+connection pip or those installers make (redirects, subrequests). The locitize
+egress ledger is not a machine-wide firewall or a complete record of those
+processes. Local Claude launches disable nonessential traffic, telemetry, error
+reporting, and auto-updates; their enabled coding tools can still reach the network.
 
 The Sessions page reads existing local histories when opened. It does not invoke
 a remote discovery CLI; AMP remote discovery is excluded. Transcript text is

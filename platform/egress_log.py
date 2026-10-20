@@ -7,10 +7,11 @@ so that promise can be checked rather than merely asserted.
 What it covers: every request the running app makes through
 modelhub.open_checked (the T2 allowlist chokepoint) - model search, model and
 component downloads, release checks. It also records explicit external-installer
-events. Those events name the program, requested package, expected endpoints and
-outcome; they do not pretend every connection made by pip was observed. Open
-WebUI's own traffic, the fine-tune studio, and coding tools remain outside the
-connection ledger (see SECURITY.md).
+events: the Open WebUI install (program, requested package, expected endpoints
+and outcome) and the source URL before a selected vendor installer starts. They
+do not pretend every connection made by pip or those installers was observed.
+Open WebUI's own traffic, the fine-tune environment, and coding tools remain
+outside the connection ledger (see SECURITY.md).
 
 The reader-facing payoff (Models page, and `launcher.py --egress`): "This
 session: 0 outbound connections" or a dated list. A local-first tool that can

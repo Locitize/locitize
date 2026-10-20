@@ -2182,8 +2182,14 @@ class Launcher:
                 if row.is_locitize and row.pid not in own_pids
             ]
 
+        data_dir = Path(settings.data_dir)
+        state_path = (
+            data_dir / "run" / "model-service.json"
+            if data_dir.resolve() != Path(__file__).resolve().parent else None
+        )
         controller = ModelController(
-            manager, spec_builder, factory, stale_server_check
+            manager, spec_builder, factory, stale_server_check,
+            state_path=state_path,
         )
         return registry, manager, controller
 

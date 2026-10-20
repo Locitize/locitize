@@ -83,3 +83,37 @@ def test_claude_provider_resume_uses_claude_cli(tmp_path, monkeypatch):
     command = claude.ClaudeProvider().resume_command(session)
     assert command.cwd == str(tmp_path)
     assert command.shell_command == "claude --no-chrome --resume 'session-42'"
+
+
+def test_claude_delete_atomically_filters_history(tmp_path, monkeypatch):
+    history = tmp_path / "history.jsonl"
+    keep = {"sessionId": "keep", "timestamp": 2}
+    remove = {"sessionId": "remove", "timestamp": 1}
+    history.write_text(
+        json.dumps(remove) + "\n" + json.dumps(keep) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(claude, "HISTORY_FILE", history)
+
+    claude.ClaudeProvider().delete(Session("remove", "claude", str(tmp_path)))
+
+    assert history.read_text(encoding="utf-8") == json.dumps(keep) + "\n"
+    assert not list(tmp_path.glob("history.jsonl.*.tmp"))
+
+
+def test_claude_delete_replace_failure_preserves_history(tmp_path, monkeypatch):
+    import config
+
+    history = tmp_path / "history.jsonl"
+    original = json.dumps({"sessionId": "remove", "timestamp": 1}) + "\n"
+    history.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(claude, "HISTORY_FILE", history)
+    monkeypatch.setattr(
+        config,
+        "_atomic_write",
+        lambda *_args: (_ for _ in ()).throw(OSError("replace blocked")),
+    )
+
+    claude.ClaudeProvider().delete(Session("remove", "claude", str(tmp_path)))
+
+    assert history.read_text(encoding="utf-8") == original

@@ -262,8 +262,11 @@ class ClaudeProvider:
                             lines.append(stripped)
                     except json.JSONDecodeError:
                         lines.append(stripped)
-            with open(HISTORY_FILE, "w", encoding="utf-8") as handle:
-                handle.write("\n".join(lines) + ("\n" if lines else ""))
+            from config import _atomic_write
+
+            _atomic_write(
+                HISTORY_FILE, "\n".join(lines) + ("\n" if lines else "")
+            )
         except OSError:
             pass
 

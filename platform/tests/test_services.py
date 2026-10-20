@@ -6,6 +6,7 @@ path by injecting a FakeProcess and asserting against it (Architecture 12).
 
 from __future__ import annotations
 
+import json
 from urllib.parse import urlparse
 
 from fakes import FakeProcess, make_fake_launcher
@@ -656,6 +657,35 @@ def test_switch_stops_old_model_and_starts_new():
     snap = controller.snapshot()
     running = [s for s in snap["services"] if s["status"] == "RUNNING"]
     assert [s["model_id"] for s in running] == ["model-b"]
+
+
+def test_model_controller_publishes_and_removes_active_port_state(tmp_path):
+    created = {}
+
+    def spec_builder(model_id, ctx=None, gpu=None):
+        return ServiceSpec(
+            name=f"llama_cpp:{model_id}",
+            command=["llama", "--port", "8084"],
+            port=8084,
+            health_path=None,
+            ready_timeout_s=1.0,
+            stop_timeout_s=0.5,
+        )
+
+    state_path = tmp_path / "run" / "model-service.json"
+    controller = ModelController(
+        ServiceManager(), spec_builder, _switch_factory(created),
+        state_path=state_path,
+    )
+
+    assert controller.start("model-a") is ServiceStatus.RUNNING
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["running_model"] == "model-a"
+    assert state["running_port"] == 8084
+    assert state["pid"] == created["llama_cpp:model-a"][0].pid
+
+    assert controller.stop() is ServiceStatus.STOPPED
+    assert not state_path.exists()
 
 
 def test_a_model_that_died_underneath_us_is_not_reported_running():

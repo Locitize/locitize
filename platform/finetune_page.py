@@ -35,6 +35,21 @@ _KEEP, _USER, _ASSISTANT, _PROBLEM, _TOKENS = range(5)
 _EDITABLE = QtCore.Qt.ItemFlag.ItemIsEditable
 
 
+def _plain_question(parent, title, text):
+    """Show one default-No question through the desktop's plain-text helper."""
+    from desktop import plain_message_box
+
+    return plain_message_box(
+        parent,
+        title,
+        text,
+        icon=QtWidgets.QMessageBox.Icon.Question,
+        buttons=QtWidgets.QMessageBox.StandardButton.Yes
+        | QtWidgets.QMessageBox.StandardButton.No,
+        default=QtWidgets.QMessageBox.StandardButton.No,
+    ).exec()
+
+
 class _Signals(QtCore.QObject):
     done = QtCore.Signal(object, object)
 
@@ -154,6 +169,7 @@ class FineTuneFlow(QtWidgets.QWidget):
         self._download_model = None
         self._download_status_for = None
         self._download_status_data = None
+        self._model_revisions: dict[str, str] = {}
         self._download_size_check_for = None
         self._download_offset, self._download_text = 0, ""
         self._log_offset = 0
@@ -508,19 +524,21 @@ class FineTuneFlow(QtWidgets.QWidget):
             )
             self.download_button.setEnabled(True)
             return
-        answer = QtWidgets.QMessageBox.question(
-            self,
-            "Download base model?",
+        answer = _plain_question(
+            self, "Download base model?",
             f"Download {model}?\n\nDownload size: {self._format_bytes(size)}.\n"
             "It will be stored in the training model cache shown above.",
-            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-            QtWidgets.QMessageBox.StandardButton.No,
         )
         if answer != QtWidgets.QMessageBox.StandardButton.Yes:
             self._refresh_download_controls()
             return
         try:
-            self.download_job = jobs.start_download(self._settings, model)
+            revision = str(status.get("revision") or "")
+            if revision:
+                self._model_revisions[model] = revision
+            self.download_job = jobs.start_download(
+                self._settings, model, revision=revision
+            )
         except (OSError, jobs.FineTuneUnavailable) as exc:
             self.download_status_label.setText(f"Could not start the download: {exc}")
             self.download_button.setEnabled(True)
@@ -905,11 +923,9 @@ class FineTuneFlow(QtWidgets.QWidget):
         if not path:
             return
         if self.distill_prompts.toPlainText().strip():
-            answer = QtWidgets.QMessageBox.question(
+            answer = _plain_question(
                 self, "Replace prompts?",
                 "The prompts box already has text. Replace it with prompts from this file?",
-                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-                QtWidgets.QMessageBox.StandardButton.No,
             )
             if answer != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
@@ -924,11 +940,9 @@ class FineTuneFlow(QtWidgets.QWidget):
             prompts, malformed = result
             if malformed:
                 summary = ftd.format_line_numbers(malformed)
-                answer = QtWidgets.QMessageBox.question(
+                answer = _plain_question(
                     self, "Some prompt lines are malformed",
                     f"{summary}. Load the {len(prompts)} valid prompt(s) and skip those lines?",
-                    QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-                    QtWidgets.QMessageBox.StandardButton.No,
                 )
                 if answer != QtWidgets.QMessageBox.StandardButton.Yes:
                     self._fail("The prompt file was not loaded.")
@@ -1377,7 +1391,8 @@ class FineTuneFlow(QtWidgets.QWidget):
                 label=self.train_name.text(), steps=self.steps.value(), learning_rate=self.lr.currentData(),
                 lora_r=self.rank.currentData(), batch_size=self.batch.currentData(),
                 grad_accum=self.accum.currentData(), quant=self.quant.currentData(),
-                default_system=self.default_system, dataset_rows=self.dataset_rows)
+                default_system=self.default_system, dataset_rows=self.dataset_rows,
+                revision=self._model_revisions.get(self.model, ""))
         except (OSError, jobs.FineTuneUnavailable) as exc:
             self.steps_note.setText(f"Could not start training: {exc}")
             return
@@ -1791,14 +1806,7 @@ class FineTuneFlow(QtWidgets.QWidget):
             f"Changed fields:\n{details}\n\n"
             f"The old GGUF file will not be deleted."
         )
-        answer = QtWidgets.QMessageBox.question(
-            self,
-            "Replace existing model?",
-            message,
-            QtWidgets.QMessageBox.StandardButton.Yes
-            | QtWidgets.QMessageBox.StandardButton.No,
-            QtWidgets.QMessageBox.StandardButton.No,
-        )
+        answer = _plain_question(self, "Replace existing model?", message)
         return answer == QtWidgets.QMessageBox.StandardButton.Yes
 
     def _on_compare(self):

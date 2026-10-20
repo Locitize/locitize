@@ -61,7 +61,11 @@ def test_harness_detection_requires_all_supported_clis(tmp_path, monkeypatch):
     monkeypatch.setattr(setup_env, "_which", lambda name: name if name in present else "")
     state, _machine = setup_env.detect_state(setup_env.Machine(data_root=tmp_path))
     assert state["harness_clis"] is False
+    assert state["harness_claude"] is True
+    assert state["harness_codex"] is True
+    assert state["harness_opencode"] is False
 
     present.add("opencode")
     state, _machine = setup_env.detect_state(setup_env.Machine(data_root=tmp_path))
     assert state["harness_clis"] is True
+    assert state["harness_opencode"] is True

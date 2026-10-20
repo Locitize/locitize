@@ -167,9 +167,19 @@ REQUIREMENTS: dict[str, Requirement] = {
             30,
         ),
         Requirement(
-            "harness_clis", KIND_WINGET, "Coding harness CLIs",
-            "Claude Code, Codex, and OpenCode, pointed at your local model.",
-            120,
+            "harness_claude", KIND_WINGET, "Claude Code",
+            "Anthropic's coding harness, configured at launch for your local model.",
+            40,
+        ),
+        Requirement(
+            "harness_codex", KIND_WINGET, "Codex",
+            "OpenAI's coding harness, configured at launch for your local model.",
+            40,
+        ),
+        Requirement(
+            "harness_opencode", KIND_WINGET, "OpenCode",
+            "The OpenCode coding harness, configured at launch for your local model.",
+            40,
         ),
         Requirement(
             "caddy", KIND_WINGET, "Caddy",
@@ -263,7 +273,7 @@ FEATURES: tuple[Feature, ...] = (
         "harnesses", "Code with a local model",
         "Open Claude Code, Codex or OpenCode in a terminal, pointed at your own "
         "model instead of a cloud API.",
-        requires=("node_runtime", "harness_clis"),
+        requires=(),
     ),
     Feature(
         "openwebui", "Open WebUI (rich chat UI)",
@@ -363,13 +373,27 @@ def expand_selection(selected: Iterable[str]) -> tuple[str, ...]:
 
 def requirements_for(
     selected: Iterable[str],
+    harnesses: Iterable[str] = (),
 ) -> tuple[tuple[Requirement, tuple[str, ...]], ...]:
     """Map an expanded selection onto deduplicated (requirement, wanted_by) pairs."""
+    expanded = expand_selection(selected)
     wanted: dict[str, list[str]] = {}
-    for feature_key in expand_selection(selected):
+    for feature_key in expanded:
         for req_key in FEATURES_BY_KEY[feature_key].requires:
             if req_key in REQUIREMENTS:
                 wanted.setdefault(req_key, []).append(feature_key)
+
+    if "harnesses" in expanded:
+        selected_harnesses = set(harnesses)
+        if "opencode" in selected_harnesses:
+            wanted.setdefault("node_runtime", []).append("harnesses")
+        for harness, req_key in (
+            ("claude", "harness_claude"),
+            ("codex", "harness_codex"),
+            ("opencode", "harness_opencode"),
+        ):
+            if harness in selected_harnesses:
+                wanted.setdefault(req_key, []).append("harnesses")
 
     pairs = [(REQUIREMENTS[key], tuple(names)) for key, names in wanted.items()]
     pairs.sort(key=lambda pair: (_KIND_ORDER.get(pair[0].kind, 99), pair[0].key))
@@ -380,6 +404,7 @@ def plan_for(
     selected: Iterable[str],
     state: Mapping[str, bool] | None = None,
     warnings: Iterable[str] = (),
+    harnesses: Iterable[str] = (),
 ) -> InstallPlan:
     """Build the ordered plan for `selected` against detected `state`.
 
@@ -391,7 +416,7 @@ def plan_for(
     expanded = expand_selection(selected)
     steps = tuple(
         Step(requirement=req, wanted_by=names, satisfied=bool(facts.get(req.key, False)))
-        for req, names in requirements_for(expanded)
+        for req, names in requirements_for(expanded, harnesses)
     )
     return InstallPlan(selected=expanded, steps=steps, warnings=tuple(warnings))
 
