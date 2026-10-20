@@ -513,6 +513,80 @@ def _message_content_blank(message: dict) -> bool:
     return True
 
 
+def _as_parts(content: Any) -> list:
+    """A message's content as a content-part list (a string becomes one part)."""
+    if isinstance(content, list):
+        return list(content)
+    if isinstance(content, str) and content:
+        return [{"type": "text", "text": content}]
+    return []
+
+
+def drop_blank_assistant_turns(body: bytes) -> bytes:
+    """Leave out assistant turns that said nothing before forwarding a chat.
+
+    Owner report 2026-10-20 (Open WebUI replies blank in one chat): a reply
+    that was cut off before its first token - a voice call interrupted while a
+    long prompt was still being read - is stored as an empty assistant turn.
+    Sent back as history, a few of those teach the model that an empty answer
+    is the pattern: Qwen3.8 then stopped after one token on every new question,
+    and answered normally once the blanks were left out. A turn carrying a tool
+    call is kept, since its content is legitimately empty. Two user turns left
+    side by side are joined into one, because several chat templates refuse a
+    conversation whose roles do not alternate. Only the forwarded request
+    changes; the stored chat is untouched.
+    """
+    if not body:
+        return body
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return body
+    if not isinstance(payload, dict):
+        return body
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return body
+
+    def blank(message: Any) -> bool:
+        return (
+            isinstance(message, dict)
+            and message.get("role") == "assistant"
+            and not message.get("tool_calls")
+            and not message.get("function_call")
+            and _message_content_blank(message)
+        )
+
+    if not any(blank(m) for m in messages):
+        return body
+    updated: list = []
+    for message in messages:
+        if blank(message):
+            continue
+        previous = updated[-1] if updated else None
+        if (
+            isinstance(message, dict)
+            and isinstance(previous, dict)
+            and message.get("role") == "user"
+            and previous.get("role") == "user"
+        ):
+            merged = dict(previous)
+            if isinstance(previous.get("content"), str) and isinstance(
+                message.get("content"), str
+            ):
+                merged["content"] = previous["content"] + "\n\n" + message["content"]
+            else:
+                merged["content"] = _as_parts(previous.get("content")) + _as_parts(
+                    message.get("content")
+                )
+            updated[-1] = merged
+            continue
+        updated.append(message)
+    new_payload = dict(payload)
+    new_payload["messages"] = updated
+    return json.dumps(new_payload).encode("utf-8")
+
+
 def promote_reasoning_to_content(payload: dict) -> dict:
     """Copy reasoning_content into content when content is empty.
 
@@ -1141,6 +1215,7 @@ class _RouterHandler(BaseHTTPRequestHandler):
             body = apply_model_identity(body, router.running_model_name())
             # Typed OWUI chats need thinking off too (reasoning-model empty-content stuck).
             body = apply_thinking_defaults(body)
+            body = drop_blank_assistant_turns(body)
             if spoken:
                 body = apply_voice_turn(body)
 

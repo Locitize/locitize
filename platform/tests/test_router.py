@@ -1822,3 +1822,50 @@ def test_foreign_request_reason_refuses_websites_and_rebinding():
     assert foreign_request_reason("127.0.0.1:9999", None, 8093)
     assert foreign_request_reason(None, None, 8093)
     assert foreign_request_reason("127.0.0.1:8093", "null", 8093)
+
+
+from router import drop_blank_assistant_turns  # noqa: E402
+
+
+def test_blank_assistant_turns_are_left_out_of_the_forwarded_chat():
+    """Owner report 2026-10-20: three interrupted (empty) replies in one Open
+    WebUI chat made Qwen3.8 answer every later question with one token."""
+    messages = []
+    for text in ("I owe you.", "Who are you?"):
+        messages += [{"role": "user", "content": text}, {"role": "assistant", "content": ""}]
+    messages.append({"role": "user", "content": "What are your capabilities?"})
+    body = json.dumps({"model": "m", "messages": messages}).encode()
+
+    sent = json.loads(drop_blank_assistant_turns(body))["messages"]
+
+    assert sent == [{
+        "role": "user",
+        "content": "I owe you.\n\nWho are you?\n\nWhat are your capabilities?",
+    }]
+
+
+def test_a_tool_call_turn_and_a_real_reply_are_kept():
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "find it"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "content": "found", "tool_call_id": "1"},
+        {"role": "assistant", "content": "Here it is."},
+        {"role": "user", "content": "thanks"},
+    ]
+    body = json.dumps({"messages": messages}).encode()
+    assert drop_blank_assistant_turns(body) == body
+
+
+def test_joining_user_turns_keeps_images():
+    image = {"type": "image_url", "image_url": {"url": "data:,"}}
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": "look"}, image]},
+        {"role": "assistant", "content": None},
+        {"role": "user", "content": "well?"},
+    ]
+    sent = json.loads(drop_blank_assistant_turns(json.dumps({"messages": messages}).encode()))
+    assert sent["messages"] == [{
+        "role": "user",
+        "content": [{"type": "text", "text": "look"}, image, {"type": "text", "text": "well?"}],
+    }]
