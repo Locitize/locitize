@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +17,7 @@ TRAINER = Path(__file__).resolve().parents[2] / "finetune-studio" / "trainer"
 sys.path.insert(0, str(TRAINER))
 
 import gguf_export  # noqa: E402
+import download_model  # noqa: E402
 import finetune_advisor as advisor  # noqa: E402
 import preflight  # noqa: E402
 import setup_env  # noqa: E402
@@ -163,6 +166,207 @@ def test_friendly_failure(log, word):
 
 def test_friendly_failure_unknown_is_empty():
     assert preflight.friendly_failure("all good") == ""
+
+
+# ----------------------------------------------------------- model download
+
+def test_download_status_counts_only_training_files_and_prefers_safetensors(tmp_path):
+    cached_config = tmp_path / "config.json"
+    cached_config.write_text("{}", encoding="utf-8")
+    cached_tokenizer = tmp_path / "tokenizer.model"
+    cached_tokenizer.write_bytes(b"tokenizer")
+    siblings = [
+        SimpleNamespace(rfilename="config.json", size=100),
+        SimpleNamespace(rfilename="tokenizer.model", size=50),
+        SimpleNamespace(rfilename="model.safetensors", size=1000),
+        SimpleNamespace(rfilename="pytorch_model.bin", size=900),
+        SimpleNamespace(rfilename="model.gguf", size=2000),
+        SimpleNamespace(rfilename="onnx/model.onnx", size=3000),
+        SimpleNamespace(rfilename="README.md", size=10),
+    ]
+    api = SimpleNamespace(model_info=lambda model, files_metadata: SimpleNamespace(
+        siblings=siblings, sha="abc", gated=False
+    ))
+
+    def cache_lookup(_model, filename, revision):
+        assert revision == "abc"
+        return {"config.json": str(cached_config), "tokenizer.model": str(cached_tokenizer)}.get(filename)
+
+    status = download_model.model_status("org/base", api=api, cache_lookup=cache_lookup)
+    assert status == {
+        "model": "org/base", "cached": False, "total_bytes": 1150,
+        "missing_bytes": 1000, "gated": False, "error": None,
+    }
+
+
+def test_download_status_turns_gated_failure_into_plain_action():
+    class GatedRepoError(Exception):
+        pass
+
+    api = SimpleNamespace(model_info=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        GatedRepoError("access denied")
+    ))
+    status = download_model.model_status("org/gated", api=api, cache_lookup=lambda *_a, **_k: None)
+    assert status["gated"] is True
+    assert "Accept its license" in status["error"] and "HF_TOKEN" in status["error"]
+
+
+def test_local_download_status_distinguishes_missing_partial_and_complete_cache(tmp_path):
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    config = snapshot / "config.json"
+    tokenizer = snapshot / "tokenizer.json"
+    index = snapshot / "model.safetensors.index.json"
+    shard_one = snapshot / "model-00001-of-00002.safetensors"
+    shard_two = snapshot / "model-00002-of-00002.safetensors"
+    for path, content in (
+        (config, "{}"),
+        (tokenizer, "{}"),
+        (index, json.dumps({"weight_map": {"a": shard_one.name, "b": shard_two.name}})),
+        (shard_one, "weights"),
+    ):
+        path.write_text(content, encoding="utf-8")
+
+    def cache_info(repo_id="org/base"):
+        files = tuple(
+            SimpleNamespace(file_path=path, file_name=path.name)
+            for path in (config, tokenizer, index, shard_one, shard_two)
+        )
+        revision = SimpleNamespace(snapshot_path=snapshot, files=files, refs=("main",))
+        repo = SimpleNamespace(repo_id=repo_id, repo_type="model", revisions=(revision,))
+        return SimpleNamespace(repos=(repo,))
+
+    missing = download_model.local_model_status(
+        "org/base", cache_info=SimpleNamespace(repos=frozenset())
+    )
+    partial = download_model.local_model_status("org/base", cache_info=cache_info())
+    shard_two.write_text("weights", encoding="utf-8")
+    complete = download_model.local_model_status("org/base", cache_info=cache_info())
+
+    assert (missing["cached"], missing["cache_state"]) == (False, "missing")
+    assert (partial["cached"], partial["cache_state"]) == (False, "partial")
+    assert (complete["cached"], complete["cache_state"]) == (True, "cached")
+    assert complete["total_bytes"] is None and complete["missing_bytes"] is None
+
+
+def test_local_status_cli_forces_hugging_face_offline(monkeypatch, capsys):
+    called = []
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.setattr(
+        download_model,
+        "local_model_status",
+        lambda model: called.append(model) or {"model": model, "cached": False},
+    )
+    monkeypatch.setattr(
+        download_model,
+        "model_status",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("network status must not run")),
+    )
+
+    assert download_model.main(["--local-status", "org/base"]) == 0
+    assert called == ["org/base"]
+    assert os.environ["HF_HUB_OFFLINE"] == "1"
+    assert json.loads(capsys.readouterr().out)["model"] == "org/base"
+
+
+def test_download_uses_exact_training_allowlist_and_default_cache(tmp_path, capsys):
+    siblings = [
+        SimpleNamespace(rfilename="config.json", size=10),
+        SimpleNamespace(rfilename="model.safetensors", size=90),
+        SimpleNamespace(rfilename="onnx/config.json", size=500),
+        SimpleNamespace(rfilename="model.gguf", size=1000),
+    ]
+    api = SimpleNamespace(model_info=lambda model, files_metadata: SimpleNamespace(
+        siblings=siblings, sha="revision", gated=False
+    ))
+    calls = []
+
+    def snapshot(**kwargs):
+        calls.append(kwargs)
+
+    download_model.download_model(
+        "org/base", api=api, cache_lookup=lambda *_args, **_kwargs: None, snapshot=snapshot
+    )
+    output = capsys.readouterr().out
+    assert calls[0]["allow_patterns"] == ["config.json", "model.safetensors"]
+    assert calls[0]["revision"] == "revision" and "cache_dir" not in calls[0]
+    assert calls[0]["max_workers"] == 1
+    assert output.endswith("DOWNLOAD DONE\n")
+
+
+@pytest.mark.parametrize("named", [True, False], ids=["named-disabled", "unnamed-auto"])
+def test_download_counts_reconstructed_bytes_once_when_hub_has_two_bars(capsys, named):
+    siblings = [SimpleNamespace(rfilename="model.safetensors", size=100)]
+    api = SimpleNamespace(model_info=lambda model, files_metadata: SimpleNamespace(
+        siblings=siblings, sha="revision", gated=False
+    ))
+    observed = []
+
+    def counters():
+        output = capsys.readouterr().out
+        observed.extend(
+            int(line.split()[1].split("/")[0])
+            for line in output.splitlines()
+            if line.startswith("DOWNLOAD ") and line != "DOWNLOAD DONE"
+        )
+
+    def snapshot(**kwargs):
+        progress = kwargs["tqdm_class"]
+        transfer_kwargs = dict(
+            desc="Downloading bytes",
+            unit="B",
+            total=100,
+            initial=0,
+        )
+        reconstruct_kwargs = dict(
+            desc="Reconstructing (incomplete total...)",
+            unit="B",
+            total=100,
+            initial=20,
+        )
+        if named:
+            transfer_kwargs.update(
+                name="huggingface_hub.snapshot_download.transfer", disable=True
+            )
+            reconstruct_kwargs.update(
+                name="huggingface_hub.snapshot_download", disable=True
+            )
+        transfer = progress(**transfer_kwargs)
+        transfer.update(40)
+        transfer.update(60)
+        counters()
+        assert observed == [0]
+
+        reconstruct = progress(**reconstruct_kwargs)
+        counters()
+        reconstruct.update(30)
+        counters()
+        reconstruct.update(50)
+        counters()
+
+    download_model.download_model(
+        "org/base", api=api, cache_lookup=lambda *_args, **_kwargs: None,
+        snapshot=snapshot,
+    )
+    counters()
+    assert observed == [0, 20, 50, 100, 100]
+    assert all(done <= 100 for done in observed)
+    assert 100 not in observed[:-2]
+
+
+def test_download_progress_falls_back_to_older_single_unnamed_byte_bar(capsys):
+    tracker = download_model._ByteProgress(10)
+    tracker._emit()
+    progress = tracker.tqdm_class(
+        desc="Downloading model", unit="B", total=10, initial=3
+    )
+    progress.update(7)
+    counters = [
+        int(line.split()[1].split("/")[0])
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("DOWNLOAD ")
+    ]
+    assert counters == [0, 3, 10]
 
 
 # ---------------------------------------------------------------- GGUF export

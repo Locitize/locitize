@@ -5475,6 +5475,9 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QApplication.processEvents()
             self._timer.stop()
             self._sysmon_stop.set()  # M17.18: stop the RAM/VRAM sampler thread
+            flow = getattr(self, "_ft_flow", None)
+            if flow is not None:
+                flow.shutdown()
             self._gc.shutdown()
         event.accept()
 
