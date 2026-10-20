@@ -2581,6 +2581,12 @@ class Launcher:
                 result["tokens_per_second"] = self._smoke_throughput(
                     result["resolved_port"]
                 )
+                # And how fast it READS, which the tiny generation prompt never
+                # shows: a bigger KV cache can push MoE experts to the CPU and
+                # cut reading speed 4x while generation barely moves.
+                result["prompt_tokens_per_second"] = self._smoke_reading(
+                    result["resolved_port"]
+                )
                 # And where the memory actually went. A model that overflows
                 # the card still loads and serves on Windows; the shared figure
                 # is the measured overflow (gpu_ledger.GpuPlacement).
@@ -2938,6 +2944,54 @@ class Launcher:
             return once()
         except Exception:  # noqa: BLE001 - a probe failure is a null, not a crash
             return None
+
+    # Long enough to time reading for real (~2000 tokens), short enough to fit
+    # the smallest context auto-tune tries (8192).
+    _READING_PROMPT = "".join(
+        f"Ledger line {i}: crate {i * 7 % 101} moved from bay {i % 13} to bay "
+        f"{(i * 5) % 17} on day {i % 29}. "
+        for i in range(110)
+    )
+
+    @staticmethod
+    def _smoke_reading(port: Any) -> float | None:
+        """Time reading a ~2000-token prompt; prompt tok/s or an honest None."""
+        import json as _json
+        import urllib.request
+
+        if not port:
+            return None
+        payload = _json.dumps(
+            {
+                "prompt": Launcher._READING_PROMPT,
+                "n_predict": 1,
+                "temperature": 0,
+                "seed": 42,
+                "cache_prompt": False,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{int(port)}/completion",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                body = _json.loads(response.read().decode("utf-8", "replace"))
+        except Exception:  # noqa: BLE001 - a probe failure is a null, not a crash
+            return None
+        timings = body.get("timings") or {}
+        prompt_n = timings.get("prompt_n")
+        value = timings.get("prompt_per_second")
+        # A prompt served mostly from cache would time a handful of tokens.
+        if (
+            isinstance(prompt_n, int)
+            and prompt_n >= 1000
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        ):
+            return float(value)
+        return None
 
     def _smoke_start_whisper(self, settings: Any) -> int:
         """Start the real whisper-server, confirm readiness, ALWAYS clean up (AC4).

@@ -1177,3 +1177,30 @@ def test_speech_service_wiring_injects_the_loaded_noise_suppressor():
     assert "settings.speech.noise_suppression" in src
     assert 'wiring["filter_upload"] = suppressor.process' in src
     assert 'wiring["noise_suppression_mode"]' in src
+
+
+def test_smoke_reading_reports_prompt_speed_only_for_a_real_long_read(monkeypatch):
+    """Auto-tune's reading floor reads this; a read served from cache, or one
+    that failed, is an honest None rather than a number."""
+    import io
+    import urllib.request
+
+    sent = []
+
+    def reply(timings):
+        def urlopen(request, timeout=None):
+            sent.append(json.loads(request.data))
+            return io.BytesIO(json.dumps({"timings": timings}).encode())
+        return urlopen
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen", reply({"prompt_n": 2100, "prompt_per_second": 485.0})
+    )
+    assert Launcher._smoke_reading(8080) == 485.0
+    assert sent[0]["cache_prompt"] is False
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen", reply({"prompt_n": 12, "prompt_per_second": 900.0})
+    )
+    assert Launcher._smoke_reading(8080) is None
+    assert Launcher._smoke_reading(None) is None

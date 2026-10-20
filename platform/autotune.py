@@ -75,11 +75,20 @@ CONTEXT_GRID = 4096
 # gap, which is what this 12% threshold is calibrated against.)
 CEILING_TOLERANCE = 0.12
 
-# Hard ceiling on how far past the trained window YaRN is allowed to stretch a
-# model. Model publishers (Qwen among them) document YaRN as reliable to about
-# 4x the trained window and degrading beyond it, so probing past 4x would only
-# discover a number that is technically loadable and practically useless.
-MAX_YARN_FACTOR = 4
+# The search never goes past the model's own trained window (2026-10-20). It
+# used to stretch up to 4x with YaRN, and a speed trial cannot prove a stretched
+# window still works: Qwen3.8-35B-A3B (trained 262144) was saved at 491520 and
+# gemma-4-E2B at 524288, which then scored 0. The trials also ran without the
+# rope flags, so llama.cpp held the slot to the trained window and the search
+# never tested what it wrote. YaRN is still the owner's to set by hand.
+MAX_YARN_FACTOR = 1
+
+# The throughput baseline is measured here (or at the current or trained
+# window, when smaller), never at the current context alone. Measuring at the
+# current one let each rerun lower its own bar: a second tune of the Qwen3.8
+# model above started from 245760, so 491520 passed a floor it failed against
+# the 32768 speed.
+REFERENCE_CONTEXT = 32768
 
 # Real trial starts the probe may spend, not counting the final confirmation
 # start. Each costs 20-30 seconds and a full VRAM allocation.
@@ -130,6 +139,11 @@ class Trial:
     # vs 11.8 tok/s - and only a real generation exposes that, so a load-only
     # trial is not enough to accept a context.
     tokens_per_second: float | None = None
+    # Measured reading (prompt processing) speed on a ~2000-token prompt, or
+    # None. Generation barely moves when llama.cpp's fit pushes MoE experts to
+    # the CPU to make room for a bigger KV cache, but reading collapses: the
+    # Qwen3.8-35B-A3B at 491520 read 112 tok/s against 485 at 32768.
+    prompt_tokens_per_second: float | None = None
     # True when this trial was stopped by the owner rather than by the machine.
     # It is deliberately NOT the same thing as `ok=False`: a canceled trial
     # learned nothing about the ceiling, so the search must discard it rather
@@ -329,8 +343,16 @@ def _round_to_grid(value: int) -> int:
 
 
 def probe_cap(native_context: int) -> int:
-    """The highest context this tuner will even try, from the model's own window."""
-    return _round_to_grid(native_context * MAX_YARN_FACTOR)
+    """The highest context this tuner will even try: the model's own window.
+
+    Exact rather than grid-rounded, so rounding can never land above it.
+    """
+    return int(native_context) * MAX_YARN_FACTOR
+
+
+def reference_context(native_context: int, current_context: int) -> int:
+    """Where the throughput baseline is measured (see REFERENCE_CONTEXT)."""
+    return min(int(current_context), REFERENCE_CONTEXT, int(native_context))
 
 
 def first_candidate(native_context: int, current_context: int) -> int:
@@ -358,6 +380,7 @@ def probe_ceiling(
     progress: Callable[[str], None] | None = None,
     cancel: threading.Event | None = None,
     floor_tokps: float | None = None,
+    prompt_floor_tokps: float | None = None,
 ) -> ProbeResult:
     """Find the highest context that really loads AND still performs.
 
@@ -367,6 +390,10 @@ def probe_ceiling(
     reporting a perfectly healthy /health. The floor is derived from a real
     baseline measurement by the caller; None (no baseline available) preserves
     the old load-only behaviour rather than inventing a threshold.
+
+    `prompt_floor_tokps` is the same floor for reading speed. Once a reading
+    baseline exists, a trial that reports no reading speed fails too: a missing
+    measurement must not slip past the safeguard.
 
     Grow-then-bisect, which is the shape a human uses by hand: double upward
     while it keeps working (cheap way to bracket an unknown ceiling), then
@@ -438,6 +465,22 @@ def probe_ceiling(
                 ),
             )
             trials[-1] = trial
+        if trial.ok and prompt_floor_tokps is not None:
+            read = trial.prompt_tokens_per_second
+            if read is None or read < prompt_floor_tokps:
+                trial = replace(
+                    trial,
+                    ok=False,
+                    reason=(
+                        "loaded but its reading speed could not be measured"
+                        if read is None
+                        else (
+                            f"loaded but read {read:.1f} tok/s, below the "
+                            f"{prompt_floor_tokps:.1f} tok/s floor"
+                        )
+                    ),
+                )
+                trials[-1] = trial
         if progress is not None:
             progress(
                 f"context {candidate}: "
@@ -466,7 +509,7 @@ def probe_ceiling(
             if high - low <= max(CONTEXT_GRID, int(low * CEILING_TOLERANCE)):
                 break
 
-        nxt = _round_to_grid(nxt)
+        nxt = min(_round_to_grid(nxt), cap)
         # A candidate that is not strictly inside the remaining unknown band
         # cannot teach us anything, so stop rather than burn a real start on it.
         if low is not None and nxt <= low:
@@ -667,17 +710,19 @@ def run_smoke_trial(
         # trial is never reported with an empty explanation.
         stderr_lines = [line for line in (stderr or "").splitlines() if line.strip()]
         reason = stderr_lines[-1].strip() if stderr_lines else f"exit code {returncode}"
-    raw_tokps = verdict.get("tokens_per_second")
+    def number(key: str) -> float | None:
+        raw = verdict.get(key)
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            return float(raw)
+        return None
+
     return Trial(
         context_size=context_size,
         ok=ok,
         reason="" if ok else reason,
         elapsed_s=float(verdict.get("elapsed_s") or 0.0),
-        tokens_per_second=(
-            float(raw_tokps)
-            if isinstance(raw_tokps, (int, float)) and not isinstance(raw_tokps, bool)
-            else None
-        ),
+        tokens_per_second=number("tokens_per_second"),
+        prompt_tokens_per_second=number("prompt_tokens_per_second"),
     )
 
 
@@ -850,7 +895,10 @@ def autotune_model_context(
     emit(f"native context: {native} (architecture {header.architecture})")
 
     # ---- Step 2: probe under the flags the final config will use ----------- #
-    probe_args = merge_server_args(previous_args, KV_CACHE_ARGS)
+    # Rope flags left by an older tune or a hand edit are dropped too: the probe
+    # stays inside the trained window, so the final config carries none, and
+    # measuring with stale ones would measure a config that never runs.
+    probe_args = merge_server_args(previous_args, KV_CACHE_ARGS, drop_flags=ROPE_FLAGS)
     if probe_args != previous_args:
         emit("adding quantized KV cache (q8_0) so the probe measures the real config ...")
         try:
@@ -860,14 +908,17 @@ def autotune_model_context(
             return result
         result.server_args = list(probe_args)
 
-    # ---- Step 3: a real throughput baseline at the current context --------- #
+    # ---- Step 3: a real throughput baseline at the reference context ------- #
     # One extra start (~30s) buys the search its floor: anything that later
-    # loads but generates far slower than TODAY's config is a spilled KV cache,
-    # not a usable ceiling. A baseline that fails or carries no measurement
-    # downgrades honestly to the old load-only search rather than blocking.
+    # loads but writes or reads far slower than the reference config is a
+    # spilled KV cache or experts pushed to the CPU, not a usable ceiling. A
+    # baseline that fails or carries no measurement downgrades honestly to the
+    # old load-only search rather than blocking.
     floor_tokps: float | None = None
-    emit(f"measuring throughput baseline at current context {current_context} ...")
-    baseline = trial_fn(current_context)
+    prompt_floor_tokps: float | None = None
+    baseline_context = reference_context(native, current_context)
+    emit(f"measuring throughput baseline at context {baseline_context} ...")
+    baseline = trial_fn(baseline_context)
     if baseline.canceled or canceled():
         _restore(rollback, model_id, current_context, previous_args, emit)
         result.server_args = list(previous_args)
@@ -881,6 +932,12 @@ def autotune_model_context(
             f"baseline {baseline.tokens_per_second:.1f} tok/s; a larger context "
             f"must keep {floor_tokps:.1f} tok/s ({int(THROUGHPUT_FLOOR * 100)}%)"
         )
+        if baseline.prompt_tokens_per_second is not None:
+            prompt_floor_tokps = baseline.prompt_tokens_per_second * THROUGHPUT_FLOOR
+            emit(
+                f"baseline reading {baseline.prompt_tokens_per_second:.1f} tok/s; a "
+                f"larger context must keep {prompt_floor_tokps:.1f} tok/s"
+            )
     else:
         emit(
             "baseline carried no throughput measurement; falling back to the "
@@ -896,6 +953,7 @@ def autotune_model_context(
         progress=emit,
         cancel=cancel,
         floor_tokps=floor_tokps,
+        prompt_floor_tokps=prompt_floor_tokps,
     )
     result.trials = probe.trials
     result.first_failure = probe.first_failure

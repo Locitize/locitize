@@ -680,11 +680,11 @@ def _model_tunable(model):
 
 
 def plain_speed(score_display):
-    """Speed cell in everyday words ("31.5 tokens per second")."""
+    """Speed cell, kept short as "31.5 tok/s" (owner request 2026-10-20)."""
     text = str(score_display or "-").strip()
     if text in ("", "-"):
         return "Not measured yet"
-    return text.replace("tok/s", "tokens per second")
+    return text
 
 
 def plain_total(text):

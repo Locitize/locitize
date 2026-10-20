@@ -174,10 +174,10 @@ class FakeMachine:
 def test_probe_finds_a_ceiling_below_the_real_failure_point():
     """The chosen value must be one that actually loaded, with room beneath the
     lowest value that actually failed - never sitting on the knife edge."""
-    machine = FakeMachine(ceiling=430000)
+    machine = FakeMachine(ceiling=200000)
     result = probe_ceiling(machine, native_context=262144, current_context=65536)
     assert result.ceiling is not None
-    assert result.ceiling <= 430000  # verified to load
+    assert result.ceiling <= 200000  # verified to load
     assert result.first_failure is not None
     assert result.first_failure > result.ceiling
     assert len(result.trials) <= autotune.DEFAULT_MAX_TRIALS
@@ -189,17 +189,24 @@ def test_probe_respects_the_trial_budget_even_on_a_very_permissive_machine():
         machine, native_context=262144, current_context=65536, max_trials=5
     )
     assert len(machine.tried) <= 5
-    # Nothing failed, so the search stopped at the 4x policy cap rather than at a
-    # real hardware limit - and says so by leaving first_failure unset.
+    # Nothing failed, so the search stopped at the trained window rather than at
+    # a real hardware limit - and says so by leaving first_failure unset.
     assert result.first_failure is None
     assert result.ceiling == probe_cap(262144)
 
 
-def test_probe_never_exceeds_four_times_the_trained_window():
-    """Past ~4x, YaRN degrades output, so a bigger number would be a worse one."""
+def test_probe_never_goes_past_the_trained_window():
+    """2026-10-20: a speed trial cannot prove a YaRN-stretched window still
+    works, so the search stays inside the window the model was trained for."""
     machine = FakeMachine(ceiling=10_000_000)
     probe_ceiling(machine, native_context=32768, current_context=8192)
-    assert max(machine.tried) <= 32768 * MAX_YARN_FACTOR
+    assert max(machine.tried) == 32768 * MAX_YARN_FACTOR == 32768
+
+
+def test_probe_never_rounds_above_an_off_grid_trained_window():
+    machine = FakeMachine(ceiling=30000)
+    probe_ceiling(machine, native_context=40000, current_context=8192)
+    assert max(machine.tried) <= 40000
 
 
 def test_probe_starts_at_the_models_own_trained_window():
@@ -209,15 +216,13 @@ def test_probe_starts_at_the_models_own_trained_window():
     assert machine.tried[0] == 131072
 
 
-def test_probe_starts_at_the_configured_value_when_it_is_already_higher():
-    """Re-tuning an already-raised model must not re-prove ground known to work."""
-    machine = FakeMachine(ceiling=430000)
-    probe_ceiling(machine, native_context=262144, current_context=400000)
-    # Snapped to the context grid (400000 is not a multiple of 4096), but the
-    # point stands: the opening bid is the already-configured value, not the
-    # lower trained window.
-    assert machine.tried[0] == 401408
-    assert machine.tried[0] > 262144
+def test_probe_comes_back_inside_the_window_after_an_older_stretched_tune():
+    """A model an older auto-tune stretched past its window (the Qwen3.8 at
+    491520) is searched again from its trained window, never above it."""
+    machine = FakeMachine(ceiling=10_000_000)
+    probe_ceiling(machine, native_context=262144, current_context=491520)
+    assert machine.tried[0] == 262144
+    assert max(machine.tried) == 262144
 
 
 def test_probe_searches_downward_when_even_the_native_window_will_not_fit():
@@ -447,7 +452,10 @@ def test_orchestrator_end_to_end_writes_the_tuned_config(tmp_path):
         model_id="alpha",
         location=str(gguf),
         current_context=65536,
-        current_server_args=["--parallel", "1"],
+        current_server_args=[
+            "--parallel", "1",
+            "--rope-scaling", "yarn", "--rope-scale", "2", "--yarn-orig-ctx", "262144",
+        ],
         write_tuning=writer,
         trial_fn=machine,
         progress=lines.append,
@@ -456,15 +464,18 @@ def test_orchestrator_end_to_end_writes_the_tuned_config(tmp_path):
     assert result.ok
     assert result.native_context == 262144
     assert result.architecture == "qwen35"
-    assert result.chosen_context is not None and result.chosen_context <= 430000
-    assert result.yarn_applied is True
-    assert result.rope_scale == 2
+    # The machine would load more, but the search stops at the trained window.
+    assert result.chosen_context == 262144
+    assert result.yarn_applied is False
+    assert result.rope_scale is None
     assert "--cache-type-k" in result.server_args
-    assert "--yarn-orig-ctx" in result.server_args
-    assert result.server_args[result.server_args.index("--yarn-orig-ctx") + 1] == "262144"
-    # First write is the probe-time KV cache change at the UNCHANGED context; the
-    # last is the tuned result.
+    assert "--rope-scaling" not in result.server_args
+    # The baseline is measured at the reference context, not the current one.
+    assert machine.tried[0] == 32768
+    # First write is the probe-time KV cache change at the UNCHANGED context,
+    # with the stale rope flags already gone; the last is the tuned result.
     assert writer.calls[0][1] == 65536
+    assert "--rope-scaling" not in writer.calls[0][2]
     assert writer.calls[-1][1] == result.chosen_context
     assert any("native context: 262144" in line for line in lines)
 
@@ -622,9 +633,10 @@ class CancellingMachine:
     that is what this returns too.
     """
 
-    def __init__(self, cancel: threading.Event, cancel_after: int):
+    def __init__(self, cancel: threading.Event, cancel_after: int, ceiling: int | None = None):
         self.cancel = cancel
         self.cancel_after = cancel_after
+        self.ceiling = ceiling
         self.tried: list[int] = []
 
     def __call__(self, context_size: int) -> Trial:
@@ -632,13 +644,13 @@ class CancellingMachine:
         if len(self.tried) >= self.cancel_after:
             self.cancel.set()
             return Trial(context_size, False, "canceled by the owner", canceled=True)
-        return Trial(context_size, True)
+        return Trial(context_size, self.ceiling is None or context_size <= self.ceiling)
 
 
 def test_probe_stops_immediately_when_the_owner_cancels():
     """No further real starts are spent after a cancel - that is the whole point."""
     cancel = threading.Event()
-    machine = CancellingMachine(cancel, cancel_after=2)
+    machine = CancellingMachine(cancel, cancel_after=2, ceiling=100000)
     result = probe_ceiling(
         machine, native_context=262144, current_context=65536, cancel=cancel
     )
@@ -898,3 +910,78 @@ def test_orchestrator_derives_floor_from_the_baseline(tmp_path):
     assert outcome.chosen_context is not None
     assert outcome.chosen_context <= 131072  # the spill zone was refused
     assert any("baseline 200.0 tok/s" in line for line in lines)
+
+
+class SpeedMachine:
+    """Every context loads; writing and reading speed fall as it grows."""
+
+    def __init__(self, read_at, write_at=lambda ctx: 60.0):
+        self.read_at = read_at
+        self.write_at = write_at
+        self.tried: list[int] = []
+
+    def __call__(self, context_size: int) -> Trial:
+        self.tried.append(context_size)
+        return Trial(
+            context_size, True,
+            tokens_per_second=self.write_at(context_size),
+            prompt_tokens_per_second=self.read_at(context_size),
+        )
+
+
+def test_a_context_that_reads_far_slower_is_rejected():
+    """2026-10-20: the Qwen3.8-35B-A3B wrote at 53 tok/s at 491520 (close to its
+    65 at 32768) but read 112 tok/s against 485. Reading has its own floor."""
+    machine = SpeedMachine(read_at=lambda ctx: 485.0 if ctx <= 131072 else 112.0)
+    result = probe_ceiling(
+        machine, native_context=262144, current_context=32768,
+        floor_tokps=50.0, prompt_floor_tokps=485.0 * 0.85,
+    )
+    assert result.ceiling is not None and result.ceiling <= 131072
+    assert result.first_failure is not None and result.first_failure > 131072
+    assert "read 112.0 tok/s" in result.trials[0].reason
+
+
+def test_a_missing_reading_speed_fails_once_a_reading_baseline_exists():
+    machine = SpeedMachine(read_at=lambda ctx: None if ctx > 65536 else 400.0)
+    result = probe_ceiling(
+        machine, native_context=262144, current_context=32768,
+        floor_tokps=50.0, prompt_floor_tokps=340.0,
+    )
+    assert result.ceiling is not None and result.ceiling <= 65536
+    assert "reading speed could not be measured" in result.trials[0].reason
+
+
+def test_no_reading_baseline_keeps_the_writing_only_search():
+    machine = SpeedMachine(read_at=lambda ctx: None)
+    result = probe_ceiling(
+        machine, native_context=131072, current_context=32768, floor_tokps=50.0,
+    )
+    assert result.ceiling == 131072
+
+
+def test_a_rerun_measures_its_baseline_at_the_reference_context(tmp_path):
+    """2026-10-20: the second tune measured its baseline at the 245760 the first
+    one chose, so its floor fell and 491520 passed. The baseline is now always
+    measured at the reference context."""
+    gguf = _fixture_gguf(tmp_path, "qwen35", 262144)
+    machine = SpeedMachine(
+        read_at=lambda ctx: 485.0 if ctx <= 65536 else 112.0,
+        write_at=lambda ctx: 65.9 if ctx <= 65536 else 52.9,
+    )
+    result = autotune_model_context(
+        model_id="alpha",
+        location=str(gguf),
+        current_context=245760,
+        current_server_args=["--parallel", "1"],
+        write_tuning=FakeWriter(),
+        trial_fn=machine,
+    )
+    assert machine.tried[0] == autotune.REFERENCE_CONTEXT
+    assert result.ok and result.chosen_context <= 65536
+
+
+def test_the_reference_context_is_never_above_the_current_or_trained_window():
+    assert autotune.reference_context(262144, 491520) == 32768
+    assert autotune.reference_context(262144, 8192) == 8192
+    assert autotune.reference_context(16384, 65536) == 16384

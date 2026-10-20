@@ -1283,7 +1283,7 @@ models:
 """,
     )
 
-    # Every context loads, so the search stops at the 4x policy cap.
+    # Every context loads, so the search stops at the trained window.
     def always_ok(model_id, context_size, **kwargs):
         return autotune_module.Trial(context_size, True)
 
@@ -1302,11 +1302,11 @@ models:
     assert progress, "the UI would look frozen without progress lines"
     assert len(final) == 1 and final[0].ok
     assert final[0].payload["native_context"] == 32768
-    assert final[0].payload["chosen_context"] == 32768 * 4
-    assert final[0].payload["yarn_applied"] is True
-    assert final[0].payload["rope_scale"] == 4
+    assert final[0].payload["chosen_context"] == 32768
+    assert final[0].payload["yarn_applied"] is False
+    assert final[0].payload["rope_scale"] is None
     # The in-memory registry now matches what was really written to disk.
-    assert registry.get("model-a").context_size == 32768 * 4
+    assert registry.get("model-a").context_size == 32768
 
 
 def test_autotune_then_benchmarks_at_the_tuned_context(tmp_path):
@@ -1361,7 +1361,7 @@ models:
     while not gc.result_q.empty():
         results.append(gc.result_q.get_nowait())
     kinds = [r.kind for r in results]
-    assert seen_context == [32768 * 4]  # benchmarked at the tuned context
+    assert seen_context == [32768]  # benchmarked at the tuned context
     assert kinds.index("benchmark") < kinds.index("autotune")
     final = next(r for r in results if r.kind == "autotune")
     assert final.ok and final.payload["tokens_per_second"] == 61.5

@@ -577,7 +577,7 @@ def test_finetune_discovered_throughput_cell_is_a_persisted_measurement(qapp):
         ) == "ft:DemoGPT-v5"
     )
     score_cell = window._model_table.item(discovered_row, 7)
-    assert score_cell.text() == "31.5 tokens per second"
+    assert score_cell.text() == "31.5 tok/s"
     assert score_cell.toolTip() == ""
     assert "31.5 tok/s generation" in window._model_status.text()
 
@@ -595,7 +595,7 @@ def test_finetune_discovered_throughput_cell_is_a_persisted_measurement(qapp):
             desktop.QtCore.Qt.ItemDataRole.UserRole
         ) == "manual"
     )
-    assert window._model_table.item(registered_row, 7).text() == "44.0 tokens per second"
+    assert window._model_table.item(registered_row, 7).text() == "44.0 tok/s"
     assert window._model_table.item(registered_row, 7).toolTip() == ""
 
     window.closeEvent(desktop.QtGui.QCloseEvent())
