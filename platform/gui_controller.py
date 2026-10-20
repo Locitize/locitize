@@ -2389,7 +2389,7 @@ class GuiController:
             self._open_llamacpp()
 
     def detect_harnesses(self) -> dict[str, str | None]:
-        """Resolve codex/opencode on PATH for the picker to grey out
+        """Resolve Claude/Codex/OpenCode on PATH for the UI to grey out
         whichever isn't installed. Cheap (shutil.which x3); safe on the UI
         thread, matching how open_chat's own webui_available() check runs."""
         from harness_launch import detect_harnesses as _detect
@@ -2404,7 +2404,7 @@ class GuiController:
     def request_launch_harness(
         self, choice: str, project_dir: str, remember: bool = True
     ) -> None:
-        """Queue a "Launch in Codex/OpenCode" request (M-harness).
+        """Queue a coding harness launch request (M-harness).
 
         Runs on the ops worker (Thread B): each launch writes a provider
         config file (Codex's config.toml, OpenCode's project opencode.json)

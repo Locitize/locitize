@@ -15,9 +15,9 @@ wizard calls (never a parallel implementation):
      default). Open WebUI is separately licensed third-party software; pass
      --no-openwebui to skip it.
 
-It then makes sure the shared model store folder exists and installs the
-claude-local shim (claude-local.cmd/.ps1 in ~/.local/bin), which runs Claude
-Code against the model locitize is serving.
+It then makes sure the shared model store folder exists and, when Claude Code
+already exists, installs the claude-local shim beside that CLI. It never runs
+Claude's remote installer.
 
 Run it from the platform venv AFTER `pip install -r requirements.txt`:
 
@@ -34,6 +34,7 @@ user-driven - add them later with locitize.vbs --setup. ASCII only.
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
@@ -159,6 +160,11 @@ def main(argv: list[str] | None = None) -> int:
     say("Done. Verify with: launcher.py --health --json")
     store = setup_env.ensure_model_store(say)
     say(f"model store: {store.message}")
+    # Headless setup never installs Claude Code. It only adds the local shim
+    # when the user already has the vendor CLI on PATH.
+    if shutil.which("claude"):
+        shim = setup_env.install_claude_local(say)
+        say(f"claude-local: {shim.message}")
     say("Launch the desktop with: locitize.vbs")
     return 0 if failed == 0 else 1
 

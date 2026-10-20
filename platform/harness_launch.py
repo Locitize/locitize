@@ -1,4 +1,4 @@
-"""Launch Codex and OpenCode against local models with scoped process settings.
+"""Launch Claude Code, Codex and OpenCode against local models.
 
 Pure configuration helpers and narrow terminal/installer operations are kept
 outside the GUI so their behavior can be tested without a model or terminal.
@@ -20,13 +20,14 @@ try:
 except ImportError:  # non-Windows (test collection on CI, etc.)
     winreg = None  # type: ignore[assignment]
 
-# The four surfaces the Chat picker offers. "openwebui"/"llamacpp" are the
-# pre-existing built-in choices (webui.py); these two are external harnesses.
+# The three external coding harnesses offered on the Code page.
+HARNESS_CLAUDE = "claude"
 HARNESS_CODEX = "codex"
 HARNESS_OPENCODE = "opencode"
-HARNESSES = (HARNESS_CODEX, HARNESS_OPENCODE)
+HARNESSES = (HARNESS_CODEX, HARNESS_CLAUDE, HARNESS_OPENCODE)
 
 _EXECUTABLE_NAMES = {
+    HARNESS_CLAUDE: "claude",
     HARNESS_CODEX: "codex",
     HARNESS_OPENCODE: "opencode",
 }
@@ -45,7 +46,7 @@ def detect_executable(harness: str) -> str | None:
 
 
 def detect_harnesses() -> dict[str, str | None]:
-    """Resolve both harness executables in one pass, for the picker UI."""
+    """Resolve all harness executables in one pass, for the desktop UI."""
     return {name: detect_executable(name) for name in HARNESSES}
 
 
@@ -355,6 +356,37 @@ def opencode_launch_argv(project_dir: str, model_id: str) -> list[str]:
     return ["opencode", project_dir, "-m", f"{_OPENCODE_PROVIDER_NAME}/{model_id}"]
 
 
+# Claude Code's complete built-in and configured MCP tool schema can exceed a
+# small local context or llama-server's grammar limits. Keep local launches to
+# the coding primitives verified by the old integration.
+CLAUDE_LOCAL_SESSION_TOOLS = "Bash,Edit,Read,Write,Glob,Grep"
+
+
+def claude_launch_argv(model_id: str) -> list[str]:
+    """Build a local-only Claude Code invocation for the selected model."""
+    return [
+        "claude",
+        "--model",
+        model_id,
+        "--strict-mcp-config",
+        "--tools",
+        CLAUDE_LOCAL_SESSION_TOOLS,
+    ]
+
+
+def claude_launch_env(
+    model_base_url: str, context_size: int | None = None
+) -> dict[str, str]:
+    """Point one Claude process at llama-server's native Messages API."""
+    env = {
+        "ANTHROPIC_BASE_URL": model_base_url,
+        "ANTHROPIC_API_KEY": "locitize-local",
+    }
+    if context_size:
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context_size)
+    return env
+
+
 # --------------------------------------------------------------------------- #
 # Spawning a visible, interactive terminal (the opposite of the CREATE_NO_WINDOW
 # console-flash fixes elsewhere in this codebase: these two ARE meant to be
@@ -599,6 +631,23 @@ def _run_powershell(script: str, timeout: int = _INSTALL_TIMEOUT_S) -> tuple[boo
     return True, "ok"
 
 
+def install_claude_code() -> tuple[bool, str]:
+    """Run Claude's official installer, then place the claude-local shim."""
+    ok, detail = _run_powershell("irm https://claude.ai/install.ps1 | iex")
+    if not ok:
+        return False, f"Claude Code install failed: {detail}"
+    claude_path = detect_executable_fresh(HARNESS_CLAUDE)
+    if claude_path is None:
+        return False, (
+            "the installer ran but claude was not found afterward - "
+            "restart locitize and it should be picked up"
+        )
+    import setup_env
+
+    shim = setup_env.install_claude_local(claude_path=claude_path)
+    if not shim.ok:
+        return False, f"Claude Code installed, but {shim.message}"
+    return True, f"Claude Code installed; {shim.message}"
 
 
 def install_codex() -> tuple[bool, str]:
@@ -711,6 +760,7 @@ def install_opencode() -> tuple[bool, str]:
 
 
 INSTALL_FUNCTIONS = {
+    HARNESS_CLAUDE: install_claude_code,
     HARNESS_CODEX: install_codex,
     HARNESS_OPENCODE: install_opencode,
 }

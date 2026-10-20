@@ -49,3 +49,19 @@ def test_no_uv_means_pip(tmp_path, monkeypatch):
     monkeypatch.setattr(setup_env, "_run_streamed", lambda argv, out, t: (calls.append(argv), (0, []))[1])
     assert setup_env.pip_install(_fake_python(tmp_path), ["PyYAML>=6.0"]).ok
     assert calls[0][1:3] == ["-m", "pip"]
+
+
+def test_harness_detection_requires_all_supported_clis(tmp_path, monkeypatch):
+    monkeypatch.setattr(setup_env, "detect_nvidia", lambda: (False, ""))
+    monkeypatch.setattr(setup_env, "find_llama_server", lambda: "")
+    monkeypatch.setattr(setup_env, "_settings_paths", lambda data_root: {})
+    monkeypatch.setattr(setup_env, "_has_registered_model", lambda data_root: False)
+
+    present = {"claude", "codex"}
+    monkeypatch.setattr(setup_env, "_which", lambda name: name if name in present else "")
+    state, _machine = setup_env.detect_state(setup_env.Machine(data_root=tmp_path))
+    assert state["harness_clis"] is False
+
+    present.add("opencode")
+    state, _machine = setup_env.detect_state(setup_env.Machine(data_root=tmp_path))
+    assert state["harness_clis"] is True

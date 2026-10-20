@@ -162,13 +162,13 @@ REQUIREMENTS: dict[str, Requirement] = {
         ),
         Requirement(
             "node_runtime", KIND_WINGET, "Node.js LTS",
-            "Required by two of the three coding harnesses. User-scope winget "
-            "install, no elevation.",
+            "Required by OpenCode only. The winget install may require Windows "
+            "admin consent.",
             30,
         ),
         Requirement(
             "harness_clis", KIND_WINGET, "Coding harness CLIs",
-            "Codex and OpenCode, pointed at your local model.",
+            "Claude Code, Codex, and OpenCode, pointed at your local model.",
             120,
         ),
         Requirement(
@@ -261,7 +261,7 @@ FEATURES: tuple[Feature, ...] = (
     ),
     Feature(
         "harnesses", "Code with a local model",
-        "Open Codex or OpenCode in a terminal, pointed at your own "
+        "Open Claude Code, Codex or OpenCode in a terminal, pointed at your own "
         "model instead of a cloud API.",
         requires=("node_runtime", "harness_clis"),
     ),

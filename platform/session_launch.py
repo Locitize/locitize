@@ -7,12 +7,12 @@ from pathlib import Path
 
 import harness_launch
 
-LOCAL_PROVIDERS = ("codex", "opencode")
+LOCAL_PROVIDERS = ("codex", "claude", "opencode")
 
 
 def build_local_launch(provider, project, model_id, port, resume_id="", context_size=None):
     if provider not in LOCAL_PROVIDERS:
-        raise ValueError("Local model routing is available for Codex and OpenCode")
+        raise ValueError("Local model routing is available for Codex, Claude Code and OpenCode")
     if not Path(project).is_dir():
         raise ValueError("Project folder is missing. Choose its new location before launching.")
     if not isinstance(port, int) or not 1 <= port <= 65535:
@@ -21,13 +21,13 @@ def build_local_launch(provider, project, model_id, port, resume_id="", context_
         raise ValueError("Invalid local model identity")
     if resume_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,199}", resume_id):
         raise ValueError("Unsupported session identity")
+    if provider in ("codex", "claude") and context_size is not None and (
+        not isinstance(context_size, int) or isinstance(context_size, bool)
+        or context_size < 2
+    ):
+        raise ValueError("Measured local context must be an integer of at least 2 tokens")
     base = f"http://127.0.0.1:{port}"
     if provider == "codex":
-        if context_size is not None and (
-            not isinstance(context_size, int) or isinstance(context_size, bool)
-            or context_size < 2
-        ):
-            raise ValueError("Measured local context must be an integer of at least 2 tokens")
         argv = ["codex"] + (["resume", resume_id] if resume_id else [])
         argv += ["-C", project, "-m", model_id]
         overrides = {
@@ -47,6 +47,11 @@ def build_local_launch(provider, project, model_id, port, resume_id="", context_
         for key, value in overrides.items():
             argv += ["-c", f"{key}={json.dumps(value)}"]
         env = harness_launch.codex_launch_env()
+    elif provider == "claude":
+        argv = harness_launch.claude_launch_argv(model_id)
+        if resume_id:
+            argv += ["--resume", resume_id]
+        env = harness_launch.claude_launch_env(base, context_size)
     else:
         argv = harness_launch.opencode_launch_argv(project, model_id)
         if resume_id:

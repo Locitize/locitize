@@ -40,6 +40,7 @@ HEADER_LOGO_PATH = ASSETS_DIR / "locitize_header_wordmark.png"
 # rather than a vague "we'll set it up" - one source so the two dialogs
 # can't drift apart and say different things about what actually runs.
 HARNESS_INSTALL_SUMMARIES = {
+    "claude": "irm https://claude.ai/install.ps1 | iex  (official Claude Code installer)",
     "codex": "irm https://chatgpt.com/codex/install.ps1 | iex  (official Codex installer)",
     "opencode": (
         "npm i -g opencode-ai  (installs Node.js LTS via winget first if "
@@ -1971,6 +1972,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._code_harness_buttons = {}
         for key, label in (
             ("codex", "Codex"),
+            ("claude", "Claude Code"),
             ("opencode", "OpenCode"),
         ):
             button = QtWidgets.QPushButton(label)
@@ -2166,7 +2168,7 @@ class MainWindow(QtWidgets.QMainWindow):
         clis_grid.setColumnStretch(1, 1)
         self._cli_status_labels = {}
         for row_index, (key, label) in enumerate(
-            (("codex", "Codex"), ("opencode", "OpenCode"))
+            (("codex", "Codex"), ("claude", "Claude Code"), ("opencode", "OpenCode"))
         ):
             clis_grid.addWidget(QtWidgets.QLabel(label), row_index, 0)
             status = QtWidgets.QLabel("checking...")
@@ -4993,8 +4995,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._gc.request_launch_harness(choice, project_dir, remember)
 
     def _apply_launch_harness_result(self, result):
-        """Surface a coding-tool launch's outcome, including the Claude bridge's
-        stated tool-use limitation, without hiding a failure."""
+        """Surface a coding-tool launch's outcome without hiding a failure."""
         if not result.ok:
             self._model_status.setText(result.error or "Could not open the coding tool.")
             return
@@ -5439,7 +5440,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not missing:
             return
 
-        labels = {"codex": "Codex", "opencode": "OpenCode"}
+        labels = {"claude": "Claude Code", "codex": "Codex", "opencode": "OpenCode"}
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Add coding tools?")
         dialog.setModal(True)

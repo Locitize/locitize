@@ -6,6 +6,7 @@ to :data:`PROVIDERS`. Nothing else in the app changes.
 from __future__ import annotations
 
 from .base import Provider
+from .claude import ClaudeProvider
 from .codex import CodexProvider
 from .copilot import CopilotProvider
 from .gemini import GeminiProvider
@@ -14,6 +15,7 @@ from .opencode import OpencodeProvider
 from .qwen import QwenProvider
 
 PROVIDERS: list[Provider] = [
+    ClaudeProvider(),
     CodexProvider(),
     GrokProvider(),
     CopilotProvider(),

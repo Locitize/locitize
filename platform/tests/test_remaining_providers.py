@@ -10,13 +10,13 @@ from session_launch import LOCAL_PROVIDERS, build_local_launch
 
 
 def test_local_launch_catalog_and_installers_agree():
-    assert LOCAL_PROVIDERS == ("codex", "opencode")
+    assert LOCAL_PROVIDERS == ("codex", "claude", "opencode")
     assert harness_launch.HARNESSES == LOCAL_PROVIDERS
     assert set(harness_launch.INSTALL_FUNCTIONS) == set(LOCAL_PROVIDERS)
 
 
 def test_surviving_history_adapters_remain_registered():
-    expected = {"codex", "grok", "copilot", "gemini", "qwen", "opencode"}
+    expected = {"claude", "codex", "grok", "copilot", "gemini", "qwen", "opencode"}
     assert {provider.key for provider in PROVIDERS} == expected
     assert expected <= set(PROVIDER_OPTIONS)
     assert all(get_provider(key) is not None for key in expected)
@@ -36,11 +36,16 @@ def test_fresh_and_resume_local_launch_keep_scoped_routing(tmp_path, provider):
             assert 'model_auto_compact_token_limit=26214' in argv
             assert any('http://127.0.0.1:8099/v1' in arg for arg in argv)
             assert env["LOCITIZE_CODEX_API_KEY"]
+        elif provider == "claude":
+            assert "--strict-mcp-config" in argv
+            assert argv[argv.index("--tools") + 1] == "Bash,Edit,Read,Write,Glob,Grep"
+            assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8099"
+            assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "32768"
         else:
             config = json.loads(env["OPENCODE_CONFIG_CONTENT"])
             assert config["provider"]["locitize"]["options"]["baseURL"] == "http://127.0.0.1:8099/v1"
 
 
 def test_unregistered_local_provider_rejected_before_launch(tmp_path):
-    with pytest.raises(ValueError, match="Codex.*OpenCode"):
+    with pytest.raises(ValueError, match="Codex.*Claude Code.*OpenCode"):
         build_local_launch("retired-provider", str(tmp_path), "local-model", 8099)

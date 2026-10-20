@@ -35,8 +35,9 @@ def test_unknown_context_leaves_model_defaults(tmp_path):
     assert "model_auto_compact_token_limit" not in overrides(argv)
 
 
+@pytest.mark.parametrize("provider", ["codex", "claude"])
 @pytest.mark.parametrize("invalid", [True, False, 0, -1, 1, "8192", 8192.0])
-def test_bad_context_rejected_without_coercion(tmp_path, invalid):
+def test_bad_context_rejected_without_coercion(tmp_path, invalid, provider):
     with pytest.raises(ValueError, match="Measured local context"):
-        build_local_launch("codex", str(tmp_path), "registered", 8093,
+        build_local_launch(provider, str(tmp_path), "registered", 8093,
                            context_size=invalid)

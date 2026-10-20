@@ -1518,7 +1518,7 @@ models:
 
 # --------------------------------------------------------------------------- #
 # request_launch_harness / _do_launch_harness (owner request 2026-08-21:
-# "Launch in Codex / OpenCode" from the Chat picker)
+# Claude Code / Codex / OpenCode from the Code page)
 # --------------------------------------------------------------------------- #
 
 
@@ -1599,6 +1599,28 @@ def test_launch_harness_codex_wires_provider_and_spawns(tmp_path, monkeypatch):
     assert env == {"LOCITIZE_CODEX_API_KEY": "locitize-local"}
 
 
+def test_launch_harness_claude_targets_model_port_without_v1_suffix(tmp_path, monkeypatch):
+    import harness_launch
+
+    gc, _registry = _real_gui_controller(tmp_path, _minimal_models_yaml())
+    gc._controller.running_model_id = "model-a"
+    gc._active_port = 8091
+    monkeypatch.setattr(harness_launch, "detect_executable", lambda harness: "/bin/claude")
+    spawns = []
+    monkeypatch.setattr(
+        harness_launch,
+        "spawn_in_terminal",
+        lambda argv, cwd, env, title: spawns.append((argv, cwd, env, title)),
+    )
+    gc.request_launch_harness("claude", str(tmp_path), remember=False)
+    _dispatch_next(gc)
+    result = gc.result_q.get_nowait()
+    assert result.kind == "launch_harness" and result.ok
+    argv, _cwd, env, _title = spawns[0]
+    assert "--strict-mcp-config" in argv
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8091"
+
+
 
 
 def test_launch_harness_remember_persists_via_write_chat_harness_dir(tmp_path, monkeypatch):
@@ -1632,9 +1654,13 @@ def test_detect_harnesses_delegates_to_harness_launch(tmp_path, monkeypatch):
 
     gc, _registry = _real_gui_controller(tmp_path, _minimal_models_yaml())
     monkeypatch.setattr(
-        harness_launch, "detect_harnesses", lambda: {"codex": "/bin/codex", "opencode": None}
+        harness_launch,
+        "detect_harnesses",
+        lambda: {"codex": "/bin/codex", "claude": None, "opencode": None},
     )
-    assert gc.detect_harnesses() == {"codex": "/bin/codex", "opencode": None}
+    assert gc.detect_harnesses() == {
+        "codex": "/bin/codex", "claude": None, "opencode": None
+    }
 
 
 def test_last_project_dir_reads_from_settings(tmp_path):

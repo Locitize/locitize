@@ -285,8 +285,8 @@ def detect_state(machine: Machine | None = None) -> tuple[dict[str, bool], Machi
         "vision_projector": False,
         "first_model": _has_registered_model(info.data_root),
         "node_runtime": bool(_which("node")),
-        "harness_clis": any(
-            _which(name) for name in ("codex", "opencode")
+        "harness_clis": all(
+            _which(name) for name in ("claude", "codex", "opencode")
         ),
         "caddy": bool(_which("caddy")),
         "webui_venv": (REPO_DIR / ".webui-venv").is_dir(),
@@ -1514,6 +1514,34 @@ def ensure_model_store(say: Callable[[str], None] | None = None) -> StepResult:
         return StepResult("model_store", False, f"could not create {store}: {exc}")
     note(f"   created model store: {store}")
     return StepResult("model_store", True, f"created model store: {store}")
+
+
+def install_claude_local(
+    say: Callable[[str], None] | None = None,
+    claude_path: Path | str | None = None,
+) -> StepResult:
+    """Install the local-routing shim beside an existing Claude executable."""
+    note = say or (lambda _text: None)
+    claude = str(claude_path) if claude_path else shutil.which("claude")
+    if not claude:
+        return StepResult(
+            "claude_local",
+            True,
+            "claude CLI not installed - claude-local shim skipped",
+            skipped=True,
+        )
+    target_dir = Path(claude).resolve().parent
+    source_dir = Path(__file__).resolve().parent / "scripts"
+    try:
+        for name in ("claude-local.cmd", "claude-local.ps1"):
+            source = source_dir / name
+            if not source.is_file():
+                return StepResult("claude_local", False, f"shim source missing: {source}")
+            shutil.copyfile(source, target_dir / name)
+    except OSError as exc:
+        return StepResult("claude_local", False, f"could not install claude-local: {exc}")
+    note(f"   claude-local installed to {target_dir}")
+    return StepResult("claude_local", True, f"claude-local -> {target_dir}")
 
 
 def discovery_roots() -> list[Path]:

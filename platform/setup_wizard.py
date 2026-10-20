@@ -765,6 +765,46 @@ class SetupWizard:
             )
         self._events.put(("done", summary))
 
+    def _install_harnesses(self, say: Callable[[str], None]) -> setup_env.StepResult:
+        """Install each missing coding harness and report every failure."""
+        import harness_launch
+
+        try:
+            detected = harness_launch.detect_harnesses()
+        except (OSError, ValueError) as exc:
+            return setup_env.StepResult(
+                "harness_clis", False, f"could not detect coding harnesses: {exc}"
+            )
+        missing = [key for key in harness_launch.HARNESSES if not detected.get(key)]
+        if not missing:
+            return setup_env.StepResult(
+                "harness_clis", True, "all coding harnesses already installed", skipped=True
+            )
+
+        failures: list[str] = []
+        installed: list[str] = []
+        for key in missing:
+            say(f"   installing {key}...")
+            try:
+                ok, message = harness_launch.install_harness(key)
+            except (OSError, ValueError) as exc:
+                ok, message = False, str(exc)
+            say(f"   {'ok' if ok else 'FAILED'}: {message}")
+            if not ok:
+                failures.append(f"{key}: {message}")
+                continue
+            installed.append(key)
+            if key == harness_launch.HARNESS_CLAUDE:
+                shim = setup_env.install_claude_local(say)
+                if not shim.ok:
+                    failures.append(f"claude-local: {shim.message}")
+
+        if failures:
+            return setup_env.StepResult("harness_clis", False, "; ".join(failures))
+        return setup_env.StepResult(
+            "harness_clis", True, "installed " + ", ".join(installed)
+        )
+
     def _run_step(
         self,
         step: setup_plan.Step,

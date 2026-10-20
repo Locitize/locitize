@@ -130,7 +130,7 @@ class FakeGuiController:
         self.calls.append(("start_openwebui_and_open", remember))
 
     def detect_harnesses(self):
-        return {"codex": None, "opencode": None}
+        return {"codex": None, "claude": None, "opencode": None}
 
     def last_project_dir(self):
         return ""
@@ -644,6 +644,7 @@ def test_show_harness_onboarding_skips_when_all_installed(qapp, monkeypatch):
     fake = FakeGuiController()
     fake.detect_harnesses = lambda: {
         "codex": "/bin/codex",
+        "claude": "/bin/claude",
         "opencode": "/bin/opencode",
     }
     window = desktop.MainWindow(fake, health="OK")
@@ -669,7 +670,9 @@ def test_show_harness_onboarding_accepting_with_nothing_checked_installs_nothing
     # reflexive OK must never run a remote installer script.
     app, desktop, qt_gui = qapp
     fake = FakeGuiController()
-    fake.detect_harnesses = lambda: {"codex": "/bin/codex", "opencode": None}
+    fake.detect_harnesses = lambda: {
+        "codex": "/bin/codex", "claude": None, "opencode": None
+    }
     window = desktop.MainWindow(fake, health="OK")
 
     monkeypatch.setattr(
@@ -690,7 +693,9 @@ def test_show_harness_onboarding_offers_missing_and_installs_checked_ones(qapp, 
     """1-2 missing -> dialog shown; only explicitly-checked boxes install."""
     app, desktop, qt_gui = qapp
     fake = FakeGuiController()
-    fake.detect_harnesses = lambda: {"codex": "/bin/codex", "opencode": None}
+    fake.detect_harnesses = lambda: {
+        "codex": "/bin/codex", "claude": None, "opencode": None
+    }
     window = desktop.MainWindow(fake, health="OK")
 
     monkeypatch.setattr(
@@ -703,7 +708,7 @@ def test_show_harness_onboarding_offers_missing_and_installs_checked_ones(qapp, 
     window.show_harness_onboarding_if_needed()
 
     requested = sorted(c[1] for c in fake.calls if c[0] == "request_install_harness")
-    assert requested == ["opencode"]  # codex already installed, not offered
+    assert requested == ["claude", "opencode"]  # codex already installed
     window.closeEvent(qt_gui.QCloseEvent())
     window.deleteLater()
     app.processEvents()
@@ -713,7 +718,7 @@ def test_show_harness_onboarding_installs_nothing_when_declined(qapp, monkeypatc
     """3 missing -> declining the dialog requests zero installs."""
     app, desktop, qt_gui = qapp
     fake = FakeGuiController()
-    fake.detect_harnesses = lambda: {"codex": None, "opencode": None}
+    fake.detect_harnesses = lambda: {"codex": None, "claude": None, "opencode": None}
     window = desktop.MainWindow(fake, health="OK")
 
     monkeypatch.setattr(

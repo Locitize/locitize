@@ -1,4 +1,4 @@
-"""Tests for harness_launch.py's "Launch in Codex/OpenCode" wiring
+"""Tests for harness_launch.py's Claude Code/Codex/OpenCode wiring
 (owner request 2026-08-21). Everything here is exercised without a real
 model, a running llama-server, or the harness CLIs actually being installed:
 detection is a monkeypatched shutil.which, config writers operate on
@@ -38,8 +38,8 @@ def test_detect_executable_rejects_unknown_harness():
         hl.detect_executable("not-a-real-harness")
 
 
-def test_detect_harnesses_reports_both_independently(monkeypatch):
-    resolved = {"codex": None, "opencode": "/bin/opencode"}
+def test_detect_harnesses_reports_all_independently(monkeypatch):
+    resolved = {"codex": None, "claude": "/bin/claude", "opencode": "/bin/opencode"}
     monkeypatch.setattr(hl.shutil, "which", lambda name: resolved[name])
     assert hl.detect_harnesses() == resolved
 
@@ -281,6 +281,27 @@ def test_opencode_launch_argv():
     assert argv == ["opencode", "/locitize-test/proj", "-m", "locitize/qwen3-14b"]
 
 
+def test_claude_launch_argv_carries_model_and_trims_tools():
+    argv = hl.claude_launch_argv("qwen3-14b")
+    assert argv[:3] == ["claude", "--model", "qwen3-14b"]
+    assert "--strict-mcp-config" in argv
+    assert argv[argv.index("--tools") + 1] == hl.CLAUDE_LOCAL_SESSION_TOOLS
+    assert hl.CLAUDE_LOCAL_SESSION_TOOLS == "Bash,Edit,Read,Write,Glob,Grep"
+
+
+def test_claude_launch_env_points_at_server_and_sets_real_context():
+    env = hl.claude_launch_env("http://127.0.0.1:8080", context_size=10000)
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8080"
+    assert env["ANTHROPIC_API_KEY"]
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "10000"
+
+
+def test_claude_launch_env_omits_unknown_context():
+    assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in hl.claude_launch_env(
+        "http://127.0.0.1:8080"
+    )
+
+
 
 
 
@@ -454,6 +475,44 @@ def test_refreshed_search_path_is_plain_path_off_windows(monkeypatch):
     monkeypatch.setattr(hl.sys, "platform", "linux")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     assert hl.refreshed_search_path() == "/usr/bin:/bin"
+
+
+def test_install_claude_code_success_installs_shim(monkeypatch):
+    import setup_env
+
+    calls = []
+    monkeypatch.setattr(hl.subprocess, "run", lambda *args, **kwargs: _completed(0))
+    monkeypatch.setattr(hl, "detect_executable_fresh", lambda harness: "/fake/claude")
+    monkeypatch.setattr(
+        setup_env,
+        "install_claude_local",
+        lambda **kwargs: calls.append(kwargs) or setup_env.StepResult(
+            "claude_local", True, "claude-local -> /fake"
+        ),
+    )
+    ok, message = hl.install_claude_code()
+    assert ok is True
+    assert "Claude Code installed" in message
+    assert calls == [{"claude_path": "/fake/claude"}]
+
+
+def test_install_claude_code_installer_failure_surfaces_stderr(monkeypatch):
+    monkeypatch.setattr(
+        hl.subprocess,
+        "run",
+        lambda *args, **kwargs: _completed(1, stderr="network unreachable"),
+    )
+    ok, message = hl.install_claude_code()
+    assert ok is False
+    assert "network unreachable" in message
+
+
+def test_install_claude_code_not_found_after_install_says_restart(monkeypatch):
+    monkeypatch.setattr(hl.subprocess, "run", lambda *args, **kwargs: _completed(0))
+    monkeypatch.setattr(hl, "detect_executable_fresh", lambda harness: None)
+    ok, message = hl.install_claude_code()
+    assert ok is False
+    assert "restart locitize" in message
 
 
 

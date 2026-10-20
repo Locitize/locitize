@@ -14,7 +14,11 @@ class RedesignFake(FakeGuiController):
     def __init__(self):
         super().__init__()
         self.ready = {"listen": True, "whisper_server": True, "speak": True}
-        self.harnesses = {"codex": "/bin/codex", "opencode": None}
+        self.harnesses = {
+            "codex": "/bin/codex",
+            "claude": "/bin/claude",
+            "opencode": None,
+        }
         self.selected = []
 
     def voice_readiness(self):
@@ -135,6 +139,8 @@ def test_code_page_has_launcher_sessions_memory_and_one_release_button(win):
     assert len(release) == 1
     # A tool that is not installed is greyed out and says where to get it.
     assert window._code_harness_buttons["codex"].isEnabled()
+    assert window._code_harness_buttons["claude"].text() == "Claude Code"
+    assert window._code_harness_buttons["claude"].isEnabled()
     missing = window._code_harness_buttons["opencode"]
     assert not missing.isEnabled()
     assert "Settings" in missing.toolTip()
@@ -208,6 +214,26 @@ def test_settings_is_app_level_only(win):
         assert settings.isAncestorOf(widget)
     for widget in (window._gpu_edit, window._ctx_edit, window._id_edit):
         assert not settings.isAncestorOf(widget)
+    assert "claude" in window._cli_status_labels
+    assert settings.isAncestorOf(window._cli_status_labels["claude"])
+
+
+def test_startup_harness_onboarding_offers_claude_code(win, monkeypatch):
+    window, fake, desktop = win
+    fake.harnesses = {
+        "codex": "/bin/codex",
+        "claude": None,
+        "opencode": "/bin/opencode",
+    }
+    seen = []
+
+    def inspect_and_decline(dialog):
+        seen.extend(box.text() for box in dialog.findChildren(desktop.QtWidgets.QCheckBox))
+        return desktop.QtWidgets.QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(desktop.QtWidgets.QDialog, "exec", inspect_and_decline)
+    window.show_harness_onboarding_if_needed()
+    assert seen == ["Claude Code"]
 
 
 def test_whisper_listen_speak_report_in_their_own_labels(win):

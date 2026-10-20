@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import setup_env
 import setup_plan
 import setup_wizard
+import harness_launch
 
 
 def _step(key, kind, essential=False):
@@ -180,3 +181,57 @@ def test_gpu_kokoro_refuses_honestly_without_an_nvidia_card(monkeypatch):
     gpu = wiz._run_step(_real_step("kokoro_pip_cuda"), setup_env.REPO_DIR / "x.exe", lambda t: None, {})
     assert not gpu.ok and "no NVIDIA card" in gpu.message
     assert calls == [setup_env.PIP_SETS["kokoro_pip"]]
+
+
+def test_install_harnesses_installs_only_missing_and_shim_after_claude(monkeypatch):
+    wizard = object.__new__(setup_wizard.SetupWizard)
+    events = []
+    monkeypatch.setattr(
+        harness_launch,
+        "detect_harnesses",
+        lambda: {"codex": "/bin/codex", "claude": None, "opencode": None},
+    )
+
+    def install(key):
+        events.append(("install", key))
+        return True, f"{key} installed"
+
+    monkeypatch.setattr(harness_launch, "install_harness", install)
+    monkeypatch.setattr(
+        setup_env,
+        "install_claude_local",
+        lambda say=None: events.append(("shim", "claude"))
+        or setup_env.StepResult("claude_local", True, "shim installed"),
+    )
+    result = wizard._install_harnesses(lambda text: None)
+    assert result.ok
+    assert events == [
+        ("install", "claude"),
+        ("shim", "claude"),
+        ("install", "opencode"),
+    ]
+
+
+def test_install_harnesses_aggregates_every_tool_failure(monkeypatch):
+    wizard = object.__new__(setup_wizard.SetupWizard)
+    monkeypatch.setattr(
+        harness_launch,
+        "detect_harnesses",
+        lambda: {key: None for key in harness_launch.HARNESSES},
+    )
+    outcomes = {
+        "codex": (False, "codex broke"),
+        "claude": (True, "claude installed"),
+        "opencode": (False, "opencode broke"),
+    }
+    monkeypatch.setattr(harness_launch, "install_harness", lambda key: outcomes[key])
+    monkeypatch.setattr(
+        setup_env,
+        "install_claude_local",
+        lambda say=None: setup_env.StepResult("claude_local", False, "shim broke"),
+    )
+    result = wizard._install_harnesses(lambda text: None)
+    assert not result.ok
+    assert "codex broke" in result.message
+    assert "opencode broke" in result.message
+    assert "shim broke" in result.message

@@ -7,6 +7,10 @@ from pathlib import Path
 
 # -- User / provider paths ---------------------------------------------------
 
+CLAUDE_DIR = Path.home() / ".claude"
+HISTORY_FILE = CLAUDE_DIR / "history.jsonl"
+PROJECTS_DIR = CLAUDE_DIR / "projects"
+
 CODEX_DIR = Path.home() / ".codex"
 CODEX_INDEX_FILE = CODEX_DIR / "session_index.jsonl"
 CODEX_SESSIONS_DIR = CODEX_DIR / "sessions"
@@ -54,6 +58,13 @@ MAX_PREVIEW_MESSAGE_CHARS = 600
 
 # -- Provider catalog (resumable sources) -----------------------------------
 PROVIDER_OPTIONS: dict[str, dict] = {
+    "claude": {
+        "label": "Claude Code",
+        "description": "Claude Code sessions and history",
+        "path": str(CLAUDE_DIR),
+        "paths": [CLAUDE_DIR],
+        "commands": ["claude"],
+    },
     "codex": {
         "label": "Codex",
         "description": "Codex sessions",
@@ -177,6 +188,7 @@ ACCENT = {
 
 PROVIDER_COLORS = {
     "amp": ACCENT["blue"],
+    "claude": ACCENT["orange"],
     "codex": ACCENT["yellow"],
     "copilot": ACCENT["purple"],
     "grok": ACCENT["pink"],
