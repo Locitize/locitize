@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import threading
 import shutil
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
@@ -1723,9 +1724,11 @@ def _edit_registry(
         )
 
     try:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
+        text = raw.decode("utf-8")
     except OSError as exc:
         raise RegistryWriteError(_registry_os_message(path, exc, "read")) from exc
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
 
     lines = text.splitlines(keepends=True)
     section_start, _section_end = _locate_top_section(lines, "models")
@@ -1739,40 +1742,87 @@ def _edit_registry(
 
     new_text = transform(lines, path)
 
+    token = _expect_own_registry_write(path, raw, new_text.encode("utf-8"))
+    written = False
     try:
         _atomic_write(path, new_text)
     except OSError as exc:
         raise RegistryWriteError(_registry_os_message(path, exc, "write")) from exc
-    _remember_own_registry_write(path)
+    else:
+        written = True
+    finally:
+        if not written:
+            _forget_own_registry_write(path, token)
 
 
-# Fingerprint of models.yaml as this process last wrote it, per resolved path.
-# The desktop's on-disk watcher uses it to tell its own auto-tune / benchmark
-# saves apart from an edit made outside the app.
-_OWN_REGISTRY_WRITES: dict[str, str] = {}
+# What this process last knew models.yaml to hold, per resolved path: the
+# baseline the desktop's watcher saw, or the bytes of this app's own latest
+# save. The digest is recorded BEFORE the save lands so the watcher can never
+# catch the new file ahead of it, and a save that finds the file already
+# changed by someone else flags that, so the outside edit is still reported.
+_REGISTRY_KNOWN: dict[str, str] = {}
+_REGISTRY_OUTSIDE: set[str] = set()
+_REGISTRY_KNOWN_LOCK = threading.Lock()
 
 
-def _registry_fingerprint(path: Path) -> str | None:
+def _registry_key(path: Path) -> str:
+    return os.path.normcase(str(Path(path).resolve()))
+
+
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _expect_own_registry_write(path: Path, before: bytes, after: bytes) -> tuple[str, str | None]:
+    key = _registry_key(path)
+    with _REGISTRY_KNOWN_LOCK:
+        previous = _REGISTRY_KNOWN.get(key)
+        if previous is not None and previous != _digest(before):
+            _REGISTRY_OUTSIDE.add(key)
+        _REGISTRY_KNOWN[key] = _digest(after)
+    return key, previous
+
+
+def _forget_own_registry_write(path: Path, token: tuple[str, str | None]) -> None:
+    key, previous = token
+    with _REGISTRY_KNOWN_LOCK:
+        if previous is None:
+            _REGISTRY_KNOWN.pop(key, None)
+        else:
+            _REGISTRY_KNOWN[key] = previous
+
+
+def note_registry_baseline(path: Path | str) -> None:
+    """Record models.yaml as it is now, as already known to this app."""
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        data = Path(path).read_bytes()
     except OSError:
-        return None
-
-
-def _remember_own_registry_write(path: Path) -> None:
-    digest = _registry_fingerprint(path)
-    if digest is not None:
-        _OWN_REGISTRY_WRITES[str(path.resolve())] = digest
+        return
+    with _REGISTRY_KNOWN_LOCK:
+        _REGISTRY_KNOWN[_registry_key(Path(path))] = _digest(data)
+        _REGISTRY_OUTSIDE.discard(_registry_key(Path(path)))
 
 
 def registry_is_own_write(path: Path | str) -> bool:
-    """True when models.yaml still holds exactly what this app last wrote."""
+    """True when a change to models.yaml is only this app's own save.
+
+    False for anything else - an edit made outside the app, or an own save
+    that landed on top of one - and the file's current state then becomes the
+    known one, so each outside change is reported once.
+    """
     target = Path(path)
     try:
-        expected = _OWN_REGISTRY_WRITES.get(str(target.resolve()))
+        current = _digest(target.read_bytes())
+        key = _registry_key(target)
     except OSError:
         return False
-    return expected is not None and _registry_fingerprint(target) == expected
+    with _REGISTRY_KNOWN_LOCK:
+        outside = key in _REGISTRY_OUTSIDE
+        _REGISTRY_OUTSIDE.discard(key)
+        own = _REGISTRY_KNOWN.get(key) == current
+        if not own:
+            _REGISTRY_KNOWN[key] = current
+    return own and not outside
 
 
 def _registry_os_message(path: Path, exc: OSError, verb: str) -> str:

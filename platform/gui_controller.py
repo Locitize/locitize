@@ -4824,6 +4824,12 @@ class GuiController:
         previous = getattr(self, "_registry_mtime", None)
         if previous is None:
             self._registry_mtime = mtime
+            try:
+                from config import note_registry_baseline
+
+                note_registry_baseline(target)
+            except Exception:  # noqa: BLE001
+                pass
             return
         if mtime is not None and mtime != previous:
             self._registry_mtime = mtime
