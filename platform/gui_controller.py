@@ -1261,7 +1261,11 @@ class GuiController:
                     "ctx_warning": context_advice.context_warning(
                         model.id, model.context_size, ceilings
                     ),
-                    "launchable": bool(model.location) and model.status == "installed",
+                    "launchable": (
+                        bool(model.location)
+                        and model.status == "installed"
+                        and _file_present(model.location)
+                    ),
                     # False when the row's .gguf was moved or deleted, so
                     # Auto-tune is greyed out with a reason instead of failing.
                     "file_present": _file_present(model.location),
@@ -2013,6 +2017,10 @@ class GuiController:
         """Validate and save a new Models folder on the ops worker."""
         self.command_q.put(Command("model_store_change", {"path": path}))
 
+    def request_add_model_file(self, path: str) -> None:
+        """Register one owner-selected local GGUF without any network access."""
+        self.command_q.put(Command("add_model_file", {"path": path}))
+
     def openwebui_install_state(self) -> str:
         from webui import webui_install_state
 
@@ -2220,11 +2228,70 @@ class GuiController:
                     "source_display": "Discovered",
                 }
             )
+        rows.extend(self._model_store_discoveries(rows, gpu_total_mb))
         # list_models() attached registered-row history; run the same pure lookup
         # again after adding discovered rows so their persisted JSONL runs survive a
         # desktop restart too (no models.yaml registration is required for history).
         self._attach_benchmark_throughput(rows)
         return rows
+
+    def _model_store_discoveries(
+        self, existing_rows: list[dict[str, Any]], gpu_total_mb: float | None
+    ) -> list[dict[str, Any]]:
+        """Unregistered GGUFs under the Models folder, read-only and offline."""
+        import modelhub
+        import setup_env
+        from config import resolve_model_store
+
+        store = resolve_model_store(self._settings)
+        try:
+            found = setup_env.find_local_models([store]) if store.is_dir() else []
+        except Exception:  # noqa: BLE001 - a bad folder never breaks the list
+            return []
+        registered = [Path(str(row.get("location") or "")) for row in existing_rows]
+        out: list[dict[str, Any]] = []
+        for entry in found:
+            path = Path(entry["path"])
+            already = False
+            for current in registered:
+                try:
+                    if current.is_file() and os.path.samefile(path, current):
+                        already = True
+                        break
+                except OSError:
+                    continue
+            if already:
+                continue
+            size = int(entry.get("size") or 0)
+            need = compute_vram_need_mb(0, size)
+            out.append(
+                {
+                    "id": "store:" + str(path),
+                    "name": path.stem,
+                    "location": str(path),
+                    "status": "discovered",
+                    "gpu_layers": 999,
+                    "context_size": 8192,
+                    "context_display": "8,192",
+                    "launchable": False,
+                    "file_present": True,
+                    "size_bytes": size,
+                    "size_display": format_size_gb(size),
+                    "vram_estimate_mb": 0,
+                    "vram_need_mb": need,
+                    "gpu_portion_display": format_gpu_portion_display(need, gpu_total_mb),
+                    "cpu_portion_display": format_cpu_portion_display(need, gpu_total_mb),
+                    "benchmark_score": None,
+                    "benchmark_tok_s": None,
+                    "score_display": "-",
+                    "capabilities": [],
+                    "capabilities_display": "Chat",
+                    "source": "store-discovered",
+                    "source_display": "Discovered in Models folder",
+                    "registry_id": modelhub.registry_id_for(path.name),
+                }
+            )
+        return out
 
     def _publish_finetune_state(self, warning: str = "", error: str = "") -> None:
         """Push one finetune_state Result carrying the current lifecycle snapshot."""
@@ -2317,11 +2384,21 @@ class GuiController:
             import setup_plan
 
             state, _machine = setup_env.detect_state()
+
+            def installed(feature: Any) -> bool:
+                keys = setup_plan.expand_selection((feature.key,))
+                requirements: set[str] = set()
+                for key in keys:
+                    if key == "core" and feature.key != "core":
+                        continue
+                    requirements.update(setup_plan.FEATURES_BY_KEY[key].requires)
+                return all(state.get(req, False) for req in requirements)
+
             features = [
                 {
                     "key": feature.key,
                     "label": feature.label,
-                    "installed": all(state.get(req, False) for req in feature.requires),
+                    "installed": installed(feature),
                     "core": feature.core,
                 }
                 for feature in setup_plan.FEATURES
@@ -2852,6 +2929,7 @@ class GuiController:
         #     => one call stops both). These are the no-orphan steps: they run even
         #     if everything above failed.
         step("proxy", self.stop_proxy)
+        step("secure_proxy", self._shutdown_secure_proxy)
         # Straight to the confirmed tree kill, all services at once: they ignore
         # the polite signal on Windows, so waiting only delayed the close.
         step("services", lambda: self._manager.stop_all(grace_s=0))
@@ -2887,6 +2965,13 @@ class GuiController:
         self._assistant_handle = None
         if handle is not None:
             handle.stop()
+
+    @staticmethod
+    def _shutdown_secure_proxy() -> None:
+        """Stop the Caddy daemon started by this desktop, never an adopted one."""
+        import secure_proxy
+
+        secure_proxy.stop_owned()
 
     def _shutdown_hub_thread(self) -> None:
         """Teardown step 0b: cancel the model download and join Thread E.
@@ -3070,6 +3155,8 @@ class GuiController:
             self._do_hub_cancel()
         elif command.kind == "model_store_change":
             self._do_model_store_change(command.payload.get("path", ""))
+        elif command.kind == "add_model_file":
+            self._do_add_model_file(command.payload.get("path", ""))
 
     # ---- M14.14 model acquisition handlers (ops worker, Thread B) --------- #
 
@@ -3132,6 +3219,96 @@ class GuiController:
         self.result_q.put(Result(
             "model_store_change", True, {"path": effective,
             "message": f"Models folder saved: {effective}{link_note}"}
+        ))
+
+    def _do_add_model_file(self, requested: str) -> None:
+        """Hardlink-or-reference one GGUF and append it through config's writer."""
+        import modelhub
+        import setup_env
+        from config import (
+            Config,
+            RegistryWriteError,
+            append_model_entry,
+            resolve_model_store,
+            write_model_capabilities,
+        )
+
+        source = Path(str(requested or "").strip())
+        if not source.is_absolute() or not source.is_file():
+            self.result_q.put(Result(
+                "add_model_file_result", False, {},
+                error="Choose an existing GGUF model file using its full path.",
+            ))
+            return
+        if source.suffix.lower() != ".gguf" or "mmproj" in source.name.lower():
+            self.result_q.put(Result(
+                "add_model_file_result", False, {},
+                error="Choose a model .gguf file, not a projector file.",
+            ))
+            return
+        for model in self._registry.all():
+            try:
+                if model.location and os.path.samefile(source, model.location):
+                    self.result_q.put(Result(
+                        "add_model_file_result", True,
+                        {"model_id": model.id, "already_registered": True},
+                    ))
+                    return
+            except OSError:
+                continue
+
+        store = resolve_model_store(self._settings)
+        location = setup_env.place_into_models_dir(source, store)
+        projector_source = setup_env.pair_mmproj(source)
+        mmproj = (
+            setup_env.place_into_models_dir(projector_source, store)
+            if projector_source else ""
+        )
+        base_id = modelhub.registry_id_for(source.name)
+        existing = {model.id for model in self._registry.all()}
+        model_id = base_id
+        number = 2
+        while model_id in existing:
+            model_id = f"{base_id}-{number}"
+            number += 1
+        try:
+            append_model_entry(
+                self._settings.data_dir,
+                model_id,
+                source.stem,
+                location,
+                description="Local GGUF added from the Models page.",
+                context_size=8192,
+                gpu_layers=999,
+                notes=f"Added from {source}.",
+                mmproj=mmproj,
+            )
+            try:
+                import gguf_meta
+
+                capabilities = gguf_meta.detect_capabilities(location)
+                if "vision" in capabilities and not mmproj:
+                    capabilities = [c for c in capabilities if c != "vision"]
+                if capabilities:
+                    write_model_capabilities(
+                        self._settings.data_dir, model_id, capabilities
+                    )
+            except Exception:  # capability decoration is best-effort like setup
+                pass
+            _settings, models, issues = Config.load(self._settings.data_dir)
+            errors = [i for i in issues if getattr(i, "severity", "") == "ERROR"]
+            if errors:
+                raise RuntimeError("; ".join(str(i) for i in errors[:3]))
+            self._registry.reload(models)
+        except (ValueError, RegistryWriteError, RuntimeError) as exc:
+            self.result_q.put(Result(
+                "add_model_file_result", False, {"path": str(source)}, error=str(exc)
+            ))
+            return
+        self.result_q.put(Result(
+            "add_model_file_result",
+            True,
+            {"model_id": model_id, "location": location, "mmproj": mmproj},
         ))
 
     def _do_hub_catalog(self) -> None:
@@ -4041,7 +4218,13 @@ class GuiController:
         gpu = payload["gpu_layers"]
         ctx = payload["context_size"]
         try:
-            write_model_fields(self._settings.data_dir, model_id, gpu, ctx)
+            write_model_fields(
+                self._settings.data_dir,
+                model_id,
+                gpu,
+                ctx,
+                context_note=f"context_size set by hand {_today_stamp()}",
+            )
         # DEC-M14-11: RegistryWriteError already carries the real path and a
         # next step, so str(exc) below is a finished sentence rather than the
         # bare "[Errno 2] ..." NEW-QA-M14-9 measured on this very surface. OSError
@@ -4190,7 +4373,12 @@ class GuiController:
         a trial - and marshals the outcome back as a Result.
         """
         import autotune
-        from config import Config, RegistryWriteError, write_model_tuning
+        from config import (
+            Config,
+            RegistryWriteError,
+            read_model_context_note,
+            write_model_tuning,
+        )
 
         model = self._registry.get(model_id)
         if model is None:
@@ -4199,6 +4387,9 @@ class GuiController:
                        error=f"model '{model_id}' is not in the registry")
             )
             return "failed"
+        original_context_note = read_model_context_note(
+            self._settings.data_dir, model_id
+        )
         if not model.location:
             self.result_q.put(
                 Result("autotune", False, {"model_id": model_id},
@@ -4226,6 +4417,18 @@ class GuiController:
                 ),
             )
 
+        def restore_tuning(
+            target_id: str, context_size: int, server_args: list[str]
+        ) -> None:
+            """Rollback values and the comment that described those values."""
+            write_model_tuning(
+                self._settings.data_dir,
+                target_id,
+                context_size,
+                server_args,
+                note=original_context_note,
+            )
+
         def trial(context_size: int) -> "autotune.Trial":
             """One real start/health-check/clean-shutdown via the existing CLI."""
             # base_dir defaults to autotune.py's own directory, which IS the
@@ -4248,6 +4451,7 @@ class GuiController:
                 current_context=int(model.context_size),
                 current_server_args=list(model.server_args or []),
                 write_tuning=write_tuning,
+                restore_tuning=restore_tuning,
                 trial_fn=trial,
                 progress=emit,
                 cancel=self._autotune_cancel,

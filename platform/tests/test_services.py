@@ -6,7 +6,11 @@ path by injecting a FakeProcess and asserting against it (Architecture 12).
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlparse
+
+import pytest
 
 from fakes import FakeProcess, make_fake_launcher
 from services import (
@@ -58,6 +62,34 @@ def test_start_errors_when_process_exits_early():
         poll_interval_s=0.01,
     )
     assert mp.start() is ServiceStatus.STOPPED_ERROR
+
+
+def test_shutdown_during_readiness_is_information_not_an_error():
+    proc = FakeProcess(poll_sequence=[None, None, 0])
+    mp = ManagedProcess(
+        _spec(name="openwebui"),
+        launcher=make_fake_launcher(proc),
+        readiness=lambda spec, handle: False,
+        poll_interval_s=0.01,
+    )
+    seen = []
+    mp._log = SimpleNamespace(
+        info=lambda message, *args: seen.append(("info", message % args)),
+        error=lambda message, *args: seen.append(("error", message % args)),
+        warning=lambda *_args: None,
+        debug=lambda *_args: None,
+    )
+
+    def interrupted():
+        mp._stop_requested = True
+        return False
+
+    mp._await_ready = interrupted
+    assert mp.start() is ServiceStatus.STOPPED_ERROR
+    assert any(level == "info" and "shutdown was in progress" in message
+               for level, message in seen)
+    assert not any(level == "error" and "did not become ready" in message
+                   for level, message in seen)
 
 
 def test_stop_escalates_to_kill_on_wait_timeout():
@@ -656,6 +688,29 @@ def test_switch_stops_old_model_and_starts_new():
     snap = controller.snapshot()
     running = [s for s in snap["services"] if s["status"] == "RUNNING"]
     assert [s["model_id"] for s in running] == ["model-b"]
+
+
+def test_model_controller_refuses_a_missing_file_before_process_creation(tmp_path):
+    missing = tmp_path / "missing.gguf"
+    created = []
+
+    def spec_builder(model_id, ctx=None, gpu=None):
+        return ServiceSpec(
+            name=f"llama_cpp:{model_id}",
+            command=["llama-server", "--model", str(missing)],
+        )
+
+    controller = ModelController(
+        ServiceManager(),
+        spec_builder,
+        lambda spec: created.append(spec),
+    )
+
+    with pytest.raises(ValueError, match=r"The model file is missing:") as caught:
+        controller.start("model-a")
+
+    assert str(missing) in str(caught.value)
+    assert created == []
 
 
 def test_a_model_that_died_underneath_us_is_not_reported_running():

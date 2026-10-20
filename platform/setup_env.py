@@ -283,7 +283,7 @@ def detect_state(machine: Machine | None = None) -> tuple[dict[str, bool], Machi
         "whisper_bin": _configured_file(paths, "whisper"),
         "whisper_model": _configured_file(paths, "whisper_model"),
         "kokoro_weights": _configured_file(paths, "kokoro_model"),
-        "vision_projector": False,
+        "vision_projector": _has_registered_vision_model(info.data_root),
         "first_model": _has_registered_model(info.data_root),
         "node_runtime": bool(_which("node")),
         "harness_clis": all(
@@ -335,6 +335,31 @@ def _has_registered_model(data_root: Path) -> bool:
             continue
         location = str(row.get("location") or "").strip()
         if location and Path(location).is_file():
+            return True
+    return False
+
+
+def _has_registered_vision_model(data_root: Path) -> bool:
+    """True when an enabled registry row has an on-disk vision projector."""
+    try:
+        import yaml  # noqa: PLC0415 - bootstrap module keeps yaml optional
+    except ImportError:
+        return False
+    target = data_root / "models.yaml"
+    if not target.is_file():
+        return False
+    try:
+        loaded = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError, yaml.YAMLError):
+        return False
+    rows = loaded.get("models") if isinstance(loaded, dict) else None
+    if not isinstance(rows, list):
+        return False
+    for row in rows:
+        if not isinstance(row, dict) or row.get("status") != "installed":
+            continue
+        raw = str(row.get("mmproj") or "").strip()
+        if raw and Path(os.path.expandvars(raw)).expanduser().is_file():
             return True
     return False
 

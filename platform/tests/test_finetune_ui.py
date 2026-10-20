@@ -244,6 +244,7 @@ def test_finetune_registry_merges_without_changing_existing_queries(tmp_path):
     gguf = tmp_path / "finetune" / "outputs" / "DemoGPT-v5" / "DemoGPT-v5.q4_k_m.gguf"
     gguf.parent.mkdir(parents=True, exist_ok=True)
     gguf.write_bytes(b"GGUF" + b"0" * 2048)
+    (tmp_path / "manual.gguf").write_bytes(b"GGUF")
     manual = Model(
         id="manual",
         name="Manual",
@@ -435,10 +436,10 @@ def test_finetune_page_is_reachable_and_renders_each_state(qapp):
 
     reason = "Fine-tuning is not installed yet. Add it under Settings > Features."
     window._apply_finetune_state({"status": "disabled", "reason": reason})
-    # A clear install path, with the plain reason under it; Docker is never named.
+    # A clear install path with the not-installed sentence shown only once.
     assert not window._ft_install_panel.isHidden()
     assert window._ft_install_btn.text() == "Install fine-tuning"
-    assert window._ft_install_reason.text() == reason
+    assert window._ft_install_reason.text() == ""
     window._apply_finetune_state({"status": "ready", "reason": ""})
     assert window._ft_install_panel.isHidden()
     page_text = " ".join(

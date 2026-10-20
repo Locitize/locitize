@@ -37,7 +37,7 @@ def _wizard(monkeypatch, steps, fail_keys=(), slow_keys=()):
     wiz._found_models = []
     wiz._unverified_ok = False
 
-    record = {"order": [], "concurrent": 0, "max_concurrent": 0}
+    record = {"order": [], "concurrent": 0, "max_concurrent": 0, "shim_calls": 0}
     lock = threading.Lock()
 
     def fake_run_step(step, venv_exe, say, discovered):
@@ -53,6 +53,10 @@ def _wizard(monkeypatch, steps, fail_keys=(), slow_keys=()):
         return setup_env.StepResult(step.key, ok, "done" if ok else "boom")
 
     wiz._run_step = fake_run_step
+    def fake_shim(_say):
+        record["shim_calls"] += 1
+        return setup_env.StepResult("claude_local", True, "checked")
+    wiz._ensure_claude_local = fake_shim
     # Neutralize every post-loop side effect.
     monkeypatch.setattr(setup_env, "detect_state", lambda m=None: ({}, setup_env.Machine()))
     monkeypatch.setattr(setup_env, "find_llama_server", lambda *a, **k: "")
@@ -79,6 +83,7 @@ def test_venvs_first_import_last_all_once(monkeypatch):
     assert order[0] == "platform_venv"
     assert order[-1] == "first_model"
     assert order.index("base_pip") < order.index("gui_pip")  # same-venv chain
+    assert record["shim_calls"] == 1
 
 
 def test_downloads_overlap(monkeypatch):
@@ -183,7 +188,7 @@ def test_gpu_kokoro_refuses_honestly_without_an_nvidia_card(monkeypatch):
     assert calls == [setup_env.PIP_SETS["kokoro_pip"]]
 
 
-def test_install_harnesses_installs_only_missing_and_shim_after_claude(monkeypatch):
+def test_install_harnesses_installs_only_missing_tools(monkeypatch):
     wizard = object.__new__(setup_wizard.SetupWizard)
     events = []
     monkeypatch.setattr(
@@ -197,19 +202,24 @@ def test_install_harnesses_installs_only_missing_and_shim_after_claude(monkeypat
         return True, f"{key} installed"
 
     monkeypatch.setattr(harness_launch, "install_harness", install)
-    monkeypatch.setattr(
-        setup_env,
-        "install_claude_local",
-        lambda say=None: events.append(("shim", "claude"))
-        or setup_env.StepResult("claude_local", True, "shim installed"),
-    )
     result = wizard._install_harnesses(lambda text: None)
     assert result.ok
     assert events == [
         ("install", "claude"),
-        ("shim", "claude"),
         ("install", "opencode"),
     ]
+
+
+def test_core_shim_step_runs_for_an_existing_claude_install(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        setup_env,
+        "install_claude_local",
+        lambda say=None: calls.append(say)
+        or setup_env.StepResult("claude_local", True, "shim installed"),
+    )
+    result = setup_wizard.SetupWizard._ensure_claude_local(lambda _text: None)
+    assert result.ok and calls
 
 
 def test_install_harnesses_aggregates_every_tool_failure(monkeypatch):
@@ -225,13 +235,7 @@ def test_install_harnesses_aggregates_every_tool_failure(monkeypatch):
         "opencode": (False, "opencode broke"),
     }
     monkeypatch.setattr(harness_launch, "install_harness", lambda key: outcomes[key])
-    monkeypatch.setattr(
-        setup_env,
-        "install_claude_local",
-        lambda say=None: setup_env.StepResult("claude_local", False, "shim broke"),
-    )
     result = wizard._install_harnesses(lambda text: None)
     assert not result.ok
     assert "codex broke" in result.message
     assert "opencode broke" in result.message
-    assert "shim broke" in result.message

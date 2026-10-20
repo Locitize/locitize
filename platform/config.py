@@ -1766,6 +1766,7 @@ def write_model_fields(
     context_size: int,
     *,
     expected_fields: tuple[int, int] | None = None,
+    context_note: str | None = None,
 ) -> None:
     """Rewrite ONLY a model's gpu_layers and context_size lines in models.yaml.
 
@@ -1833,6 +1834,8 @@ def write_model_fields(
 
         lines[gpu_idx] = _replace_scalar(lines[gpu_idx], gpu_layers)
         lines[ctx_idx] = _replace_scalar(lines[ctx_idx], context_size)
+        if context_note is not None:
+            lines[ctx_idx] = _set_inline_comment(lines[ctx_idx], context_note)
         new_text = "".join(lines)
 
         # Round-trip guard (RG3): confirm the edited text still parses AND the
@@ -2177,7 +2180,7 @@ def write_model_tuning(
     model_id: str,
     context_size: int,
     server_args: list[Any],
-    note: str = "",
+    note: str | None = None,
 ) -> None:
     """Rewrite ONLY a model's context_size and server_args lines in models.yaml.
 
@@ -2259,7 +2262,7 @@ def write_model_tuning(
                 f"in {MODELS_FILE}; refusing to guess"
             )
         lines[ctx_idx] = _replace_scalar(lines[ctx_idx], context_size)
-        if note:
+        if note is not None:
             lines[ctx_idx] = _set_inline_comment(lines[ctx_idx], note)
 
         args_idx = _find_key_line(lines, start, end, "server_args")
@@ -2313,7 +2316,25 @@ def _set_inline_comment(line: str, note: str) -> str:
 
     body = re.sub(r"\s+#.*$", "", body)
     flat = " ".join(str(note).replace("#", "").split())
+    if not flat:
+        return body + newline
     return f"{body}   # {flat}{newline}"
+
+
+def read_model_context_note(base_dir: Path | str, model_id: str) -> str:
+    """Return the context_size inline comment text, or an empty string."""
+    path = Path(base_dir) / MODELS_FILE
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    except OSError:
+        return ""
+    start, end = _locate_model_block(lines, model_id)
+    if start is None:
+        return ""
+    index = _find_key_line(lines, start, end, "context_size")
+    if index is None or "#" not in lines[index]:
+        return ""
+    return lines[index].split("#", 1)[1].strip()
 
 
 def _confirm_tuning_written(

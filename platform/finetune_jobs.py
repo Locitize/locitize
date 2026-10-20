@@ -135,6 +135,18 @@ def _run(
     env_overrides: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     python, trainer = environment(settings)
+    return _run_prepared(python, trainer, script, args, timeout, env_overrides)
+
+
+def _run_prepared(
+    python: Path,
+    trainer: Path,
+    script: str,
+    args: list[str],
+    timeout: float,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    """Run after the caller has already proven the environment exists."""
     env = child_env()
     if env_overrides:
         env.update(env_overrides)
@@ -238,10 +250,16 @@ def download_status(settings, model: str) -> dict:
     try:
         import egress_log
 
+        # Resolve the environment before recording egress. If fine-tuning is not
+        # installed there is no child and therefore no network call to record.
+        python, trainer = environment(settings)
         target = "https://huggingface.co/api/models/" + urllib.parse.quote(model.strip("/"), safe="/")
         with egress_log.reason("finetune-model-size"):
             egress_log.record(target)
-            proc = _run(settings, "download_model.py", ["--status", model], DOWNLOAD_STATUS_TIMEOUT)
+            proc = _run_prepared(
+                python, trainer, "download_model.py", ["--status", model],
+                DOWNLOAD_STATUS_TIMEOUT,
+            )
     except FineTuneUnavailable as exc:
         return _download_status_fallback(model, str(exc))
     except subprocess.TimeoutExpired:

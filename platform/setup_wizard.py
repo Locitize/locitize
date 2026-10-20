@@ -740,6 +740,14 @@ class SetupWizard:
                 with ThreadPoolExecutor(max_workers=min(4, len(jobs))) as pool:
                     list(pool.map(run_chain, jobs))
 
+            # This is a core compatibility step, not only a post-install hook.
+            # Existing Claude Code users also need the local-routing command.
+            say("-- Checking the Claude local-model command")
+            shim = self._ensure_claude_local(say)
+            say(f"   {'ok' if shim.ok else 'note'}: {shim.message}")
+            if not shim.ok:
+                failures.append("claude-local")
+
             for step in pending:
                 if step.key == "first_model":
                     run_one(step)
@@ -816,6 +824,11 @@ class SetupWizard:
             )
         self._events.put(("done", summary))
 
+    @staticmethod
+    def _ensure_claude_local(say: Callable[[str], None]) -> setup_env.StepResult:
+        """Install the shim whenever Claude is already present, including upgrades."""
+        return setup_env.install_claude_local(say)
+
     def _install_harnesses(self, say: Callable[[str], None]) -> setup_env.StepResult:
         """Install each missing coding harness and report every failure."""
         import harness_launch
@@ -845,10 +858,6 @@ class SetupWizard:
                 failures.append(f"{key}: {message}")
                 continue
             installed.append(key)
-            if key == harness_launch.HARNESS_CLAUDE:
-                shim = setup_env.install_claude_local(say)
-                if not shim.ok:
-                    failures.append(f"claude-local: {shim.message}")
 
         if failures:
             return setup_env.StepResult("harness_clis", False, "; ".join(failures))

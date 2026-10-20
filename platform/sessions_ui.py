@@ -364,7 +364,9 @@ class SessionsPage(QtWidgets.QWidget):
         folder.setObjectName("localLaunchProject")
         browse = QtWidgets.QPushButton("Choose folder")
         def pick():
-            chosen = QtWidgets.QFileDialog.getExistingDirectory(dialog, "Project folder", folder.text())
+            chosen = QtWidgets.QFileDialog.getExistingDirectory(
+                dialog, "Project folder", last_project
+            )
             if chosen:
                 folder.setText(chosen)
         browse.clicked.connect(pick)
@@ -382,7 +384,19 @@ class SessionsPage(QtWidgets.QWidget):
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
-        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setEnabled(models.count() > 0)
+        ok_button = buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+
+        def refresh_ok(_text=""):
+            raw = folder.text().strip()
+            path = Path(raw) if raw else None
+            valid = bool(path is not None and path.is_absolute() and path.is_dir())
+            ok_button.setEnabled(models.count() > 0 and valid)
+            ok_button.setToolTip(
+                "" if valid else "Choose an existing project folder using its full path."
+            )
+
+        folder.textChanged.connect(refresh_ok)
+        refresh_ok()
         form.addRow(buttons)
         if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             payload = {"choice": provider.currentData(), "model_id": models.currentData(),

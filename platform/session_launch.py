@@ -13,8 +13,12 @@ LOCAL_PROVIDERS = ("codex", "claude", "opencode")
 def build_local_launch(provider, project, model_id, port, resume_id="", context_size=None):
     if provider not in LOCAL_PROVIDERS:
         raise ValueError("Local model routing is available for Codex, Claude Code and OpenCode")
-    if not Path(project).is_dir():
-        raise ValueError("Project folder is missing. Choose its new location before launching.")
+    project = str(project or "").strip()
+    project_path = Path(project) if project else None
+    if project_path is None or not project_path.is_absolute() or not project_path.is_dir():
+        raise ValueError(
+            "Choose an existing project folder using its full path before launching."
+        )
     if not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError("The local model endpoint is not ready")
     if not isinstance(model_id, str) or not re.fullmatch(r"[A-Za-z0-9_.:/-]+", model_id):
