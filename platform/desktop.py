@@ -4770,6 +4770,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """Trust the controller's post-operation snapshot instead of guessing."""
         self._ui.running_model_id = payload.get("running_model_id")
         self._ui.running_port = payload.get("running_port")
+        if hasattr(self, "_ft_flow"):
+            self._ft_flow._refresh_doc_qa_gate(bool(self._ui.running_model_id))
         self._update_chat_hint()
 
     def _update_chat_hint(self):

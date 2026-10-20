@@ -72,6 +72,45 @@ def test_parse_json_accepts_list_and_data_wrapper():
     assert len(ftd.parse_dataset(json.dumps({"data": [chat("q", "a")] * 2}), "x.json")[0]) == 2
 
 
+def test_prompt_file_txt_ignores_blanks_and_tolerates_bom():
+    prompts, malformed = ftd.parse_prompt_file(
+        "\ufeff First prompt \n\nSecond prompt\r\n".encode("utf-8"), "prompts.txt"
+    )
+    assert prompts == ["First prompt", "Second prompt"]
+    assert malformed == []
+
+
+def test_prompt_file_jsonl_keeps_valid_rows_and_reports_malformed_lines():
+    payload = (
+        '{"prompt": "one"}\n'
+        'not-json\n'
+        '{"prompt": "  "}\n'
+        '[]\n'
+        '\n'
+        '{"prompt": "two"}\n'
+    ).encode()
+    prompts, malformed = ftd.parse_prompt_file(payload, "prompts.jsonl")
+    assert prompts == ["one", "two"]
+    assert malformed == [2, 3, 4]
+    assert ftd.format_line_numbers(malformed) == "3 malformed lines (2, 3, 4)"
+
+
+def test_prompt_file_rejects_bad_utf8_no_valid_rows_and_oversize():
+    with pytest.raises(ftd.PromptFileError, match="valid UTF-8"):
+        ftd.parse_prompt_file(b"\xff", "p.txt")
+    with pytest.raises(ftd.PromptFileError, match="no valid prompts.*malformed.*1"):
+        ftd.parse_prompt_file(b'{"wrong": "field"}\n', "p.jsonl")
+    with pytest.raises(ftd.PromptFileError, match="larger than"):
+        ftd.parse_prompt_file(b"123456", "p.txt", max_bytes=5)
+
+
+def test_load_prompt_file_applies_the_bound_before_reading(tmp_path):
+    path = tmp_path / "large.txt"
+    path.write_bytes(b"x" * 12)
+    with pytest.raises(ftd.PromptFileError, match="limit"):
+        ftd.load_prompt_file(path, max_bytes=10)
+
+
 @pytest.mark.parametrize("payload", ['{"rows": 1}', "[]", "{bad"])
 def test_parse_json_rejects_unusable_files(payload):
     with pytest.raises(ftd.DatasetError):
@@ -247,6 +286,139 @@ def test_read_new_returns_only_appended_text(tmp_path):
     assert text == "one\n" and more == "two\n"
 
 
+def test_read_new_advances_past_bytes_appended_between_eof_check_and_read(tmp_path, monkeypatch):
+    log = tmp_path / "growing.log"
+    log.write_bytes(b"one\n")
+    real_open = open
+    grew = False
+
+    class GrowingReader:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.handle.close()
+
+        def seek(self, *args):
+            return self.handle.seek(*args)
+
+        def tell(self):
+            return self.handle.tell()
+
+        def read(self, *args):
+            nonlocal grew
+            if not grew:
+                grew = True
+                with real_open(log, "ab") as writer:
+                    writer.write(b"two\n")
+            return self.handle.read(*args)
+
+    def growing_open(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        if Path(path) == log and mode == "rb":
+            return GrowingReader(handle)
+        return handle
+
+    monkeypatch.setattr(jobs, "open", growing_open, raising=False)
+    text, offset = jobs.read_new(log, 0)
+    more, next_offset = jobs.read_new(log, offset)
+
+    assert text == "one\ntwo\n"
+    assert offset == log.stat().st_size
+    assert more == "" and next_offset == offset
+
+
+def test_history_meta_reads_only_one_byte_beyond_its_limit(tmp_path, monkeypatch):
+    meta_path = tmp_path / jobs.RUN_META
+    meta_path.write_bytes(b"{" + b"x" * jobs.HISTORY_META_BYTES)
+    real_path_open = Path.open
+    read_sizes = []
+
+    class ReadProbe:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.handle.close()
+
+        def read(self, size=-1):
+            read_sizes.append(size)
+            return self.handle.read(size)
+
+    def probed_open(path, *args, **kwargs):
+        handle = real_path_open(path, *args, **kwargs)
+        return ReadProbe(handle) if path == meta_path else handle
+
+    monkeypatch.setattr(Path, "open", probed_open)
+    meta, error = jobs._history_meta(meta_path)
+
+    assert meta == {} and error == "metadata is too large to display"
+    assert read_sizes == [jobs.HISTORY_META_BYTES + 1]
+
+
+def test_run_history_scans_status_meta_losses_and_never_guesses_running(tmp_path):
+    settings = _install(tmp_path)
+    root = Path(settings.data_dir) / "finetune" / "outputs"
+    completed = root / "completed-run"
+    completed.mkdir(parents=True)
+    (completed / jobs.RUN_META).write_text(json.dumps({
+        "base_model": "org/base", "dataset_path": "/synthetic/data/set.jsonl", "max_steps": 20,
+    }), encoding="utf-8")
+    (completed / jobs.TRAIN_LOG).write_text(
+        "x" * (jobs.HISTORY_LOG_TAIL_BYTES + 200)
+        + "\n{'loss': 2.5}\n{'loss': '1.25'}\n[STATUS] DONE\n",
+        encoding="utf-8",
+    )
+    failed = root / "failed-run"
+    failed.mkdir()
+    (failed / jobs.TRAIN_LOG).write_text(
+        "Traceback (most recent call last):\nboom\n", encoding="utf-8"
+    )
+    incomplete = root / "incomplete-run"
+    incomplete.mkdir()
+    (incomplete / jobs.TRAIN_LOG).write_text("[STATUS] Starting training\n", encoding="utf-8")
+    corrupt = root / "corrupt-meta"
+    corrupt.mkdir()
+    (corrupt / jobs.RUN_META).write_text("{bad", encoding="utf-8")
+    (root / "_distill" / "not-training").mkdir(parents=True)
+
+    rows = jobs.scan_training_runs(settings)
+    by_name = {row["name"]: row for row in rows}
+    assert set(by_name) == {"completed-run", "failed-run", "incomplete-run", "corrupt-meta"}
+    assert by_name["completed-run"]["status"] == "completed"
+    assert by_name["completed-run"]["base_model"] == "org/base"
+    assert by_name["completed-run"]["dataset_path"] == "/synthetic/data/set.jsonl"
+    assert by_name["completed-run"]["losses"] == [2.5, 1.25]
+    assert len(by_name["completed-run"]["log_tail"]) <= jobs.HISTORY_LOG_TAIL_BYTES
+    assert by_name["failed-run"]["status"] == "failed"
+    assert by_name["incomplete-run"]["status"] == "incomplete"
+    assert by_name["corrupt-meta"]["meta"] == {}
+    assert "not valid JSON" in by_name["corrupt-meta"]["meta_error"]
+    assert "running" not in {row["status"] for row in rows}
+
+
+def test_run_history_reports_running_only_for_the_owned_live_job(tmp_path):
+    settings = _install(tmp_path)
+    run = Path(settings.data_dir) / "finetune" / "outputs" / "owned-run"
+    run.mkdir(parents=True)
+    log = run / jobs.TRAIN_LOG
+    log.write_text("[STATUS] Starting training\n", encoding="utf-8")
+
+    class LiveProcess:
+        def poll(self):
+            return None
+
+    job = jobs.Job("train", run.name, log, LiveProcess())
+    assert jobs.scan_training_runs(settings, live_job=job)[0]["status"] == "running"
+    assert jobs.scan_training_runs(settings)[0]["status"] == "incomplete"
+
+
 def _finished_run(settings, name="support-tone-20261019-101500"):
     run = Path(settings.data_dir) / "finetune" / "outputs" / name
     (run / "merged_model").mkdir(parents=True)
@@ -376,6 +548,102 @@ def test_page_walks_model_then_dataset_review_then_train(tmp_path, flow_factory)
     assert flow.train_name.text() == "my-set"
     assert flow.steps.value() == ftd.recommended_steps(4, 3, 2, 4)
     assert not flow.step_buttons[3].isEnabled()
+
+
+def test_document_qa_gate_tracks_running_model_without_auto_checking(tmp_path, flow_factory):
+    make, app = flow_factory
+    flow = make(_install(tmp_path))
+    running = {"id": None}
+    flow._gc.running_model_id = lambda: running["id"]
+
+    flow.source_combo.setCurrentIndex(1)
+    app.processEvents()
+    assert not flow.doc_qa.isEnabled() and not flow.doc_qa.isChecked()
+    assert "Start a model" in flow.doc_qa_hint.text()
+    assert not flow.doc_pairs.isEnabled()
+
+    running["id"] = "ready-model"
+    flow.source_combo.setCurrentIndex(0)
+    flow.source_combo.setCurrentIndex(1)
+    app.processEvents()
+    assert flow.doc_qa.isEnabled() and not flow.doc_qa.isChecked()
+    flow.doc_qa.setChecked(True)
+    assert flow.doc_pairs.isEnabled()
+
+    running["id"] = None
+    flow._refresh_doc_qa_gate()
+    assert not flow.doc_qa.isEnabled() and not flow.doc_qa.isChecked()
+
+
+def test_distill_log_is_bounded_auto_opens_on_failure_and_buttons_keep_last_run(
+        tmp_path, flow_factory, monkeypatch):
+    import finetune_page
+
+    make, _app = flow_factory
+    settings = _install(tmp_path)
+    flow = make(settings)
+    run = Path(settings.data_dir) / "finetune" / "outputs" / "_distill" / "d-run"
+    run.mkdir(parents=True)
+    log = run / "distill.log"
+    out = run / "distilled_dataset.jsonl"
+
+    class FailedProcess:
+        pid = 7
+
+        def poll(self):
+            return 2
+
+    job = jobs.Job("distill", "d-run", log, FailedProcess(), out_path=out)
+    monkeypatch.setattr(jobs, "start_distill", lambda *args, **kwargs: job)
+    flow.distill_prompts.setPlainText("one")
+    flow.distill_start.click()
+    log.write_text(
+        "x" * (finetune_page.DISTILL_LOG_MEMORY_CHARS + 100)
+        + "\nTraceback (most recent call last):\nboom\n",
+        encoding="utf-8",
+    )
+    flow._poll()
+
+    assert flow.distill_job is None
+    assert flow.distill_log_toggle.isChecked()
+    assert not flow.distill_log_view.isHidden()
+    assert "Traceback" in flow.distill_log_view.toPlainText()
+    assert len(flow.distill_log_view.toPlainText()) <= finetune_page.DISTILL_LOG_VIEW_CHARS
+    assert flow.distill_open_log.isEnabled() and flow.distill_open_folder.isEnabled()
+
+    opened = []
+    flow._open_path = lambda path: opened.append(Path(path))
+    flow._open_folder = lambda path: opened.append(Path(path))
+    flow.distill_open_log.click()
+    flow.distill_open_folder.click()
+    assert opened == [log, run]
+
+
+def test_run_history_section_loads_selected_details_off_thread_contract(tmp_path, flow_factory, monkeypatch):
+    make, _app = flow_factory
+    flow = make(_install(tmp_path))
+    run = tmp_path / "history-run"
+    run.mkdir()
+    scanned = [{
+        "name": "history-run", "path": str(run), "status": "completed",
+        "mtime": 1.0, "modified_display": "2026-10-19 10:00",
+        "meta": {"max_steps": 20}, "meta_error": "", "base_model": "org/base",
+        "dataset_path": "/synthetic/data/set.jsonl", "log_path": str(run / "train.log"),
+        "log_tail": "{'loss': 2.0}\n[STATUS] DONE\n", "losses": [2.0, 1.0],
+    }]
+    monkeypatch.setattr(jobs, "scan_training_runs", lambda settings, live_job=None: scanned)
+    calls = []
+    flow._run = lambda fn, done: (calls.append("background"), done(fn(), None))
+    flow.history_toggle.setChecked(True)
+
+    assert calls == ["background"]
+    assert flow.history_list.count() == 1
+    assert "completed" in flow.history_list.item(0).text()
+    assert "org/base" in flow.history_details.text()
+    assert "/synthetic/data/set.jsonl" in flow.history_details.text()
+    assert "max_steps" in flow.history_details.text()
+    assert "2 points" in flow.history_loss_title.text()
+    assert flow.history_open_folder.isEnabled()
 
 
 def test_page_opens_a_finished_run_at_the_save_step_and_saves_it(tmp_path, flow_factory):

@@ -12,10 +12,11 @@ running training or distillation is followed by polling its log file.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 import finetune_dataset as ftd
 import finetune_jobs as jobs
@@ -25,6 +26,8 @@ SOURCES = ("I have a training file", "Build it from my documents",
            "Build it from a word table", "Have a bigger model write it")
 REVIEW_TABLE_LIMIT = 2000
 POLL_MS = 1500
+DISTILL_LOG_MEMORY_CHARS = 128 * 1024
+DISTILL_LOG_VIEW_CHARS = 16 * 1024
 _KEEP, _USER, _ASSISTANT, _PROBLEM, _TOKENS = range(5)
 _EDITABLE = QtCore.Qt.ItemFlag.ItemIsEditable
 
@@ -150,6 +153,10 @@ class FineTuneFlow(QtWidgets.QWidget):
         self._fit_for = None
         self._shown_losses = 0
         self._distill_offset, self._distill_text = 0, ""
+        self._distill_log_path = None
+        self._distill_run_dir = None
+        self._history_runs = []
+        self._history_selected_path = None
         self._sparkline_cls = sparkline_cls
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -225,7 +232,13 @@ class FineTuneFlow(QtWidgets.QWidget):
             self._refresh_train_summary()
         if number == 4:
             self._refresh_save_step()
+        if number == 2:
+            self._refresh_doc_qa_gate()
         self._refresh_stepper()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_doc_qa_gate()
 
     def _refresh_stepper(self):
         for number, button in enumerate(self.step_buttons, 1):
@@ -326,7 +339,7 @@ class FineTuneFlow(QtWidgets.QWidget):
         for builder in (self._build_source_file, self._build_source_documents,
                         self._build_source_table, self._build_source_distill):
             self.source_pages.addWidget(builder())
-        self.source_combo.currentIndexChanged.connect(self.source_pages.setCurrentIndex)
+        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
         self.source_pages.setCurrentIndex(0)
         body.addWidget(self.source_pages)
         self.source_status = _label(muted=True)
@@ -382,6 +395,11 @@ class FineTuneFlow(QtWidgets.QWidget):
         body.addLayout(_row(self.dataset_next, back))
         return frame
 
+    def _on_source_changed(self, index):
+        self.source_pages.setCurrentIndex(index)
+        if index == 1:
+            self._refresh_doc_qa_gate()
+
     def _source_box(self, hint):
         box = QtWidgets.QWidget()
         box.setObjectName("plainGroup")
@@ -411,18 +429,48 @@ class FineTuneFlow(QtWidgets.QWidget):
         self.doc_label = _label("No documents chosen.", muted=True)
         layout.addLayout(_row(pick, self.doc_label))
         self.doc_qa = QtWidgets.QCheckBox("Also write question and answer pairs with the running model")
-        self.doc_qa.setChecked(True)
+        self.doc_qa.setChecked(False)
+        self.doc_qa.toggled.connect(self._update_doc_pairs_enabled)
+        self.doc_qa_hint = _label("", muted=True)
         self.doc_pairs = QtWidgets.QSpinBox()
         self.doc_pairs.setRange(1, 6)
         self.doc_pairs.setValue(3)
         self.doc_name = QtWidgets.QLineEdit()
         self.doc_name.setPlaceholderText("e.g. my-handbook")
         layout.addWidget(self.doc_qa)
+        layout.addWidget(self.doc_qa_hint)
         layout.addLayout(_form(("Pairs per passage", self.doc_pairs), ("Dataset name", self.doc_name)))
         self.doc_build = _primary("Build dataset from documents")
         self.doc_build.clicked.connect(self._on_build_documents)
         layout.addLayout(_row(self.doc_build))
+        self._refresh_doc_qa_gate()
         return box
+
+    def _model_is_ready(self):
+        reader = getattr(self._gc, "running_model_id", None)
+        if not callable(reader):
+            return False
+        try:
+            return bool(reader())
+        except Exception:  # noqa: BLE001 - a missing controller snapshot means unavailable
+            return False
+
+    def _refresh_doc_qa_gate(self, ready=None):
+        if not hasattr(self, "doc_qa"):
+            return
+        ready = self._model_is_ready() if ready is None else bool(ready)
+        if not ready:
+            self.doc_qa.setChecked(False)
+        self.doc_qa.setEnabled(ready)
+        self.doc_qa_hint.setText(
+            "Start a model in LoCiTiZe to add local Q&A pairs."
+            if not ready else "A running model is ready; select this if you want Q&A pairs."
+        )
+        self._update_doc_pairs_enabled()
+
+    def _update_doc_pairs_enabled(self, *_args):
+        if hasattr(self, "doc_pairs"):
+            self.doc_pairs.setEnabled(self.doc_qa.isEnabled() and self.doc_qa.isChecked())
 
     def _build_source_table(self):
         box, layout = self._source_box(
@@ -468,6 +516,8 @@ class FineTuneFlow(QtWidgets.QWidget):
         self.distill_prompts = QtWidgets.QPlainTextEdit()
         self.distill_prompts.setPlaceholderText("One prompt per line\nHow do I reset my password?\nWhat is your return policy?")
         self.distill_prompts.setMinimumHeight(110)
+        self.distill_load_prompts = QtWidgets.QPushButton("Load prompts from file...")
+        self.distill_load_prompts.clicked.connect(self._on_load_prompts)
         self.distill_tokens = QtWidgets.QSpinBox()
         self.distill_tokens.setRange(32, 512)
         self.distill_tokens.setSingleStep(16)
@@ -481,6 +531,7 @@ class FineTuneFlow(QtWidgets.QWidget):
         layout.addLayout(_form(("Teacher model", self.teacher), ("System prompt", self.distill_system),
                                ("Prompts", self.distill_prompts), ("Answer length (tokens)", self.distill_tokens),
                                ("Temperature", self.distill_temp), ("Dataset name", self.distill_name)))
+        layout.addLayout(_row(self.distill_load_prompts))
         self.distill_start = _primary("Start writing answers")
         self.distill_start.clicked.connect(self._on_distill_start)
         self.distill_stop = QtWidgets.QPushButton("Stop")
@@ -490,6 +541,21 @@ class FineTuneFlow(QtWidgets.QWidget):
         self.distill_progress = QtWidgets.QProgressBar()
         self.distill_progress.setVisible(False)
         layout.addWidget(self.distill_progress)
+        self.distill_log_toggle = QtWidgets.QPushButton("Show log")
+        self.distill_log_toggle.setCheckable(True)
+        self.distill_log_view = QtWidgets.QPlainTextEdit()
+        self.distill_log_view.setReadOnly(True)
+        self.distill_log_view.setMinimumHeight(160)
+        self.distill_log_view.setVisible(False)
+        self.distill_log_toggle.toggled.connect(self.distill_log_view.setVisible)
+        self.distill_open_log = QtWidgets.QPushButton("Open log")
+        self.distill_open_log.setEnabled(False)
+        self.distill_open_log.clicked.connect(lambda: self._open_path(self._distill_log_path))
+        self.distill_open_folder = QtWidgets.QPushButton("Open folder")
+        self.distill_open_folder.setEnabled(False)
+        self.distill_open_folder.clicked.connect(lambda: self._open_folder(self._distill_run_dir))
+        layout.addLayout(_row(self.distill_log_toggle, self.distill_open_log, self.distill_open_folder))
+        layout.addWidget(self.distill_log_view)
         return box
 
     # -- sources ------------------------------------------------------- #
@@ -567,6 +633,45 @@ class FineTuneFlow(QtWidgets.QWidget):
             self.identity_file = path
             self.identity_label.setText(Path(path).name)
 
+    def _on_load_prompts(self):
+        path, _filter = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load distillation prompts", "", "Prompt files (*.txt *.jsonl)")
+        if not path:
+            return
+        if self.distill_prompts.toPlainText().strip():
+            answer = QtWidgets.QMessageBox.question(
+                self, "Replace prompts?",
+                "The prompts box already has text. Replace it with prompts from this file?",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        self.distill_load_prompts.setEnabled(False)
+        self._busy(f"Reading {Path(path).name}...")
+
+        def done(result, error):
+            self.distill_load_prompts.setEnabled(True)
+            if error:
+                self._fail(f"Could not load prompts: {error}")
+                return
+            prompts, malformed = result
+            if malformed:
+                summary = ftd.format_line_numbers(malformed)
+                answer = QtWidgets.QMessageBox.question(
+                    self, "Some prompt lines are malformed",
+                    f"{summary}. Load the {len(prompts)} valid prompt(s) and skip those lines?",
+                    QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                    QtWidgets.QMessageBox.StandardButton.No,
+                )
+                if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                    self._fail("The prompt file was not loaded.")
+                    return
+            self.distill_prompts.setPlainText("\n".join(prompts))
+            self.source_status.setText(f"Loaded {len(prompts)} prompt(s) from {Path(path).name}.")
+
+        self._run(lambda: ftd.load_prompt_file(path), done)
+
     def _on_build_table(self):
         if not self.table_file or not self._check_environment():
             self._fail("Choose a word table first." if not self.table_file else self.unavailable.text())
@@ -611,6 +716,11 @@ class FineTuneFlow(QtWidgets.QWidget):
         self.distill_progress.setValue(0)
         self.distill_progress.setVisible(True)
         self._distill_offset, self._distill_text = 0, ""
+        self._distill_log_path = self.distill_job.log_path
+        self._distill_run_dir = self.distill_job.log_path.parent
+        self.distill_log_view.clear()
+        self.distill_open_log.setEnabled(True)
+        self.distill_open_folder.setEnabled(True)
         self._timer.start()
 
     # -- review -------------------------------------------------------- #
@@ -829,6 +939,38 @@ class FineTuneFlow(QtWidgets.QWidget):
         self.train_next = _primary("Next: save your model")
         self.train_next.clicked.connect(lambda: self.go(4))
         body.addLayout(_row(self.train_start, self.train_stop, self.train_next, self.train_again, self.train_back))
+        self.history_toggle = QtWidgets.QPushButton("Run history")
+        self.history_toggle.setCheckable(True)
+        self.history_toggle.toggled.connect(self._toggle_run_history)
+        body.addLayout(_row(self.history_toggle))
+        self.history_box = QtWidgets.QWidget()
+        self.history_box.setObjectName("plainGroup")
+        history_layout = QtWidgets.QVBoxLayout(self.history_box)
+        history_layout.setContentsMargins(0, 0, 0, 0)
+        self.history_refresh = QtWidgets.QPushButton("Refresh")
+        self.history_refresh.clicked.connect(self._refresh_run_history)
+        self.history_status = _label("", muted=True)
+        history_layout.addLayout(_row(self.history_refresh, self.history_status))
+        self.history_list = QtWidgets.QListWidget()
+        self.history_list.setMinimumHeight(120)
+        self.history_list.currentRowChanged.connect(self._show_history_run)
+        history_layout.addWidget(self.history_list)
+        self.history_details = _label("", muted=True)
+        history_layout.addWidget(self.history_details)
+        self.history_loss_title = _label("Loss history", muted=True)
+        self.history_loss_graph = self._window_sparkline()
+        history_layout.addWidget(self.history_loss_title)
+        history_layout.addWidget(self.history_loss_graph)
+        self.history_log = QtWidgets.QPlainTextEdit()
+        self.history_log.setReadOnly(True)
+        self.history_log.setMinimumHeight(150)
+        history_layout.addWidget(self.history_log)
+        self.history_open_folder = QtWidgets.QPushButton("Open folder")
+        self.history_open_folder.setEnabled(False)
+        self.history_open_folder.clicked.connect(lambda: self._open_folder(self._history_selected_path))
+        history_layout.addLayout(_row(self.history_open_folder))
+        self.history_box.setVisible(False)
+        body.addWidget(self.history_box)
         self._show_train_form(True)
         body.addStretch(1)
         return frame
@@ -836,6 +978,83 @@ class FineTuneFlow(QtWidgets.QWidget):
     def _window_sparkline(self):
         cls = self._sparkline_cls
         return cls("#4f8cff") if cls else QtWidgets.QWidget()
+
+    def _toggle_run_history(self, expanded):
+        self.history_box.setVisible(expanded)
+        if expanded:
+            self._refresh_run_history()
+
+    def _refresh_run_history(self):
+        self.history_refresh.setEnabled(False)
+        self.history_status.setText("Scanning runs...")
+        settings, live_job = self._settings, self.train_job
+
+        def done(result, error):
+            self.history_refresh.setEnabled(True)
+            if error:
+                self._history_runs = []
+                self.history_list.clear()
+                self.history_status.setText(f"Could not scan run history: {error}")
+                return
+            self._history_runs = list(result or [])
+            self.history_list.clear()
+            for run in self._history_runs:
+                self.history_list.addItem(
+                    f"{run['name']}  |  {run['status']}  |  {run['modified_display']}"
+                )
+            self.history_status.setText(
+                f"{len(self._history_runs)} run(s)" if self._history_runs else "No training runs yet."
+            )
+            if self._history_runs:
+                self.history_list.setCurrentRow(0)
+            else:
+                self._show_history_run(-1)
+
+        self._run(lambda: jobs.scan_training_runs(settings, live_job=live_job), done)
+
+    def _reset_history_sparkline(self, losses):
+        old = self.history_loss_graph
+        self.history_loss_graph = self._window_sparkline()
+        old.parentWidget().layout().replaceWidget(old, self.history_loss_graph)
+        old.deleteLater()
+        top = max(losses, default=0.0) or 1.0
+        for value in losses:
+            if hasattr(self.history_loss_graph, "push"):
+                self.history_loss_graph.push(value / top)
+
+    def _show_history_run(self, row):
+        if row < 0 or row >= len(self._history_runs):
+            self._history_selected_path = None
+            self.history_details.setText("")
+            self.history_log.clear()
+            self.history_open_folder.setEnabled(False)
+            self.history_loss_title.setText("Loss history")
+            self._reset_history_sparkline([])
+            return
+        run = self._history_runs[row]
+        self._history_selected_path = run["path"]
+        lines = [
+            f"Status: {run['status']}",
+            f"Modified: {run['modified_display']}",
+            f"Base model: {run['base_model'] or 'unknown'}",
+            f"Dataset: {run['dataset_path'] or 'unknown'}",
+        ]
+        if run["meta"]:
+            rendered = json.dumps(run["meta"], indent=2, ensure_ascii=True)
+            if len(rendered) > 8000:
+                rendered = rendered[:8000] + "\n... metadata display truncated"
+            lines.append("Metadata:\n" + rendered)
+        elif run["meta_error"]:
+            lines.append(run["meta_error"])
+        self.history_details.setText("\n".join(lines))
+        self.history_log.setPlainText(run["log_tail"] or "(no training log)")
+        losses = run["losses"]
+        self.history_loss_title.setText(
+            f"Loss history ({len(losses)} points; {losses[-1]:.3g} latest)"
+            if losses else "Loss history (none found)"
+        )
+        self._reset_history_sparkline(losses)
+        self.history_open_folder.setEnabled(Path(run["path"]).is_dir())
 
     def _show_train_form(self, editing):
         self.train_form.setVisible(editing)
@@ -965,12 +1184,20 @@ class FineTuneFlow(QtWidgets.QWidget):
             self.log_toggle.setChecked(True)
         self._show_train_form(False)
         self._refresh_stepper()
+        if self.history_toggle.isChecked():
+            self._refresh_run_history()
         return False
 
     def _poll_distill(self):
         job = self.distill_job
-        text, self._distill_offset = jobs.read_new(job.log_path, self._distill_offset)
-        self._distill_text = (self._distill_text + text)[-200_000:]
+        text, self._distill_offset = jobs.read_new(
+            job.log_path, self._distill_offset, max_bytes=DISTILL_LOG_MEMORY_CHARS
+        )
+        self._distill_text = (self._distill_text + text)[-DISTILL_LOG_MEMORY_CHARS:]
+        if text:
+            self.distill_log_view.setPlainText(self._distill_text[-DISTILL_LOG_VIEW_CHARS:])
+            bar = self.distill_log_view.verticalScrollBar()
+            bar.setValue(bar.maximum())
         state = jobs.progress(self._distill_text)
         if state["total"]:
             self.distill_progress.setValue(state["current"])
@@ -983,6 +1210,7 @@ class FineTuneFlow(QtWidgets.QWidget):
             self.load_file(str(job.out_path), "distillation")
         else:
             self._fail("The teacher model stopped before finishing. Log: " + str(job.log_path))
+            self.distill_log_toggle.setChecked(True)
         self.distill_job = None
         return False
 
@@ -1156,9 +1384,15 @@ class FineTuneFlow(QtWidgets.QWidget):
 
         self._run(lambda: jobs.compare(settings, base, str(merged), system, prompt), done)
 
+    def _open_path(self, path):
+        if path and Path(path).exists():
+            return QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(Path(path))))
+        return False
+
     def _open_folder(self, folder):
-        if folder and Path(folder).is_dir() and hasattr(os, "startfile"):
-            os.startfile(str(folder))  # noqa: S606 - the owner's own run folder
+        if folder and Path(folder).is_dir():
+            return self._open_path(folder)
+        return False
 
     def _on_new(self):
         self.records, self.dataset_path, self.dataset_rows = None, None, 0

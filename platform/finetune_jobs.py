@@ -62,6 +62,9 @@ _HF_TOKENS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 
 TRAIN_LOG = "train.log"
 RUN_META = "run_meta.json"
+HISTORY_LOG_READ_BYTES = 2 * 1024 * 1024
+HISTORY_LOG_TAIL_BYTES = 16 * 1024
+HISTORY_META_BYTES = 256 * 1024
 
 
 class FineTuneUnavailable(RuntimeError):
@@ -306,15 +309,20 @@ _STAGES = (
 )
 
 
-def read_new(path: Path, offset: int) -> tuple[str, int]:
-    """Text appended to `path` since `offset`, and the new offset."""
+def read_new(path: Path, offset: int, max_bytes: int | None = None) -> tuple[str, int]:
+    """Text appended since ``offset`` and the new offset, optionally tail-bounded."""
     try:
         with open(path, "rb") as f:
-            f.seek(offset)
-            data = f.read()
+            f.seek(0, os.SEEK_END)
+            end = f.tell()
+            start = min(offset, end)
+            if max_bytes is not None:
+                start = max(start, end - int(max_bytes))
+            f.seek(start)
+            data = f.read() if max_bytes is None else f.read(int(max_bytes))
     except OSError:
         return "", offset
-    return data.decode("utf-8", errors="replace"), offset + len(data)
+    return data.decode("utf-8", errors="replace"), start + len(data)
 
 
 def progress(log_text: str) -> dict:
@@ -344,6 +352,107 @@ def progress(log_text: str) -> dict:
 # --------------------------------------------------------------------------- #
 # Finished runs
 # --------------------------------------------------------------------------- #
+
+
+def _read_tail(path: Path, limit: int) -> str:
+    """Read at most the last ``limit`` bytes of a text file, replacement-safe."""
+    try:
+        with Path(path).open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - int(limit)))
+            return handle.read(int(limit)).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _history_meta(path: Path) -> tuple[dict, str]:
+    try:
+        with Path(path).open("rb") as handle:
+            raw = handle.read(HISTORY_META_BYTES + 1)
+    except FileNotFoundError:
+        return {}, ""
+    except OSError as exc:
+        return {}, f"metadata could not be read: {exc}"
+    if len(raw) > HISTORY_META_BYTES:
+        return {}, "metadata is too large to display"
+    try:
+        data = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError):
+        return {}, "metadata is not valid JSON"
+    if not isinstance(data, dict):
+        return {}, "metadata is not a JSON object"
+    return data, ""
+
+
+def scan_training_runs(settings, live_job: Job | None = None, limit: int = 50) -> list[dict]:
+    """Read training-run history without changing GGUF discovery semantics.
+
+    A filesystem timestamp is never treated as proof that a run is active.
+    ``running`` is returned only for the live training ``Job`` owned by this
+    process. Logs and metadata are bounded so a damaged run cannot consume
+    unbounded memory on the background worker.
+    """
+    root = finetune.outputs_root(settings) if settings is not None else None
+    if root is None or not Path(root).is_dir():
+        return []
+    try:
+        folders = [p for p in Path(root).iterdir() if p.is_dir() and p.name != "_distill"]
+    except OSError:
+        return []
+
+    live_dir = None
+    if live_job is not None and live_job.kind == "train":
+        try:
+            live_dir = live_job.log_path.parent.resolve()
+        except OSError:
+            live_dir = live_job.log_path.parent
+
+    runs = []
+    for folder in folders:
+        log_path = folder / TRAIN_LOG
+        meta_path = folder / RUN_META
+        log_text = _read_tail(log_path, HISTORY_LOG_READ_BYTES)
+        state = progress(log_text)
+        meta, meta_error = _history_meta(meta_path)
+        try:
+            resolved = folder.resolve()
+        except OSError:
+            resolved = folder
+
+        owns_run = live_dir is not None and resolved == live_dir
+        if owns_run and live_job.running():
+            status = "running"
+        elif state["done"]:
+            status = "completed"
+        elif state["failed"] or (owns_run and live_job.exit_code() not in (None, 0)):
+            status = "failed"
+        else:
+            status = "incomplete"
+
+        mtimes = []
+        for candidate in (folder, log_path, meta_path):
+            try:
+                mtimes.append(candidate.stat().st_mtime)
+            except OSError:
+                pass
+        mtime = max(mtimes, default=0.0)
+        runs.append({
+            "name": folder.name,
+            "path": str(folder),
+            "status": status,
+            "mtime": mtime,
+            "modified_display": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime else "unknown",
+            "meta": meta,
+            "meta_error": meta_error,
+            "base_model": str(meta.get("base_model") or ""),
+            "dataset_path": str(meta.get("dataset_path") or ""),
+            "log_path": str(log_path) if log_path.is_file() else "",
+            "log_tail": log_text[-HISTORY_LOG_TAIL_BYTES:],
+            "losses": list(state["losses"]),
+        })
+    runs.sort(key=lambda row: (row["mtime"], row["name"]), reverse=True)
+    return runs[:max(0, int(limit))]
 
 
 def run_files(run_dir: Path) -> dict:

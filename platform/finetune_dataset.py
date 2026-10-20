@@ -21,6 +21,7 @@ VALID_ROLES = ("system", "user", "assistant")
 # so they are flagged as a warning rather than a problem.
 MAX_SEQ_TOKENS = 2048
 CHARS_PER_TOKEN = 4
+MAX_PROMPT_FILE_BYTES = 5 * 1024 * 1024
 
 # Training length presets: passes over the dataset ("epochs").
 LENGTH_PRESETS = {
@@ -35,6 +36,86 @@ SMALL_DATASET_ROWS = 20
 
 class DatasetError(ValueError):
     """The file could not be read as a dataset at all."""
+
+
+class PromptFileError(ValueError):
+    """A distillation prompt file could not be read safely."""
+
+
+def parse_prompt_file(data, filename, max_bytes=MAX_PROMPT_FILE_BYTES):
+    """Return ``(prompts, malformed_lines)`` from bounded UTF-8 file bytes.
+
+    Text files contain one prompt per non-blank line. JSONL files contain one
+    object per non-blank line with a non-blank string ``prompt`` field. This is
+    deliberately pure: the Qt page owns file selection and bounded disk I/O.
+    """
+    if not isinstance(data, bytes):
+        raise PromptFileError("the prompt file must be read as bytes")
+    if len(data) > int(max_bytes):
+        cap_mb = int(max_bytes) / (1024 * 1024)
+        raise PromptFileError(f"the prompt file is larger than the {cap_mb:g} MB limit")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise PromptFileError(
+            f"the prompt file is not valid UTF-8 (byte {exc.start})"
+        ) from None
+
+    prompts = []
+    malformed = []
+    jsonl = str(filename).lower().endswith(".jsonl")
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line:
+            continue
+        if not jsonl:
+            prompts.append(line)
+            continue
+        try:
+            row = json.loads(line)
+        except (TypeError, ValueError):
+            malformed.append(number)
+            continue
+        prompt = row.get("prompt") if isinstance(row, dict) else None
+        if not isinstance(prompt, str) or not prompt.strip():
+            malformed.append(number)
+            continue
+        prompts.append(prompt.strip())
+    if not prompts:
+        detail = format_line_numbers(malformed)
+        suffix = f"; malformed {detail}" if detail else ""
+        raise PromptFileError(f"the prompt file has no valid prompts{suffix}")
+    return prompts, malformed
+
+
+def load_prompt_file(path, max_bytes=MAX_PROMPT_FILE_BYTES):
+    """Read at most ``max_bytes + 1`` bytes, then parse a prompt file."""
+    from pathlib import Path
+
+    prompt_path = Path(path)
+    try:
+        size = prompt_path.stat().st_size
+        if size > int(max_bytes):
+            cap_mb = int(max_bytes) / (1024 * 1024)
+            raise PromptFileError(f"the prompt file is larger than the {cap_mb:g} MB limit")
+        with prompt_path.open("rb") as handle:
+            data = handle.read(int(max_bytes) + 1)
+    except PromptFileError:
+        raise
+    except OSError as exc:
+        raise PromptFileError(f"the prompt file could not be read: {exc}") from None
+    return parse_prompt_file(data, prompt_path.name, max_bytes=max_bytes)
+
+
+def format_line_numbers(numbers, shown=5):
+    """Compact malformed-line summary suitable for a dialog."""
+    values = list(numbers)
+    if not values:
+        return ""
+    first = ", ".join(str(n) for n in values[:shown])
+    more = f" and {len(values) - shown} more" if len(values) > shown else ""
+    noun = "line" if len(values) == 1 else "lines"
+    return f"{len(values)} malformed {noun} ({first}{more})"
 
 
 def parse_dataset(data, filename):
