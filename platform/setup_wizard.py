@@ -791,6 +791,14 @@ class SetupWizard:
                 with ThreadPoolExecutor(max_workers=min(4, len(jobs))) as pool:
                     list(pool.map(run_chain, jobs))
 
+            # This is a core compatibility step, not only a post-install hook.
+            # Existing Claude Code users also need the local-routing command.
+            say("-- Checking the Claude local-model command")
+            shim = self._ensure_claude_local(say)
+            say(f"   {'ok' if shim.ok else 'note'}: {shim.message}")
+            if not shim.ok:
+                failures.append("claude-local")
+
             for step in pending:
                 if step.key == "first_model":
                     run_one(step)
@@ -866,6 +874,11 @@ class SetupWizard:
                 + ". locitize will start; those features stay off until installed."
             )
         self._events.put(("done", summary))
+
+    @staticmethod
+    def _ensure_claude_local(say: Callable[[str], None]) -> setup_env.StepResult:
+        """Install the shim whenever Claude is already present, including upgrades."""
+        return setup_env.install_claude_local(say)
 
     def _install_harness(
         self, harness: str, say: Callable[[str], None]

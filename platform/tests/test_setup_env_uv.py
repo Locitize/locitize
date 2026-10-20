@@ -69,3 +69,27 @@ def test_harness_detection_requires_all_supported_clis(tmp_path, monkeypatch):
     state, _machine = setup_env.detect_state(setup_env.Machine(data_root=tmp_path))
     assert state["harness_clis"] is True
     assert state["harness_opencode"] is True
+
+
+def test_registered_installed_mmproj_enables_vision_detection(tmp_path):
+    projector = tmp_path / "mmproj.gguf"
+    projector.write_bytes(b"GGUF")
+    (tmp_path / "models.yaml").write_text(
+        "version: 1\nmodels:\n"
+        "  - id: vision\n"
+        "    name: Vision\n"
+        "    location: model.gguf\n"
+        f"    mmproj: {projector.as_posix()}\n"
+        "    context_size: 8192\n"
+        "    gpu_layers: -1\n"
+        "    status: installed\n",
+        encoding="utf-8",
+    )
+
+    assert setup_env._has_registered_vision_model(tmp_path) is True
+
+    text = (tmp_path / "models.yaml").read_text(encoding="utf-8")
+    (tmp_path / "models.yaml").write_text(
+        text.replace("status: installed", "status: disabled"), encoding="utf-8"
+    )
+    assert setup_env._has_registered_vision_model(tmp_path) is False

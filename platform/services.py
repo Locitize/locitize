@@ -409,6 +409,7 @@ class ManagedProcess:
         self._handle: ProcessHandle | None = None
         self._status = ServiceStatus.STOPPED
         self._resolved_port: int | None = None
+        self._stop_requested = False
         # File object receiving the child's merged stdout/stderr, if log_path set.
         self._log_handle: Any = None
         self._log = get_logger("launcher")
@@ -434,6 +435,7 @@ class ManagedProcess:
     def start(self) -> ServiceStatus:
         """Start the service: port preflight -> launch -> readiness wait."""
         self._status = ServiceStatus.STARTING
+        self._stop_requested = False
         spec = self._spec
         self._adopted = False
 
@@ -511,9 +513,16 @@ class ManagedProcess:
             self._status = ServiceStatus.RUNNING
         else:
             # Timed out or died: stop the partial process, report the error.
+            interrupted = self._stop_requested
             self.stop()
             self._status = ServiceStatus.STOPPED_ERROR
-            self._log.error("service %s did not become ready in time", spec.name)
+            if interrupted:
+                self._log.info(
+                    "service %s did not become ready because shutdown was in progress",
+                    spec.name,
+                )
+            else:
+                self._log.error("service %s did not become ready in time", spec.name)
         return self._status
 
     def _adopt_existing(self) -> bool:
@@ -652,6 +661,7 @@ class ManagedProcess:
         self._handle set and the service registered, so a subsequent stop_all()
         finds it and kills it again. No path abandons a live handle.
         """
+        self._stop_requested = True
         handle = self._handle
         if handle is None:
             # An adopted copy was not launched here, so it is not ours to kill.
@@ -1213,6 +1223,11 @@ class ModelController:
         """
         self._refuse_if_a_stale_server_holds_the_gpu()
         spec = self._spec_builder(model_id, ctx_size, gpu_layers, **spec_kwargs)
+        if "--model" in spec.command:
+            index = spec.command.index("--model") + 1
+            location = spec.command[index] if index < len(spec.command) else ""
+            if location and not Path(location).is_file():
+                raise ValueError(f"The model file is missing: {location}")
         proc = self._process_factory(spec)
         self._manager.register(proc)
         self._started[spec.name] = proc

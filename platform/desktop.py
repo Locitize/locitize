@@ -687,7 +687,7 @@ def _model_turned_off(model):
 def _model_tunable(model):
     """True when Auto-tune can run this row: on the list, switched on, file on disk."""
     return (
-        model.get("source") != "discovered"
+        model.get("source", "registry") == "registry"
         and not _model_turned_off(model)
         and _model_file_present(model)
     )
@@ -1337,6 +1337,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self._use_model_btn.setToolTip("Go to the Start page with this model selected")
         self._use_model_btn.clicked.connect(lambda: self._go_to("Start"))
         footer.addWidget(self._use_model_btn)
+        self._mine_add_file_btn = QtWidgets.QPushButton("Add model file...")
+        self._mine_add_file_btn.setToolTip(
+            "Add a GGUF already on this computer. This does not use the network."
+        )
+        self._mine_add_file_btn.clicked.connect(self._on_add_model_file)
+        footer.addWidget(self._mine_add_file_btn)
+        self._mine_register_btn = QtWidgets.QPushButton("Add discovered model")
+        self._mine_register_btn.setToolTip(
+            "Add the selected GGUF from the Models folder to your model list"
+        )
+        self._mine_register_btn.clicked.connect(self._on_register_selected)
+        self._mine_register_btn.setVisible(False)
+        footer.addWidget(self._mine_register_btn)
         # The same permanent delete as Advanced > Manage this model, here where
         # the list is: the old desktop kept Delete beside the table, and the
         # owner could not find it at the bottom of Advanced.
@@ -2595,14 +2608,26 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:  # noqa: BLE001 - hardware facts must never break a page
             return None
 
+    def _gpu_usable_mb(self):
+        """The VRAM a model start can use, from the startup Health probe."""
+        for result in getattr(self._health_report, "results", None) or []:
+            if getattr(result, "name", "") != "vram":
+                continue
+            value = (getattr(result, "data", None) or {}).get("effective_free_mb")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return float(value)
+        return self._gpu_total_mb()
+
     def _populate_start_combo(self):
         """Rebuild the Start page's model picker from the cached model rows."""
         combo = self._start_model_combo
         combo.blockSignals(True)
         combo.clear()
-        gpu_total = self._gpu_total_mb()
+        gpu_usable = self._gpu_usable_mb()
         for model in self._models:
-            fit = gui_controller.format_fit(model.get("vram_need_mb"), gpu_total)
+            if _model_turned_off(model):
+                continue
+            fit = gui_controller.format_fit(model.get("vram_need_mb"), gpu_usable)
             label = f"{model['name']}  -  {model.get('size_display', '-')}"
             if fit == "Yes":
                 label += "  -  fits your GPU"
@@ -2625,7 +2650,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._start_fit_label.setText("")
             return
         self._start_fit_label.setText(
-            gui_controller.describe_fit(model.get("vram_need_mb"), self._gpu_total_mb())
+            gui_controller.describe_fit(model.get("vram_need_mb"), self._gpu_usable_mb())
         )
 
     def _on_start_combo_changed(self, _index):
@@ -3021,11 +3046,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._sort_col is not None:
             rows = gui_controller.sort_model_rows(rows, self._sort_col, self._sort_desc)
         gpu_total = self._gpu_total_mb()
+        gpu_usable = self._gpu_usable_mb()
         self._model_table.blockSignals(True)
         self._model_table.setRowCount(len(rows))
         for row_index, model in enumerate(rows):
             status = self._status_for(model)
-            fit = gui_controller.format_fit(model.get("vram_need_mb"), gpu_total)
+            fit = gui_controller.format_fit(model.get("vram_need_mb"), gpu_usable)
             fit_text = {"Yes": "Yes", "Partly": "Partly (slower)"}.get(fit, "-")
             values = (
                 model["name"],
@@ -3077,7 +3103,7 @@ class MainWindow(QtWidgets.QMainWindow):
             item.setForeground(QtGui.QColor("#6ee7a8"))
         elif status == "Starting":
             item.setForeground(QtGui.QColor("#ffd166"))
-        elif status in ("Not available yet", "No file yet"):
+        elif status in ("Turned off on your list", "No file yet", "Model file is missing"):
             item.setForeground(QtGui.QColor("#8b9098"))
 
     def _restore_model_selection(self):
@@ -3125,8 +3151,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _status_for(self, model):
         """Render a textual model status from the pump-owned UI snapshot."""
-        if not model["launchable"]:
-            return "No file yet" if not model["location"] else "Not available yet"
+        if model.get("source") == "store-discovered":
+            return "Discovered - add to use"
+        if _model_turned_off(model):
+            return "Turned off on your list"
+        if not model.get("location"):
+            return "No file yet"
+        if not _model_file_present(model):
+            return "Model file is missing"
         if self._ui.running_model_id == model["id"]:
             return "Running"
         if self._ui.in_flight and self._selected_id == model["id"]:
@@ -3201,13 +3233,15 @@ class MainWindow(QtWidgets.QMainWindow):
         parts.append(
             speed.lower() if speed and speed not in ("-", "Not measured yet") else "speed not measured yet"
         )
-        fit = gui_controller.format_fit(model.get("vram_need_mb"), self._gpu_total_mb())
+        fit = gui_controller.format_fit(model.get("vram_need_mb"), self._gpu_usable_mb())
         if fit == "Yes":
             parts.append("fits your GPU")
         elif fit == "Partly":
             parts.append("too big for your GPU alone (slower)")
         if model.get("source") == "discovered":
             parts.append("fine-tuned, not on your list yet")
+        elif model.get("source") == "store-discovered":
+            parts.append("discovered in the Models folder, not on your list yet")
         return "  |  ".join(parts)
 
     def _update_advanced_header(self):
@@ -3218,7 +3252,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._edit_title.setText(f"Edit {name}" if name else "Edit this model")
         self._delete_btn.setText(f"Delete {name}..." if name else "Delete this model...")
         self._register_btn.setVisible(
-            bool(model and model.get("source") == "discovered")
+            bool(model and model.get("source") in ("discovered", "store-discovered"))
+        )
+        self._register_btn.setText(
+            "Add discovered model" if model and model.get("source") == "store-discovered"
+            else "Add to my models"
         )
 
     def _repopulate_advanced_picker(self):
@@ -3257,6 +3295,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._capabilities_edit.setText(", ".join(model.get("capabilities", [])))
         self._capabilities_edit.blockSignals(False)
         self._on_capabilities_change()
+        editable = model.get("source", "registry") == "registry"
+        for widget in (
+            self._gpu_edit,
+            self._ctx_edit,
+            self._id_edit,
+            self._name_edit,
+            self._capabilities_edit,
+        ):
+            widget.setEnabled(editable)
+        if not editable:
+            reason = "Add this discovered model to your list before editing it."
+            self._gate(self._save_btn, False, reason)
+            self._gate(self._identity_save_btn, False, reason)
+            self._gate(self._capabilities_save_btn, False, reason)
 
     def _autotune_active(self):
         """True from the Auto-tune click until its result lands.
@@ -3285,12 +3337,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if model is None:
             start_enabled = False
             start_reason = "Pick a model first."
-        elif not model["launchable"]:
+        elif model.get("source") == "store-discovered":
             start_enabled = False
-            start_reason = (
-                "This model has no file yet. Download it on the Models page, "
-                "under Get models."
-            )
+            start_reason = "Add this discovered model to your list before starting it."
+        elif _model_turned_off(model):
+            start_enabled = False
+            start_reason = "Turned off on your list"
+        elif not model.get("location"):
+            start_enabled = False
+            start_reason = "This model has no file yet. Download it on the Models page."
+        elif not _model_file_present(model):
+            start_enabled = False
+            start_reason = f"The model file is missing: {model['location']}"
         else:
             start_label = gui_controller.start_label_for(model["id"], self._ui)
             if start_label == "Running":
@@ -3333,11 +3391,14 @@ class MainWindow(QtWidgets.QMainWindow):
             # enabled LAST, after every rule that would switch it off.
             busy = "A speed test is running. Press Stop to cancel it."
             stop_enabled = not self._autotune_canceling
-            stop_reason = "Cancelling the speed test..."
+            stop_reason = "Cancelling the auto-tune..."
             start_enabled, start_reason = False, busy
             offload_enabled, offload_reason = False, busy
+            chat_enabled, chat_reason = False, "Wait for the auto-tune to finish or stop it."
         self._gate(self._start_btn, start_enabled, start_reason)
         self._gate(self._stop_btn, stop_enabled, stop_reason)
+        if autotune and stop_enabled:
+            self._stop_btn.setToolTip("Stop the auto-tune")
         self._gate(self._header_offload_btn, offload_enabled, offload_reason)
         self._chat_no_model_ok = no_model_chat
         self._gate(self._chat_btn, chat_enabled, chat_reason)
@@ -3353,21 +3414,28 @@ class MainWindow(QtWidgets.QMainWindow):
         busy_voice = "A voice chat is using the model. End it on Voice & Vision first."
         self._gate(
             self._register_btn,
-            model is not None and model.get("source") == "discovered",
-            "Only a fine-tuned model that is not on your list yet can be added.",
+            model is not None and model.get("source") in ("discovered", "store-discovered"),
+            "Only a discovered model that is not on your list yet can be added.",
+        )
+        store_discovered = bool(model and model.get("source") == "store-discovered")
+        self._mine_register_btn.setVisible(store_discovered)
+        self._gate(
+            self._mine_register_btn,
+            store_discovered,
+            "Select a discovered GGUF from the Models folder first.",
         )
         # Delete: only a registered row has a list entry to remove, and never the
         # running model, whose file is open.
         if model is None:
             delete_reason = "Pick a model first."
-        elif model.get("source") == "discovered":
-            delete_reason = "This fine-tuned model is not on your list, so there is nothing to delete here."
+        elif model.get("source", "registry") != "registry":
+            delete_reason = "This discovered model is not on your list, so there is nothing to delete here."
         else:
             delete_reason = "Stop the model before deleting it."
         self._gate(
             self._delete_btn,
             model is not None
-            and model.get("source") != "discovered"
+            and model.get("source", "registry") == "registry"
             and self._ui.running_model_id != model.get("id"),
             delete_reason,
         )
@@ -3380,8 +3448,8 @@ class MainWindow(QtWidgets.QMainWindow):
             tune_reason = "Stop the running model first - the test needs the GPU to itself."
         elif model is None:
             tune_reason = "Pick a model first."
-        elif model.get("source") == "discovered":
-            tune_reason = "This fine-tuned model is not on your list yet. Add it first."
+        elif model.get("source", "registry") != "registry":
+            tune_reason = "This discovered model is not on your list yet. Add it first."
         elif _model_turned_off(model):
             tune_reason = (
                 f"This model is turned off on your list (status: {model.get('status')}), "
@@ -3436,6 +3504,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _health_line(self):
         """The running model, port, speed and context beside the health chip."""
+        if self._autotune_active():
+            model_id = self._gc.autotune_model_id() or self._selected_id or "model"
+            return f"Auto-tuning {self._model_name(model_id)}..."
         running = self._ui.running_model_id
         if not running and not self._assistant_port:
             return "No model running"
@@ -3460,11 +3531,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if model is None:
             self._model_status.setText("Pick a model first.")
             return
-        if not model["launchable"]:
-            self._model_status.setText(
-                "That model has no file yet. Download it on the Models page, "
-                "under Get models."
-            )
+        if _model_turned_off(model):
+            self._model_status.setText("Turned off on your list")
+            return
+        if not model.get("location"):
+            self._model_status.setText("That model has no file yet. Download it on the Models page.")
+            return
+        if not _model_file_present(model):
+            self._model_status.setText(f"The model file is missing: {model['location']}")
             return
         picked, problems = self._selected_thinking(model["id"])
         if problems:
@@ -3660,13 +3734,13 @@ class MainWindow(QtWidgets.QMainWindow):
         # those only the ones whose file is on disk.
         registered = [
             m for m in self._models
-            if m.get("source") != "discovered" and not _model_turned_off(m)
+            if m.get("source", "registry") == "registry" and not _model_turned_off(m)
         ]
         count = sum(1 for m in registered if _model_file_present(m))
         missing = len(registered) - count
         turned_off = sum(
             1 for m in self._models
-            if m.get("source") != "discovered" and _model_turned_off(m)
+            if m.get("source", "registry") == "registry" and _model_turned_off(m)
         )
         missing_note = (
             f"{missing} model(s) on your list are skipped because their file is "
@@ -4085,11 +4159,33 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_register_selected(self):
         """Models-page Register: same intent, targeting the selected model row."""
         model = self._selected_model()
-        if model is None or model.get("source") != "discovered":
+        if model is None:
+            return
+        if model.get("source") == "store-discovered":
+            self._mine_register_btn.setEnabled(False)
+            self._register_btn.setEnabled(False)
+            self._model_status.setText(f"Adding {model['name']} to your models...")
+            self._gc.request_add_model_file(model["location"])
+            return
+        if model.get("source") != "discovered":
             return
         self._register_btn.setEnabled(False)
         self._model_status.setText(f"Adding {model['name']} to your models...")
         self._gc.request_register_discovered(model["id"])
+
+    def _on_add_model_file(self):
+        """Choose one local GGUF; registration itself runs on the ops worker."""
+        path, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Add model file",
+            str(getattr(self._gc, "model_store_path", lambda: "")() or ""),
+            "GGUF models (*.gguf)",
+        )
+        if not path:
+            return
+        self._mine_add_file_btn.setEnabled(False)
+        self._model_status.setText(f"Adding {Path(path).name} to your models...")
+        self._gc.request_add_model_file(path)
 
     def _on_model_table_menu(self, pos):
         """Right-click on a model row: Use it, or Delete it (asks first)."""
@@ -4573,7 +4669,10 @@ class MainWindow(QtWidgets.QMainWindow):
         """Show the install panel, with the reason, when fine-tuning cannot run here."""
         disabled = payload.get("status") == "disabled"
         self._ft_install_panel.setVisible(disabled)
-        self._ft_install_reason.setText(payload.get("reason", "") if disabled else "")
+        reason = payload.get("reason", "") if disabled else ""
+        self._ft_install_reason.setText(
+            "" if reason.startswith("Fine-tuning is not installed yet.") else reason
+        )
 
     def _apply_finetune_result(self, result):
         """Apply a finetune_state Result from the worker."""
@@ -4826,6 +4925,18 @@ class MainWindow(QtWidgets.QMainWindow):
             self._apply_hub_done(result)
         elif kind == "model_store_change":
             self._apply_model_store_change(result)
+        elif kind == "add_model_file_result":
+            self._mine_add_file_btn.setEnabled(True)
+            if result.ok:
+                self._model_status.setText(
+                    "That model is already on your list."
+                    if result.payload.get("already_registered")
+                    else "Model added to your list."
+                )
+                self._on_refresh_models()
+            else:
+                self._model_status.setText(result.error or "Could not add the model file.")
+                self._refresh_buttons()
         elif kind == "openwebui_install_progress":
             self._apply_openwebui_install_progress(result)
         elif kind == "openwebui_install_done":
@@ -4921,6 +5032,13 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._start_status_line.setText(f"{name} is running - ready to chat")
         else:
+            if self._autotune_active():
+                model_id = self._gc.autotune_model_id() or self._selected_id or "model"
+                self._chat_hint.setText("Chat is unavailable while auto-tuning uses the model.")
+                self._start_status_line.setText(
+                    f"Auto-tuning {self._model_name(model_id)}..."
+                )
+                return
             if getattr(self, "_chat_no_model_ok", False):
                 self._chat_hint.setText(
                     "Open the chat and pick any model there - it loads "

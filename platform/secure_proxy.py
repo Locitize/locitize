@@ -34,6 +34,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -53,6 +54,8 @@ _CADDY_ROOT_CRT = (
 
 _PROBE_TIMEOUT_S = 0.8
 _START_WAIT_S = 6.0
+_OWNED_LOCK = threading.Lock()
+_OWNED_CADDY: tuple[str, Path] | None = None
 
 
 def _port_open(host: str, port: int, timeout: float = _PROBE_TIMEOUT_S) -> bool:
@@ -213,6 +216,7 @@ def ensure(
         )
         say(f"wrote {caddyfile}")
 
+    started_here = False
     if not _port_open("127.0.0.1", 443):
         say("starting caddy...")
         try:
@@ -222,7 +226,7 @@ def ensure(
             # and readiness is judged by the port probe below instead of output.
             # CREATE_NO_WINDOW keeps the GUI free of console flashes.
             subprocess.run(
-                [caddy, "start", "--config", str(caddyfile)],
+                [caddy, "start", "--config", str(caddyfile), "--adapter", "caddyfile"],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -240,6 +244,12 @@ def ensure(
             time.sleep(0.25)
         else:
             return False, "caddy started but 127.0.0.1:443 never answered"
+        started_here = True
+
+    if started_here:
+        global _OWNED_CADDY
+        with _OWNED_LOCK:
+            _OWNED_CADDY = (str(caddy), caddyfile)
 
     if not _tls_trusted(hostname):
         # First issuance creates root.crt; trust it user-scope. Windows may show
@@ -269,3 +279,29 @@ def ensure(
             return False, "root CA added but the TLS handshake still fails"
 
     return True, f"https://{hostname}/ live and trusted"
+
+
+def stop_owned() -> None:
+    """Stop only the Caddy daemon this process started, if any."""
+    global _OWNED_CADDY
+    with _OWNED_LOCK:
+        owned = _OWNED_CADDY
+    if owned is None:
+        return
+    caddy, caddyfile = owned
+    try:
+        proc = subprocess.run(
+            [caddy, "stop", "--config", str(caddyfile), "--adapter", "caddyfile"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=_START_WAIT_S * 5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"caddy stop failed: {exc}") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(f"caddy stop exited {proc.returncode}")
+    with _OWNED_LOCK:
+        if _OWNED_CADDY == owned:
+            _OWNED_CADDY = None

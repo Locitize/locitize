@@ -93,6 +93,12 @@ class FakeGuiController:
         # the tests below can assert Start forwards None by default.
         self.calls.append(("request_start", model_id, reasoning))
 
+    def request_add_model_file(self, path):
+        self.calls.append(("request_add_model_file", path))
+
+    def model_store_path(self):
+        return ""
+
     def request_stop(self):
         self.calls.append(("request_stop",))
 
@@ -211,6 +217,74 @@ def test_model_table_defaults_to_fastest_generation_throughput(qapp):
     window.deleteLater()
 
 
+def test_start_picker_excludes_turned_off_and_rows_use_plain_status(qapp):
+    app, desktop, qt_gui = qapp
+    fake = FakeGuiController()
+    rows = fake.list_models()
+    rows[1]["status"] = "disabled"
+    fake.list_models = lambda: rows
+
+    window = desktop.MainWindow(fake, health="OK")
+
+    assert window._start_model_combo.findData("local-code") == -1
+    table_row = next(
+        row for row in range(window._model_table.rowCount())
+        if window._model_table.item(row, 0).data(desktop.QtCore.Qt.ItemDataRole.UserRole)
+        == "local-code"
+    )
+    assert window._model_table.item(table_row, 9).text() == "Turned off on your list"
+    window._model_table.selectRow(table_row)
+    window._on_select_model(table_row, 0, -1, -1)
+    assert not window._start_btn.isEnabled()
+    assert window._start_btn.toolTip() == "Turned off on your list"
+
+    window.closeEvent(qt_gui.QCloseEvent())
+    window.deleteLater()
+
+
+def test_missing_model_file_has_exact_start_refusal(qapp):
+    app, desktop, qt_gui = qapp
+    fake = FakeGuiController()
+    rows = fake.list_models()
+    missing = "/locitize-test/models/gone.gguf"
+    rows[0].update(location=missing, file_present=False, launchable=False)
+    fake.list_models = lambda: rows
+
+    window = desktop.MainWindow(fake, health="OK")
+
+    row = next(
+        row for row in range(window._model_table.rowCount())
+        if window._model_table.item(row, 0).data(desktop.QtCore.Qt.ItemDataRole.UserRole)
+        == "local-chat"
+    )
+    window._model_table.selectRow(row)
+    window._on_select_model(row, 0, -1, -1)
+    assert window._model_table.item(row, 9).text() == "Model file is missing"
+    assert not window._start_btn.isEnabled()
+    assert window._start_btn.toolTip() == f"The model file is missing: {missing}"
+
+    window.closeEvent(qt_gui.QCloseEvent())
+    window.deleteLater()
+
+
+def test_fit_uses_health_usable_vram_not_physical_total(qapp):
+    app, desktop, qt_gui = qapp
+    fake = FakeGuiController()
+    report = SimpleNamespace(
+        results=[SimpleNamespace(name="vram", data={"effective_free_mb": 8000})]
+    )
+    window = desktop.MainWindow(fake, health="OK", health_report=report)
+
+    label = window._start_model_combo.itemText(
+        window._start_model_combo.findData("local-chat")
+    )
+    assert "fits your GPU" not in label
+    assert "partly on your GPU" in label
+
+    window.closeEvent(qt_gui.QCloseEvent())
+    window.deleteLater()
+
+
 def test_consumer_settings_show_models_folder_and_missing_webui_banner(qapp):
     app, desktop, qt_gui = qapp
     fake = FakeGuiController()
@@ -223,6 +297,32 @@ def test_consumer_settings_show_models_folder_and_missing_webui_banner(qapp):
     assert window._model_store_edit.isReadOnly()
     assert window._openwebui_banner.isVisible()
     assert window._openwebui_install_btn.text() == "Install Open WebUI"
+    window.closeEvent(qt_gui.QCloseEvent())
+    window.deleteLater()
+
+
+def test_add_model_file_uses_gguf_picker_and_controller(qapp, tmp_path, monkeypatch):
+    app, desktop, qt_gui = qapp
+    fake = FakeGuiController()
+    store = tmp_path / "Models"
+    store.mkdir()
+    chosen = tmp_path / "picked.gguf"
+    chosen.write_bytes(b"GGUF")
+    fake.model_store_path = lambda: str(store)
+    seen = {}
+
+    def pick(_parent, _title, start, file_filter):
+        seen.update(start=start, file_filter=file_filter)
+        return str(chosen), file_filter
+
+    monkeypatch.setattr(desktop.QtWidgets.QFileDialog, "getOpenFileName", pick)
+    window = desktop.MainWindow(fake, health="OK")
+    window._mine_add_file_btn.click()
+
+    assert seen["start"] == str(store)
+    assert "*.gguf" in seen["file_filter"]
+    assert fake.calls[-1] == ("request_add_model_file", str(chosen))
+
     window.closeEvent(qt_gui.QCloseEvent())
     window.deleteLater()
 
@@ -965,6 +1065,9 @@ def test_stop_cancels_a_running_autotune_instead_of_queueing_a_model_stop(
     )
     window._autotune_btn.click()
     assert window._stop_btn.isEnabled() is True, "Stop must be the way out of a tune"
+    assert window._stop_btn.toolTip() == "Stop the auto-tune"
+    assert not window._chat_btn.isEnabled()
+    assert window._header_status.text() == "Auto-tuning Local Chat..."
 
     window._stop_btn.click()
     assert ("cancel_autotune",) in fake.calls

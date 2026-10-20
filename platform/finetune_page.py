@@ -183,6 +183,7 @@ class FineTuneFlow(QtWidgets.QWidget):
         self._history_runs = []
         self._history_selected_path = None
         self._sparkline_cls = sparkline_cls
+        self._environment_available = False
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -234,16 +235,47 @@ class FineTuneFlow(QtWidgets.QWidget):
         try:
             jobs.environment(self._settings)
         except jobs.FineTuneUnavailable as exc:
-            self.unavailable.setText(str(exc))
-            self.unavailable.setVisible(True)
+            self._environment_available = False
+            reason = str(exc)
+            panel = getattr(self._window, "_ft_install_panel", None)
+            if panel is not None:
+                panel.setVisible(True)
+                self.unavailable.setVisible(False)
+            else:
+                # Embedded tests/alternate hosts have no install panel; retain
+                # one truthful message instead of leaving a blank page.
+                self.unavailable.setText(reason)
+                self.unavailable.setVisible(True)
+            label = getattr(self._window, "_ft_install_reason", None)
+            if label is not None:
+                label.setText(
+                    "" if reason.startswith("Fine-tuning is not installed yet.") else reason
+                )
+            self._set_environment_controls(False, reason)
             return False
+        self._environment_available = True
         self.unavailable.setVisible(False)
+        self._set_environment_controls(True, "")
         return True
+
+    def _set_environment_controls(self, enabled, reason):
+        """Gate the three step-one actions that require the training environment."""
+        for name in ("suggest_models", "download_button", "model_next"):
+            button = getattr(self, name, None)
+            if button is None:
+                continue
+            button.setEnabled(bool(enabled))
+            if enabled and name == "suggest_models":
+                button.setToolTip(
+                    "Contacts huggingface.co to suggest models for this graphics card."
+                )
+            else:
+                button.setToolTip("" if enabled else reason)
 
     def reachable(self, number):
         return {
             1: True,
-            2: bool(self.model),
+            2: bool(self._environment_available and self.model),
             3: bool(self.model and self.dataset_path),
             4: bool(self.run_dir and self.run_done),
         }[number]
@@ -306,6 +338,9 @@ class FineTuneFlow(QtWidgets.QWidget):
         self.custom_model.editingFinished.connect(self._on_model_choice)
         body.addLayout(_form(("Or type a model id", self.custom_model)))
         self.suggest_models = QtWidgets.QPushButton("Suggest models for my GPU")
+        self.suggest_models.setToolTip(
+            "Contacts huggingface.co after you confirm, then suggests models for your GPU."
+        )
         self.suggest_models.clicked.connect(self._on_suggest_models)
         body.addLayout(_row(self.suggest_models))
         self.suggestion_status = _label(muted=True)
@@ -365,9 +400,12 @@ class FineTuneFlow(QtWidgets.QWidget):
             self._download_size_check_for = None
         note = dict(jobs.MODEL_CHOICES).get(model, "A model of your choice from Hugging Face.")
         self.model_note.setText(note)
-        if self.unavailable.isVisible():
+        if not self._environment_available:
             self.download_status_label.setText("Set up fine-tuning to check or download this model.")
-            self.download_button.setEnabled(False)
+            self._set_environment_controls(
+                False,
+                "Fine-tuning is not installed yet. Use the install action above first.",
+            )
             return
         if model != self._fit_for:
             self._fit_for = model
@@ -441,6 +479,16 @@ class FineTuneFlow(QtWidgets.QWidget):
             QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(cache_dir))
 
     def _refresh_download_controls(self):
+        if not self._environment_available:
+            self.download_status_label.setText(
+                "Set up fine-tuning to check or download this model."
+            )
+            self._set_environment_controls(
+                False,
+                "Fine-tuning is not installed yet. Use the install action above first.",
+            )
+            self.download_stop.setEnabled(False)
+            return
         running = bool(self.download_job and self.download_job.running())
         training = bool(self.train_job and self.train_job.running())
         if running:
@@ -559,6 +607,18 @@ class FineTuneFlow(QtWidgets.QWidget):
         self.download_stop.setEnabled(False)
 
     def _on_suggest_models(self):
+        if not self._environment_available:
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Ask huggingface.co for suggestions?",
+            "This contacts huggingface.co to find model suggestions that fit your graphics card. Continue?",
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
         self.suggest_models.setEnabled(False)
         self.suggestion_status.setText("Reading your GPU and asking huggingface.co...")
         self.suggestion_list.clear()

@@ -138,6 +138,12 @@ def test_local_launch_rejects_missing_project(tmp_path):
         build_local_launch("codex", str(tmp_path / "missing"), "local", 8080)
 
 
+@pytest.mark.parametrize("project", ["", "."])
+def test_local_launch_requires_a_nonempty_absolute_project(project):
+    with pytest.raises(ValueError, match="full path"):
+        build_local_launch("codex", project, "local", 8080)
+
+
 def test_jsonl_reader_caps_large_lines_and_skips_non_objects(tmp_path, monkeypatch):
     from session_core.providers import base
     monkeypatch.setattr(base, "MAX_JSON_LINE_CHARS", 64)
@@ -258,5 +264,49 @@ def test_local_launch_dialog_preselects_running_model_and_remembered_project(
         "resume_id": "",
         "remember": True,
     }]
+    page.close()
+    app.processEvents()
+
+
+def test_local_launch_dialog_gates_ok_and_browse_starts_at_last_project(
+    tmp_path, monkeypatch
+):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+    from sessions_ui import SessionsPage
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    starts = []
+
+    class Controller:
+        def list_models(self):
+            return [{"id": "m", "name": "M", "launchable": True}]
+
+        def last_project_dir(self):
+            return str(tmp_path)
+
+    def inspect(dialog):
+        folder = dialog.findChild(QtWidgets.QLineEdit, "localLaunchProject")
+        box = dialog.findChild(QtWidgets.QDialogButtonBox)
+        ok = box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        assert ok.isEnabled()
+        folder.setText("")
+        assert not ok.isEnabled()
+        browse = next(
+            b for b in dialog.findChildren(QtWidgets.QPushButton)
+            if b.text() == "Choose folder"
+        )
+        browse.click()
+        return QtWidgets.QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(QtWidgets.QDialog, "exec", inspect)
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getExistingDirectory",
+        lambda _parent, _title, start: starts.append(start) or "",
+    )
+    page = SessionsPage(Controller(), SessionService(tmp_path, []))
+    page.local_launch(None, tool="codex")
+    assert starts == [str(tmp_path)]
     page.close()
     app.processEvents()

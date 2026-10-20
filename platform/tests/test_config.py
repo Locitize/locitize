@@ -359,7 +359,11 @@ def test_bare_list_models_accepted(tmp_path):
 # keyword: write_model_fields; Architecture G6).
 # --------------------------------------------------------------------------- #
 
-from config import replace_model_entry, write_model_fields  # noqa: E402
+from config import (  # noqa: E402
+    read_model_context_note,
+    replace_model_entry,
+    write_model_fields,
+)
 
 
 # A realistic two-model fixture with comments and quoted values on the exact
@@ -414,6 +418,26 @@ def test_write_model_fields_preserves_inline_comments(tmp_path):
     # The header comment and the other model are untouched.
     assert "# locitize model registry (owner-maintained)." in text
     assert "gpu_layers: 20" in text  # second model unchanged
+
+
+def test_manual_context_save_replaces_stale_autotune_provenance(tmp_path):
+    text = _MODELS_WITH_COMMENTS.replace(
+        "# trailing comment must survive",
+        "# context_size set by locitize auto-tune 2026-10-19",
+    )
+    (tmp_path / "models.yaml").write_text(text, encoding="utf-8")
+
+    write_model_fields(
+        tmp_path,
+        "qwen3-14b",
+        gpu_layers=-1,
+        context_size=24576,
+        context_note="context_size set by hand 2026-10-20",
+    )
+
+    assert read_model_context_note(tmp_path, "qwen3-14b") == (
+        "context_size set by hand 2026-10-20"
+    )
 
 
 def test_write_model_fields_scoped_to_the_named_model(tmp_path):

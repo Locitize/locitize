@@ -772,6 +772,7 @@ def autotune_model_context(
     current_context: int,
     current_server_args: Sequence[Any] | None,
     write_tuning: Callable[[str, int, list[str]], None],
+    restore_tuning: Callable[[str, int, list[str]], None] | None = None,
     trial_fn: Callable[[int], Trial],
     progress: Callable[[str], None] | None = None,
     max_trials: int = DEFAULT_MAX_TRIALS,
@@ -812,6 +813,7 @@ def autotune_model_context(
         return cancel is not None and cancel.is_set()
 
     previous_args = normalize_server_args(current_server_args)
+    rollback = restore_tuning or write_tuning
     result = AutotuneResult(
         model_id=model_id,
         ok=False,
@@ -867,7 +869,7 @@ def autotune_model_context(
     emit(f"measuring throughput baseline at current context {current_context} ...")
     baseline = trial_fn(current_context)
     if baseline.canceled or canceled():
-        _restore(write_tuning, model_id, current_context, previous_args, emit)
+        _restore(rollback, model_id, current_context, previous_args, emit)
         result.server_args = list(previous_args)
         result.canceled = True
         result.detail = _CANCEL_DETAIL
@@ -901,7 +903,7 @@ def autotune_model_context(
         # Undo step 2's KV-cache write for the same reason the "nothing loaded"
         # branch below does: it was made to serve a probe that never finished,
         # and an abandoned operation must not leave an edit behind.
-        _restore(write_tuning, model_id, current_context, previous_args, emit)
+        _restore(rollback, model_id, current_context, previous_args, emit)
         result.server_args = list(previous_args)
         result.canceled = True
         result.detail = _CANCEL_DETAIL
@@ -912,7 +914,7 @@ def autotune_model_context(
         # KV-cache change was made to serve a probe that found nothing, and
         # leaving an unrequested edit behind after a failed operation is not this
         # codebase's habit.
-        _restore(write_tuning, model_id, current_context, previous_args, emit)
+        _restore(rollback, model_id, current_context, previous_args, emit)
         result.server_args = list(previous_args)
         failed = probe.trials[0] if probe.trials else None
         result.detail = (
@@ -942,7 +944,7 @@ def autotune_model_context(
     try:
         write_tuning(model_id, chosen, final_args)
     except Exception as exc:  # noqa: BLE001 - boundary: report, never raise up
-        _restore(write_tuning, model_id, current_context, previous_args, emit)
+        _restore(rollback, model_id, current_context, previous_args, emit)
         result.server_args = list(previous_args)
         result.detail = f"could not write the tuned settings: {exc}"
         return result
@@ -956,7 +958,7 @@ def autotune_model_context(
         # confirmed to start. Restoring is the honest choice and matches the
         # failed-confirmation branch immediately below: LOCITIZE only keeps a
         # tuned config it has actually watched come up.
-        _restore(write_tuning, model_id, current_context, previous_args, emit)
+        _restore(rollback, model_id, current_context, previous_args, emit)
         result.server_args = list(previous_args)
         result.chosen_context = None
         result.canceled = True
@@ -964,7 +966,7 @@ def autotune_model_context(
         emit(result.detail)
         return result
     if not confirm.ok:
-        _restore(write_tuning, model_id, current_context, previous_args, emit)
+        _restore(rollback, model_id, current_context, previous_args, emit)
         result.server_args = list(previous_args)
         result.chosen_context = None
         result.detail = (

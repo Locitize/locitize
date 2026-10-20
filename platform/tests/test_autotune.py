@@ -505,6 +505,26 @@ def test_orchestrator_restores_previous_settings_when_nothing_loads(tmp_path):
     assert "left unchanged" in result.detail
 
 
+def test_failed_autotune_uses_the_distinct_provenance_preserving_restore(tmp_path):
+    gguf = _fixture_gguf(tmp_path, "qwen3", 40960)
+    tuning_writer = FakeWriter()
+    restore_writer = FakeWriter()
+
+    result = autotune_model_context(
+        model_id="alpha",
+        location=str(gguf),
+        current_context=16384,
+        current_server_args=["--parallel", "1"],
+        write_tuning=tuning_writer,
+        restore_tuning=restore_writer,
+        trial_fn=FakeMachine(ceiling=0),
+    )
+
+    assert not result.ok
+    assert len(tuning_writer.calls) == 1
+    assert restore_writer.calls == [("alpha", 16384, ["--parallel", "1"])]
+
+
 def test_orchestrator_rolls_back_when_the_written_config_fails_confirmation(tmp_path):
     """The confirmation start is what stops a broken config being left behind."""
     gguf = _fixture_gguf(tmp_path, "qwen3", 40960)

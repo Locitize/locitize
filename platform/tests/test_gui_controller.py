@@ -16,6 +16,7 @@ payloads, exercising:
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 from config import Model, Settings
 from services import ServiceStatus
@@ -1386,6 +1387,84 @@ def _real_gui_controller(tmp_path, yaml_text):
     return gc, registry
 
 
+def test_add_model_file_hardlinks_model_and_mmproj_then_uses_registry_writer(
+        tmp_path):
+    source_dir = tmp_path / "incoming"
+    source_dir.mkdir()
+    model = source_dir / "demo-model.gguf"
+    projector = source_dir / "demo-model-mmproj.gguf"
+    model.write_bytes(b"GGUF model")
+    projector.write_bytes(b"GGUF projector")
+    store = tmp_path / "Models"
+    gc, registry = _real_gui_controller(tmp_path, "version: 1\nmodels: []\n")
+    gc._settings.paths.model_store = str(store)
+
+    gc._do_add_model_file(str(model))
+
+    result = gc.result_q.get_nowait()
+    assert result.kind == "add_model_file_result" and result.ok
+    registered = registry.get(result.payload["model_id"])
+    assert registered is not None
+    assert Path(registered.location).parent == store
+    assert Path(registered.mmproj).parent == store
+    assert Path(registered.location).samefile(model)
+    assert Path(registered.mmproj).samefile(projector)
+    assert "Local GGUF added from the Models page." in (
+        tmp_path / "models.yaml"
+    ).read_text(encoding="utf-8")
+
+
+def test_refresh_merge_lists_unregistered_models_folder_gguf_for_one_click(
+        tmp_path, monkeypatch):
+    import setup_env
+
+    store = tmp_path / "Models"
+    store.mkdir()
+    found = store / "new-model.gguf"
+    found.write_bytes(b"GGUF")
+    gc, _registry = _real_gui_controller(tmp_path, "version: 1\nmodels: []\n")
+    gc._settings.paths.model_store = str(store)
+    monkeypatch.setattr(
+        setup_env,
+        "find_local_models",
+        lambda roots: [{"path": str(found), "name": found.name, "size": 4}],
+    )
+
+    rows = gc.list_models_merged()
+
+    assert len(rows) == 1
+    assert rows[0]["source"] == "store-discovered"
+    assert rows[0]["location"] == str(found)
+    assert rows[0]["launchable"] is False
+
+
+def test_feature_state_marks_vision_and_second_eye_installed_from_requirements(
+        tmp_path, monkeypatch):
+    import setup_env
+
+    gc, _registry = _real_gui_controller(tmp_path, "version: 1\nmodels: []\n")
+    monkeypatch.setattr(
+        setup_env,
+        "detect_state",
+        lambda: (
+            {
+                "vision_projector": True,
+                "pillow_pip": True,
+                "kokoro_pip": True,
+                "kokoro_weights": True,
+            },
+            object(),
+        ),
+    )
+
+    gc._do_feature_state()
+
+    result = gc.result_q.get_nowait()
+    by_label = {row["label"]: row for row in result.payload["features"]}
+    assert by_label["Look at images"]["installed"] is True
+    assert by_label["Watch my screen"]["installed"] is True
+
+
 def test_delete_model_worker_deletes_the_file_and_removes_the_row(tmp_path):
     weights = tmp_path / "model-a.gguf"
     weights.write_bytes(b"weights")
@@ -1706,7 +1785,7 @@ models:
   - id: model-a
     name: "Model A"
     location: {_json.dumps(str(weights))}
-    context_size: 8192
+    context_size: 8192  # owner note before tuning
     gpu_layers: -1
     status: installed
     server_args: ["--parallel", "1"]
@@ -1776,6 +1855,9 @@ def test_cancelling_mid_tune_stops_the_search_and_restores_the_settings(tmp_path
     # models.yaml was put back exactly as it was found.
     assert registry.get("model-a").context_size == 8192
     assert list(registry.get("model-a").server_args) == ["--parallel", "1"]
+    from config import read_model_context_note
+
+    assert read_model_context_note(tmp_path, "model-a") == "owner note before tuning"
 
 
 def test_the_running_flag_is_cleared_even_when_the_handler_raises(tmp_path):

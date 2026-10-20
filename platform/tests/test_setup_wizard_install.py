@@ -38,7 +38,7 @@ def _wizard(monkeypatch, steps, fail_keys=(), slow_keys=()):
     wiz._found_models = []
     wiz._unverified_ok = False
 
-    record = {"order": [], "concurrent": 0, "max_concurrent": 0}
+    record = {"order": [], "concurrent": 0, "max_concurrent": 0, "shim_calls": 0}
     lock = threading.Lock()
 
     def fake_run_step(step, venv_exe, say, discovered):
@@ -54,6 +54,10 @@ def _wizard(monkeypatch, steps, fail_keys=(), slow_keys=()):
         return setup_env.StepResult(step.key, ok, "done" if ok else "boom")
 
     wiz._run_step = fake_run_step
+    def fake_shim(_say):
+        record["shim_calls"] += 1
+        return setup_env.StepResult("claude_local", True, "checked")
+    wiz._ensure_claude_local = fake_shim
     # Neutralize every post-loop side effect.
     monkeypatch.setattr(setup_env, "detect_state", lambda m=None: ({}, setup_env.Machine()))
     import egress_log
@@ -82,6 +86,7 @@ def test_venvs_first_import_last_all_once(monkeypatch):
     assert order[0] == "platform_venv"
     assert order[-1] == "first_model"
     assert order.index("base_pip") < order.index("gui_pip")  # same-venv chain
+    assert record["shim_calls"] == 1
 
 
 def test_downloads_overlap(monkeypatch):
@@ -245,3 +250,15 @@ def test_harness_subchoices_default_to_no_selection_and_drive_parent():
     }
     assert wizard._selected_harnesses() == ()
     assert wizard._selection() == ("core",)
+
+
+def test_core_shim_step_runs_for_an_existing_claude_install(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        setup_env,
+        "install_claude_local",
+        lambda say=None: calls.append(say)
+        or setup_env.StepResult("claude_local", True, "shim installed"),
+    )
+    result = setup_wizard.SetupWizard._ensure_claude_local(lambda _text: None)
+    assert result.ok and calls

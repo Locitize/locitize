@@ -323,6 +323,24 @@ def test_download_status_reads_and_normalizes_the_json_line_and_logs_egress(
     assert jobs.download_status(settings, "org/M-1B")["error"] == "plain failure"
 
 
+def test_download_status_does_not_log_egress_without_an_environment(
+        tmp_path, monkeypatch):
+    import egress_log
+
+    settings = Settings(
+        finetune=FineTuneConfig(enabled=True, studio_dir=str(tmp_path / "missing")),
+        base_dir=tmp_path,
+        data_dir=tmp_path,
+    )
+    recorded = []
+    monkeypatch.setattr(egress_log, "record", lambda url: recorded.append(url))
+
+    result = jobs.download_status(settings, "org/M-1B")
+
+    assert result["error"]
+    assert recorded == []
+
+
 def test_start_download_uses_finetune_python_and_outputs_log(tmp_path, monkeypatch):
     import egress_log
 
@@ -820,6 +838,9 @@ def test_page_without_an_install_says_why_and_still_allows_browsing(flow_factory
     assert "not set up" in flow.unavailable.text()
     assert flow.step == 1
     assert [b.isEnabled() for b in flow.step_buttons] == [True, False, False, False]
+    for button in (flow.suggest_models, flow.download_button, flow.model_next):
+        assert not button.isEnabled()
+        assert "not installed" in button.toolTip()
 
 
 def test_page_walks_model_then_dataset_review_then_train(tmp_path, flow_factory):
@@ -1215,6 +1236,7 @@ def test_save_step_has_deploy_fields_and_gpu_default(tmp_path, flow_factory):
 def test_model_advisor_runs_only_on_click_and_selection_fills_model(
         tmp_path, flow_factory, monkeypatch):
     import finetune_page
+    from PySide6 import QtWidgets
 
     make, _app = flow_factory
     flow = make(_install(tmp_path))
@@ -1229,6 +1251,11 @@ def test_model_advisor_runs_only_on_click_and_selection_fills_model(
         ),
     )
     flow._run = lambda fn, done: done(fn(), None)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+    )
 
     assert calls == [] and flow.suggestion_list.count() == 0
     flow.suggest_models.click()
@@ -1237,6 +1264,30 @@ def test_model_advisor_runs_only_on_click_and_selection_fills_model(
     flow.suggestion_list.item(0).setSelected(True)
     flow._on_suggestion_picked(flow.suggestion_list.item(0))
     assert flow.custom_model.text() == "org/Model-7B"
+
+
+def test_model_advisor_names_huggingface_and_requires_confirmation(
+        tmp_path, flow_factory, monkeypatch):
+    import finetune_page
+    from PySide6 import QtWidgets
+
+    make, _app = flow_factory
+    flow = make(_install(tmp_path))
+    calls = []
+    monkeypatch.setattr(
+        finetune_page.advisor,
+        "suggest",
+        lambda _vram: calls.append(True),
+    )
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QtWidgets.QMessageBox.StandardButton.No,
+    )
+
+    assert "huggingface.co" in flow.suggest_models.toolTip()
+    flow.suggest_models.click()
+    assert calls == []
 
 
 def test_save_step_duplicate_id_message_points_to_replace_without_writing(
