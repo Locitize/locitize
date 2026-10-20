@@ -210,13 +210,19 @@ def resolve_assistant_model(requested, running_id, default_id, registry):
     Order: the model already running, the model the caller picked, the
     configured default, then the first installed model that has a file. A fresh
     install has no default, so without the last two steps Talk could never start.
+    A row switched off on the list (status disabled/future) is skipped: it can
+    never start, so picking it only produced a "not installed" failure.
     ``problem`` is a plain-language sentence when nothing usable exists.
     """
     for candidate in (running_id, requested, default_id):
         if not candidate:
             continue
         found = registry.get(candidate)
-        if found is not None and found.location:
+        if (
+            found is not None
+            and found.location
+            and getattr(found, "status", "installed") == "installed"
+        ):
             return candidate, ""
     launchable = registry.launchable()
     if launchable:

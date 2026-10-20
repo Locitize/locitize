@@ -1815,6 +1815,20 @@ class GuiController:
                 )
             )
             return
+        model = self._registry.get(model_id)
+        if model is not None and model.status != "installed":
+            # Every trial start would refuse a switched-off row ("not
+            # installed"), so the run could only end in a confusing failure.
+            self.result_q.put(
+                Result(
+                    "autotune", False, {"model_id": model_id},
+                    error=(
+                        f"'{model.name}' is turned off on your model list "
+                        f"(status: {model.status}), so it cannot be auto-tuned"
+                    ),
+                )
+            )
+            return
         if self._controller.running_model_id is not None:
             self.result_q.put(
                 Result(

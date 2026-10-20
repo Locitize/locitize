@@ -808,6 +808,21 @@ def test_autotune_is_greyed_out_with_a_reason_when_the_model_file_is_missing(qap
     app.processEvents()
 
 
+def test_autotune_is_greyed_out_with_a_reason_when_the_model_is_turned_off(qapp):
+    """A disabled row cannot start, so Auto-tune must not offer a doomed run."""
+    app, desktop, qt_gui = qapp
+    fake = FakeGuiController()
+    rows = fake.list_models()
+    rows[0]["status"] = "disabled"
+    fake.list_models = lambda: rows
+    window = desktop.MainWindow(fake, health="OK")
+    assert window._selected_model()["id"] == "local-chat"
+    assert window._autotune_btn.isEnabled() is False
+    assert "turned off" in window._autotune_hint.text()
+    window.deleteLater()
+    app.processEvents()
+
+
 def test_autotune_button_does_nothing_when_the_confirmation_is_declined(qapp, monkeypatch):
     """Several minutes of GPU time must never start from a misclick."""
     app, desktop, qt_gui = qapp

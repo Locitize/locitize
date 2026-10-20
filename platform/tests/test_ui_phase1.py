@@ -26,7 +26,8 @@ class _Registry:
         return self._models.get(model_id)
 
     def launchable(self):
-        return [m for m in self._models.values() if m.location]
+        # Mirrors ModelRegistry.launchable(): installed rows with a file.
+        return [m for m in self._models.values() if m.location and m.status == "installed"]
 
 
 def test_talk_model_prefers_running_then_selected_then_first_launchable():
@@ -37,6 +38,16 @@ def test_talk_model_prefers_running_then_selected_then_first_launchable():
     assert launcher.resolve_assistant_model(None, None, "", reg) == ("a", "")
     # A default that points at nothing is skipped, not fatal.
     assert launcher.resolve_assistant_model(None, None, "ghost", reg) == ("a", "")
+
+
+def test_talk_model_skips_a_model_that_is_turned_off():
+    import dataclasses
+
+    off = dataclasses.replace(_model("off"), status="disabled")
+    reg = _Registry([off, _model("a")])
+    # Neither the selection nor the default may pick a row that cannot start.
+    assert launcher.resolve_assistant_model("off", None, "", reg) == ("a", "")
+    assert launcher.resolve_assistant_model(None, None, "off", reg) == ("a", "")
 
 
 def test_talk_model_with_nothing_installed_gives_a_plain_message():

@@ -2254,6 +2254,24 @@ def test_autotune_all_skips_models_whose_file_is_missing(tmp_path):
     assert command.payload == {"model_ids": ["here"], "missing": 1}
 
 
+def test_autotune_refuses_a_model_that_is_turned_off(tmp_path):
+    """A disabled row can never start, so a tune of it must not be queued."""
+    import dataclasses
+
+    present = tmp_path / "off.gguf"
+    present.write_bytes(b"gguf")
+    off = dataclasses.replace(_model("off", location=str(present)), status="disabled")
+    gc = GuiController(
+        Settings(), FakeRegistry([off]), FakeModelController(), FakeWhisper(), FakeManager(),
+        fetch=lambda port, path: None,
+    )
+    gc._is_discovered = lambda mid: False
+    gc.request_autotune_context("off")
+    assert gc.command_q.empty()
+    result = gc.result_q.get_nowait()
+    assert not result.ok and "turned off" in result.error
+
+
 def test_autotune_all_refuses_when_every_model_file_is_missing(tmp_path):
     registry = FakeRegistry([_model("gone", location=str(tmp_path / "gone.gguf"))])
     registry.launchable = lambda: registry.all()

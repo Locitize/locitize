@@ -674,6 +674,25 @@ def _model_file_present(model):
     return bool(model.get("file_present", True))
 
 
+def _model_turned_off(model):
+    """True for a row its owner switched off (status disabled or future).
+
+    The controller refuses to start or tune such a row ("not installed"), so
+    offering Auto-tune for it only produced a confusing failure. A row without
+    the field is treated as installed.
+    """
+    return model.get("status", "installed") != "installed"
+
+
+def _model_tunable(model):
+    """True when Auto-tune can run this row: on the list, switched on, file on disk."""
+    return (
+        model.get("source") != "discovered"
+        and not _model_turned_off(model)
+        and _model_file_present(model)
+    )
+
+
 def plain_speed(score_display):
     """Speed cell in everyday words ("31.5 tokens per second")."""
     text = str(score_display or "-").strip()
@@ -3283,6 +3302,11 @@ class MainWindow(QtWidgets.QMainWindow):
             tune_reason = "Pick a model first."
         elif model.get("source") == "discovered":
             tune_reason = "This fine-tuned model is not on your list yet. Add it first."
+        elif _model_turned_off(model):
+            tune_reason = (
+                f"This model is turned off on your list (status: {model.get('status')}), "
+                "so it cannot be started or tuned."
+            )
         else:
             tune_reason = (
                 f"This model's file is missing ({model.get('location') or 'no file set'}). "
@@ -3292,8 +3316,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._autotune_btn,
             not self._assistant_live
             and model is not None
-            and model.get("source") != "discovered"
-            and _model_file_present(model)
+            and _model_tunable(model)
             and self._ui.running_model_id is None
             and not self._autotune_active(),
             tune_reason,
@@ -3309,10 +3332,7 @@ class MainWindow(QtWidgets.QMainWindow):
             not self._assistant_live
             and self._ui.running_model_id is None
             and not self._autotune_active()
-            and any(
-                m.get("source") != "discovered" and _model_file_present(m)
-                for m in self._models
-            ),
+            and any(_model_tunable(m) for m in self._models),
             busy_voice if self._assistant_live else (
                 "A speed test is already running." if self._autotune_active()
                 else "Stop the running model first - the test needs the GPU to itself."
@@ -3563,13 +3583,26 @@ class MainWindow(QtWidgets.QMainWindow):
         """Confirm, then queue an auto-tune of every registered model."""
         if not self._autotune_all_btn.isEnabled():
             return
-        registered = [m for m in self._models if m.get("source") != "discovered"]
+        # Same set the controller tunes: switched-on rows (launchable), and of
+        # those only the ones whose file is on disk.
+        registered = [
+            m for m in self._models
+            if m.get("source") != "discovered" and not _model_turned_off(m)
+        ]
         count = sum(1 for m in registered if _model_file_present(m))
         missing = len(registered) - count
+        turned_off = sum(
+            1 for m in self._models
+            if m.get("source") != "discovered" and _model_turned_off(m)
+        )
         missing_note = (
             f"{missing} model(s) on your list are skipped because their file is "
             f"missing.\n\n" if missing else ""
         )
+        if turned_off:
+            missing_note += (
+                f"{turned_off} model(s) turned off on your list are skipped.\n\n"
+            )
         confirmed = QtWidgets.QMessageBox.question(
             self,
             "Auto-tune all models",
