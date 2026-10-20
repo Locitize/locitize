@@ -1901,9 +1901,10 @@ def relink_missing_model_files(
     hardlink - the same zero-copy link place_into_models_dir made in the
     first place. models.yaml is never touched, nothing is copied, an existing
     path is never replaced, and a different drive (or any link failure)
-    leaves the model reported as missing. Rows carrying a sha256 are skipped:
-    the name alone cannot prove a download is the same file, and hashing
-    gigabytes here would stall the window. Pass registry rows only, never
+    leaves the model reported as missing. A row carrying a sha256 keeps its
+    weights file missing (the name alone cannot prove a download is the same
+    file, and hashing gigabytes here would stall the window); its unhashed
+    mmproj is still restored. Pass registry rows only, never
     discovered fine-tunes. Returns (model_id, path) for each link made.
     """
     store_dir = Path(store)
@@ -1915,10 +1916,10 @@ def relink_missing_model_files(
         return []
     relinked: list[tuple[str, str]] = []
     for model in models:
-        if getattr(model, "sha256", ""):
-            continue
-        for raw in (getattr(model, "location", None), getattr(model, "mmproj", None)):
-            if not raw:
+        hashed = bool(getattr(model, "sha256", ""))
+        location = getattr(model, "location", None)
+        for raw in (location, getattr(model, "mmproj", None)):
+            if not raw or (hashed and raw == location):
                 continue
             dest = Path(raw)
             try:

@@ -61,6 +61,18 @@ def test_downloaded_rows_and_non_gguf_names_are_never_relinked(tmp_path):
     assert not (models / "A.gguf").exists()
 
 
+def test_a_downloaded_model_still_gets_its_mmproj_back(tmp_path):
+    store, models = _setup(tmp_path)
+    (store / "A.gguf").write_bytes(b"a")
+    (store / "A.mmproj.gguf").write_bytes(b"p")
+    row = _row("a", models / "A.gguf", mmproj=str(models / "A.mmproj.gguf"), sha256="ab" * 32)
+
+    done = setup_env.relink_missing_model_files([row], store, models)
+
+    assert done == [("a", str(models / "A.mmproj.gguf"))]
+    assert not (models / "A.gguf").exists()
+
+
 def test_nothing_in_the_store_leaves_the_model_missing(tmp_path):
     store, models = _setup(tmp_path)
     assert setup_env.relink_missing_model_files([_row("a", models / "A.gguf")], store, models) == []
