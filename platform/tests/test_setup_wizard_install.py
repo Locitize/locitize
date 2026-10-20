@@ -34,6 +34,7 @@ def _wizard(monkeypatch, steps, fail_keys=(), slow_keys=()):
     wiz._state = {}
     wiz._machine = setup_env.Machine()
     wiz._vars = {}
+    wiz._harness_vars = {}
     wiz._found_models = []
     wiz._unverified_ok = False
 
@@ -55,6 +56,8 @@ def _wizard(monkeypatch, steps, fail_keys=(), slow_keys=()):
     wiz._run_step = fake_run_step
     # Neutralize every post-loop side effect.
     monkeypatch.setattr(setup_env, "detect_state", lambda m=None: ({}, setup_env.Machine()))
+    import egress_log
+    monkeypatch.setattr(egress_log, "configure", lambda _root: None)
     monkeypatch.setattr(setup_env, "find_llama_server", lambda *a, **k: "")
     monkeypatch.setattr(setup_env, "create_desktop_shortcut",
                         lambda: setup_env.StepResult("shortcut", True, "", skipped=True))
@@ -114,6 +117,20 @@ def test_already_satisfied_steps_are_skipped(monkeypatch):
     wiz._state["llama_cpp"] = True
     wiz._install(plan)
     assert record["order"] == []  # never executed, only reported as present
+
+
+def test_install_configures_egress_ledger_for_the_wizard_data_root(
+        tmp_path, monkeypatch):
+    import egress_log
+
+    wiz, plan, _record = _wizard(monkeypatch, [])
+    wiz._machine.data_root = tmp_path
+    roots = []
+    monkeypatch.setattr(egress_log, "configure", roots.append)
+
+    wiz._install(plan)
+
+    assert roots == [tmp_path]
 
 
 def test_every_platform_venv_pip_runs_in_one_chain(monkeypatch):
@@ -183,13 +200,13 @@ def test_gpu_kokoro_refuses_honestly_without_an_nvidia_card(monkeypatch):
     assert calls == [setup_env.PIP_SETS["kokoro_pip"]]
 
 
-def test_install_harnesses_installs_only_missing_and_shim_after_claude(monkeypatch):
+def test_install_harness_installs_only_the_requested_tool(monkeypatch):
     wizard = object.__new__(setup_wizard.SetupWizard)
     events = []
     monkeypatch.setattr(
         harness_launch,
-        "detect_harnesses",
-        lambda: {"codex": "/bin/codex", "claude": None, "opencode": None},
+        "detect_executable",
+        lambda key: None,
     )
 
     def install(key):
@@ -197,41 +214,34 @@ def test_install_harnesses_installs_only_missing_and_shim_after_claude(monkeypat
         return True, f"{key} installed"
 
     monkeypatch.setattr(harness_launch, "install_harness", install)
-    monkeypatch.setattr(
-        setup_env,
-        "install_claude_local",
-        lambda say=None: events.append(("shim", "claude"))
-        or setup_env.StepResult("claude_local", True, "shim installed"),
-    )
-    result = wizard._install_harnesses(lambda text: None)
+    result = wizard._install_harness("codex", lambda text: None)
     assert result.ok
-    assert events == [
-        ("install", "claude"),
-        ("shim", "claude"),
-        ("install", "opencode"),
-    ]
+    assert events == [("install", "codex")]
 
 
-def test_install_harnesses_aggregates_every_tool_failure(monkeypatch):
+def test_install_harness_skips_an_already_installed_selected_tool(monkeypatch):
     wizard = object.__new__(setup_wizard.SetupWizard)
     monkeypatch.setattr(
         harness_launch,
-        "detect_harnesses",
-        lambda: {key: None for key in harness_launch.HARNESSES},
+        "detect_executable",
+        lambda key: "/bin/claude",
     )
-    outcomes = {
-        "codex": (False, "codex broke"),
-        "claude": (True, "claude installed"),
-        "opencode": (False, "opencode broke"),
-    }
-    monkeypatch.setattr(harness_launch, "install_harness", lambda key: outcomes[key])
     monkeypatch.setattr(
-        setup_env,
-        "install_claude_local",
-        lambda say=None: setup_env.StepResult("claude_local", False, "shim broke"),
+        harness_launch,
+        "install_harness",
+        lambda key: (_ for _ in ()).throw(AssertionError("must not reinstall")),
     )
-    result = wizard._install_harnesses(lambda text: None)
-    assert not result.ok
-    assert "codex broke" in result.message
-    assert "opencode broke" in result.message
-    assert "shim broke" in result.message
+    result = wizard._install_harness("claude", lambda text: None)
+    assert result.ok and result.skipped
+
+
+def test_harness_subchoices_default_to_no_selection_and_drive_parent():
+    wizard = object.__new__(setup_wizard.SetupWizard)
+    wizard._vars = {"core": SimpleNamespace(get=lambda: True),
+                    "harnesses": SimpleNamespace(get=lambda: True)}
+    wizard._harness_vars = {
+        key: SimpleNamespace(get=lambda: False)
+        for key, _label in setup_wizard.HARNESS_CHOICES
+    }
+    assert wizard._selected_harnesses() == ()
+    assert wizard._selection() == ("core",)

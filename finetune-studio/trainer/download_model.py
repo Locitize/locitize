@@ -88,13 +88,18 @@ def _plain_error(exc: Exception) -> tuple[str, bool]:
     return (f"Could not reach or inspect Hugging Face: {text}", False)
 
 
-def _inspect(model: str, api=None, cache_lookup=None):
+def _inspect(model: str, api=None, cache_lookup=None, requested_revision: str = ""):
     if api is None or cache_lookup is None:
         from huggingface_hub import HfApi, try_to_load_from_cache
 
         api = api or HfApi()
         cache_lookup = cache_lookup or try_to_load_from_cache
-    info = api.model_info(model, files_metadata=True)
+    if requested_revision:
+        info = api.model_info(
+            model, files_metadata=True, revision=requested_revision
+        )
+    else:
+        info = api.model_info(model, files_metadata=True)
     files = required_files(getattr(info, "siblings", ()) or ())
     if not files:
         raise RuntimeError("No training model files were listed for this repository.")
@@ -209,6 +214,57 @@ def _local_revision_state(revision) -> str:
     return "cached" if complete else "partial"
 
 
+def pretrained_load_kwargs(
+    model: str, revision: str = "", cache_info=None
+) -> dict:
+    """Pin Transformers to an unambiguous cached snapshot when available."""
+    local = Path(model)
+    if local.is_dir():
+        names = {
+            path.name.lower() for path in local.iterdir() if path.is_file()
+        }
+        return {
+            "use_safetensors": True
+        } if any(
+            name.endswith((".safetensors", ".safetensors.index.json"))
+            for name in names
+        ) else {}
+
+    try:
+        if cache_info is None:
+            from huggingface_hub import scan_cache_dir
+
+            cache_info = scan_cache_dir()
+        revisions = []
+        for repo in getattr(cache_info, "repos", ()) or ():
+            if str(getattr(repo, "repo_id", "") or "").casefold() != model.casefold():
+                continue
+            if str(getattr(repo, "repo_type", "model") or "model") != "model":
+                continue
+            revisions.extend(getattr(repo, "revisions", ()) or ())
+        if revision:
+            candidates = [
+                item for item in revisions
+                if str(getattr(item, "commit_hash", "") or "") == revision
+            ]
+        else:
+            candidates = revisions if len(revisions) == 1 else []
+        if len(candidates) != 1:
+            return {"revision": revision} if revision else {}
+        selected = candidates[0]
+        _snapshot, names = _cached_names(selected)
+        pinned = revision or str(getattr(selected, "commit_hash", "") or "")
+        result = {"revision": pinned} if pinned else {}
+        if any(
+            name.lower().endswith((".safetensors", ".safetensors.index.json"))
+            for name in names
+        ):
+            result["use_safetensors"] = True
+        return result
+    except Exception:  # noqa: BLE001 - cache hints never block a compatible load
+        return {"revision": revision} if revision else {}
+
+
 def local_model_status(model: str, cache_info=None) -> dict:
     """Inspect completed files in the local HF cache. This function never egresses."""
     result = {
@@ -255,14 +311,16 @@ def model_status(model: str, api=None, cache_lookup=None) -> dict:
         "missing_bytes": None,
         "gated": False,
         "error": None,
+        "revision": None,
     }
     try:
-        info, files, missing, _revision = _inspect(model, api=api, cache_lookup=cache_lookup)
+        info, files, missing, revision = _inspect(model, api=api, cache_lookup=cache_lookup)
         result.update(
             cached=not missing,
             total_bytes=_sum_sizes(files),
             missing_bytes=_sum_sizes(missing),
             gated=bool(getattr(info, "gated", False)),
+            revision=revision,
         )
     except Exception as exc:  # noqa: BLE001 - converted to the one-line CLI contract
         result["error"], result["gated"] = _plain_error(exc)
@@ -319,12 +377,17 @@ class _ByteProgress:
         return DownloadTqdm
 
 
-def download_model(model: str, api=None, cache_lookup=None, snapshot=None) -> None:
+def download_model(
+    model: str, api=None, cache_lookup=None, snapshot=None, revision: str = ""
+) -> None:
     if snapshot is None:
         from huggingface_hub import snapshot_download
 
         snapshot = snapshot_download
-    info, files, missing, revision = _inspect(model, api=api, cache_lookup=cache_lookup)
+    info, files, missing, pinned_revision = _inspect(
+        model, api=api, cache_lookup=cache_lookup,
+        requested_revision=revision,
+    )
     if not missing:
         total = _sum_sizes(files) or 0
         print(f"DOWNLOAD {total}/{total}", flush=True)
@@ -336,7 +399,7 @@ def download_model(model: str, api=None, cache_lookup=None, snapshot=None) -> No
     tracker._emit()
     snapshot(
         repo_id=model,
-        revision=revision,
+        revision=pinned_revision,
         allow_patterns=[_name(row) for row in files],
         max_workers=1,
         tqdm_class=tracker.tqdm_class,
@@ -353,6 +416,7 @@ def main(argv=None) -> int:
     action.add_argument("--local-status", metavar="MODEL")
     action.add_argument("--status", metavar="MODEL")
     action.add_argument("--download", metavar="MODEL")
+    parser.add_argument("--revision", default="")
     args = parser.parse_args(argv)
     if args.local_status:
         # Defense in depth: the desktop also sets this on the child process.
@@ -363,7 +427,7 @@ def main(argv=None) -> int:
         print(json.dumps(model_status(args.status), separators=(",", ":")), flush=True)
         return 0
     try:
-        download_model(args.download)
+        download_model(args.download, revision=args.revision)
         return 0
     except Exception as exc:  # noqa: BLE001 - child log must remain plain and actionable
         message, _gated = _plain_error(exc)

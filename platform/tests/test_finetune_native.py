@@ -196,6 +196,7 @@ def test_download_status_counts_only_training_files_and_prefers_safetensors(tmp_
     assert status == {
         "model": "org/base", "cached": False, "total_bytes": 1150,
         "missing_bytes": 1000, "gated": False, "error": None,
+        "revision": "abc",
     }
 
 
@@ -289,9 +290,45 @@ def test_download_uses_exact_training_allowlist_and_default_cache(tmp_path, caps
     )
     output = capsys.readouterr().out
     assert calls[0]["allow_patterns"] == ["config.json", "model.safetensors"]
+    assert not any(name.endswith(".bin") for name in calls[0]["allow_patterns"])
     assert calls[0]["revision"] == "revision" and "cache_dir" not in calls[0]
     assert calls[0]["max_workers"] == 1
     assert output.endswith("DOWNLOAD DONE\n")
+
+
+def test_pretrained_load_kwargs_pin_revision_and_require_cached_safetensors(tmp_path):
+    snapshot = tmp_path / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+    config = snapshot / "config.json"
+    weights = snapshot / "model.safetensors"
+    config.write_text("{}", encoding="utf-8")
+    weights.write_bytes(b"safe")
+    revision = SimpleNamespace(
+        commit_hash="abc123",
+        snapshot_path=snapshot,
+        files=(
+            SimpleNamespace(file_path=config, file_name=config.name),
+            SimpleNamespace(file_path=weights, file_name=weights.name),
+        ),
+        refs=(),
+    )
+    repo = SimpleNamespace(repo_id="org/base", repo_type="model", revisions=(revision,))
+    cache = SimpleNamespace(repos=(repo,))
+
+    assert download_model.pretrained_load_kwargs(
+        "org/base", revision="abc123", cache_info=cache
+    ) == {"revision": "abc123", "use_safetensors": True}
+
+
+def test_pretrained_load_kwargs_preserves_requested_revision_on_cache_error():
+    class BrokenCache:
+        @property
+        def repos(self):
+            raise RuntimeError("cache unavailable")
+
+    assert download_model.pretrained_load_kwargs(
+        "org/base", revision="abc123", cache_info=BrokenCache()
+    ) == {"revision": "abc123"}
 
 
 @pytest.mark.parametrize("named", [True, False], ids=["named-disabled", "unnamed-auto"])

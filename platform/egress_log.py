@@ -6,14 +6,15 @@ so that promise can be checked rather than merely asserted.
 
 What it covers: every request the running app makes through
 modelhub.open_checked (the T2 allowlist chokepoint) - model search, model and
-component downloads, release checks. What it does NOT cover, because those
-requests are made by other programs: pip/winget installs, the setup wizard's
-own process, Open WebUI (including its optional web search), the fine-tune
-studio, and coding tools launched from LOCITIZE (see SECURITY.md). Each record is host,
-UTC timestamp, and the reason the connection happened ("hub-search",
-"download", "llama.cpp-release"), appended to a JSONL in the data root. Nothing
-about the request body or response is logged - the ledger proves WHEN and TO
-WHOM the machine talked, which is the privacy question, not what was said.
+component downloads, release checks - plus the source URL before an explicitly
+selected external installer is launched. What it does NOT cover, because those
+requests are made by other programs: redirects and subrequests inside pip,
+winget, vendor installers, Open WebUI, the fine-tune environment, and coding
+tools launched from LOCITIZE (see SECURITY.md). Each record is host, UTC
+timestamp, and the reason the connection happened ("hub-search", "download",
+"llama.cpp-release"), appended to a JSONL in the data root. Nothing about the
+request body or response is logged - the ledger proves WHEN and TO WHOM the
+machine talked, which is the privacy question, not what was said.
 
 The reader-facing payoff (Models page, and `launcher.py --egress`): "This
 session: 0 outbound connections" or a dated list. A local-first tool that can
@@ -137,7 +138,7 @@ def render_line(summary: EgressSummary) -> str:
     if summary.total == 0:
         return (
             "0 outbound connections recorded by locitize's own downloads "
-            "(installers, Open WebUI and coding tools are not covered)."
+            "(external tools' own traffic is not covered)."
         )
     hosts = ", ".join(sorted(summary.hosts))
     noun = "connection" if summary.total == 1 else "connections"

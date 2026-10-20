@@ -239,13 +239,16 @@ def test_start_training_writes_meta_and_runs_train_py_in_the_finetune_env(tmp_pa
     monkeypatch.setattr(jobs.subprocess, "Popen", FakePopen)
     job = jobs.start_training(settings, model="org/M-1B", dataset_path="d.jsonl", label="my model",
                               steps=40, learning_rate=2e-4, lora_r=16, batch_size=2, grad_accum=4,
-                              quant="q4_k_m", default_system="Be kind.", dataset_rows=12)
+                              quant="q4_k_m", default_system="Be kind.", dataset_rows=12,
+                              revision="abc123")
     assert job.running() and job.name.startswith("my-model-")
     argv = seen["argv"]
     assert argv[0].endswith("python.exe") and argv[1].endswith("train.py")
     assert argv[argv.index("--max-steps") + 1] == "40" and argv[argv.index("--model") + 1] == "org/M-1B"
+    assert argv[argv.index("--revision") + 1] == "abc123"
     meta = json.loads((job.log_path.parent / "run_meta.json").read_text(encoding="utf-8"))
     assert meta["base_model"] == "org/M-1B" and meta["dataset_rows"] == 12
+    assert meta["base_model_revision"] == "abc123"
     assert job.log_path.parent.parent == Path(settings.data_dir) / "finetune" / "outputs"
 
 
@@ -269,6 +272,7 @@ def test_local_download_status_is_offline_and_uses_only_local_mode(tmp_path, mon
     answer = {
         "model": "org/M-1B", "cached": False, "cache_state": "partial",
         "total_bytes": None, "missing_bytes": None, "gated": False, "error": None,
+        "revision": None,
     }
 
     def fake_run(argv, **kwargs):
@@ -289,7 +293,7 @@ def test_download_status_reads_and_normalizes_the_json_line_and_logs_egress(
     answer = {
         "model": "org/M-1B", "cached": False, "total_bytes": 1500,
         "missing_bytes": 1000, "gated": False, "error": None,
-        "cache_state": "missing",
+        "cache_state": "missing", "revision": "abc123",
     }
     recorded = []
     monkeypatch.setattr(
@@ -317,6 +321,8 @@ def test_download_status_reads_and_normalizes_the_json_line_and_logs_egress(
 
 
 def test_start_download_uses_finetune_python_and_outputs_log(tmp_path, monkeypatch):
+    import egress_log
+
     settings = _install(tmp_path)
     seen = {}
 
@@ -330,14 +336,23 @@ def test_start_download_uses_finetune_python_and_outputs_log(tmp_path, monkeypat
             return None
 
     monkeypatch.setattr(jobs.subprocess, "Popen", FakePopen)
-    job = jobs.start_download(settings, "org/M-1B")
+    recorded = []
+    monkeypatch.setattr(
+        egress_log,
+        "record",
+        lambda url: recorded.append((url, egress_log.current_reason())),
+    )
+    job = jobs.start_download(settings, "org/M-1B", revision="abc123")
 
     assert job.kind == "download" and job.running()
-    assert seen["argv"][-2:] == ["--download", "org/M-1B"]
+    assert seen["argv"][-4:] == ["--download", "org/M-1B", "--revision", "abc123"]
     assert seen["argv"][1].endswith("download_model.py")
     assert job.log_path.name == "download.log"
     assert job.log_path.parent.parent.name == "_downloads"
-    assert job.meta == {"model": "org/M-1B"}
+    assert job.meta == {"model": "org/M-1B", "revision": "abc123"}
+    assert recorded == [
+        ("https://huggingface.co/org/M-1B", "finetune-model-download")
+    ]
 
 
 def test_progress_reads_stage_steps_losses_and_outcome():
@@ -762,6 +777,39 @@ def flow_factory(monkeypatch):
     yield make, app
 
 
+def test_finetune_questions_use_the_desktop_plain_text_helper(
+        flow_factory, monkeypatch):
+    from PySide6 import QtWidgets
+    import desktop
+    import finetune_page
+
+    _make, _app = flow_factory
+    shown = {}
+
+    class Box:
+        def exec(self):
+            return QtWidgets.QMessageBox.StandardButton.No
+
+    def plain(parent, title, text, **kwargs):
+        shown.update(parent=parent, title=title, text=text, kwargs=kwargs)
+        return Box()
+
+    monkeypatch.setattr(desktop, "plain_message_box", plain)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        staticmethod(lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("static question bypassed plain rendering")
+        )),
+    )
+
+    answer = finetune_page._plain_question(None, "Title", "<b>literal</b>")
+
+    assert answer == QtWidgets.QMessageBox.StandardButton.No
+    assert shown["text"] == "<b>literal</b>"
+    assert shown["kwargs"]["default"] == QtWidgets.QMessageBox.StandardButton.No
+
+
 def test_page_without_an_install_says_why_and_still_allows_browsing(flow_factory):
     make, _app = flow_factory
     flow = make(None)
@@ -877,6 +925,7 @@ def test_download_button_states_for_cached_missing_and_running(tmp_path, flow_fa
 
 def test_download_confirmation_cancel_does_not_start_a_job(tmp_path, flow_factory, monkeypatch):
     from PySide6 import QtWidgets
+    import finetune_page
 
     make, _app = flow_factory
     flow = make(_install(tmp_path))
@@ -910,7 +959,7 @@ def test_download_confirmation_cancel_does_not_start_a_job(tmp_path, flow_factor
         shown.update(title=title, text=text)
         return QtWidgets.QMessageBox.StandardButton.No
 
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", decline)
+    monkeypatch.setattr(finetune_page, "_plain_question", decline)
     monkeypatch.setattr(
         jobs, "start_download",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("download must not start")),
@@ -926,7 +975,7 @@ def test_download_confirmation_cancel_does_not_start_a_job(tmp_path, flow_factor
 
 def test_download_size_failure_does_not_confirm_or_start(
         tmp_path, flow_factory, monkeypatch):
-    from PySide6 import QtWidgets
+    import finetune_page
 
     make, _app = flow_factory
     flow = make(_install(tmp_path))
@@ -941,8 +990,8 @@ def test_download_size_failure_does_not_confirm_or_start(
         "error": "This model is gated or unauthorized.",
     })
     monkeypatch.setattr(
-        QtWidgets.QMessageBox,
-        "question",
+        finetune_page,
+        "_plain_question",
         lambda *_args: (_ for _ in ()).throw(AssertionError("must not confirm")),
     )
     monkeypatch.setattr(
@@ -1205,7 +1254,7 @@ def test_save_step_duplicate_id_message_points_to_replace_without_writing(
 
 
 def test_replace_refuses_the_running_model_before_confirmation(tmp_path, flow_factory, monkeypatch):
-    from PySide6 import QtWidgets
+    import finetune_page
 
     make, _app = flow_factory
     settings = _install(tmp_path)
@@ -1215,8 +1264,8 @@ def test_replace_refuses_the_running_model_before_confirmation(tmp_path, flow_fa
     flow.save_replace.setChecked(True)
     flow._gc.running_model_id = lambda: "existing"
     monkeypatch.setattr(
-        QtWidgets.QMessageBox,
-        "question",
+        finetune_page,
+        "_plain_question",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("confirmation must not open for a running model")
         ),
@@ -1231,6 +1280,7 @@ def test_replace_refuses_the_running_model_before_confirmation(tmp_path, flow_fa
 def test_replace_confirmation_cancel_writes_nothing_and_lists_changes(
         tmp_path, flow_factory, monkeypatch):
     from PySide6 import QtWidgets
+    import finetune_page
 
     make, _app = flow_factory
     settings = _install(tmp_path)
@@ -1247,7 +1297,7 @@ def test_replace_confirmation_cancel_writes_nothing_and_lists_changes(
         shown.update(title=title, text=text)
         return QtWidgets.QMessageBox.StandardButton.No
 
-    monkeypatch.setattr(QtWidgets.QMessageBox, "question", decline)
+    monkeypatch.setattr(finetune_page, "_plain_question", decline)
     flow.save_button.click()
 
     assert shown["title"] == "Replace existing model?"
@@ -1262,6 +1312,7 @@ def test_replace_confirmation_accepts_and_keeps_the_old_file(
         tmp_path, flow_factory, monkeypatch):
     import yaml
     from PySide6 import QtWidgets
+    import finetune_page
 
     make, _app = flow_factory
     settings = _install(tmp_path)
@@ -1281,8 +1332,8 @@ def test_replace_confirmation_accepts_and_keeps_the_old_file(
     flow.save_replace.setChecked(True)
     flow._gc.running_model_id = lambda: None
     monkeypatch.setattr(
-        QtWidgets.QMessageBox,
-        "question",
+        finetune_page,
+        "_plain_question",
         lambda *_args, **_kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
     )
 

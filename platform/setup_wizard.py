@@ -51,6 +51,11 @@ MUTED = "#9aa0a6"     # secondary text
 ACCENT = "#4f8cff"    # primary action / step eyebrow
 ACCENT_HOVER = "#67a0ff"
 STEPS_TOTAL = 4
+HARNESS_CHOICES = (
+    ("claude", "Claude Code"),
+    ("codex", "Codex"),
+    ("opencode", "OpenCode"),
+)
 
 # The logo wordmark, letter by letter: capitals carry the icon's blue-to-violet
 # gradient, lowercase is the icon's near-white (sampled from
@@ -217,6 +222,7 @@ class SetupWizard:
         self._state: dict[str, bool] = {}
         self._machine = setup_env.Machine()
         self._vars: dict[str, tk.BooleanVar] = {}
+        self._harness_vars: dict[str, tk.BooleanVar] = {}
         self._launch_ok = False
         # Owner decision 2026-08-29: LOCITIZE ships no model names, so there
         # is no catalog picker. The first_model step SCANS this machine for
@@ -368,6 +374,17 @@ class SetupWizard:
                 row, text=feature.summary, wraplength=640, justify="left",
                 style="Muted.TLabel",
             ).pack(anchor="w", padx=(24, 0))
+            if feature.key == "harnesses":
+                for harness, label in HARNESS_CHOICES:
+                    tool_var = tk.BooleanVar(value=False)
+                    self._harness_vars[harness] = tool_var
+                    ttk.Checkbutton(
+                        row,
+                        text=label,
+                        variable=tool_var,
+                        command=lambda: self._on_harness_choice(total),
+                    ).pack(anchor="w", padx=(24, 0))
+                box.configure(command=lambda: self._on_harness_feature(total))
 
         # First model (M15.11): no picker and no shipped names. When nothing
         # is registered yet, the machine is scanned for GGUFs the user already
@@ -461,10 +478,36 @@ class SetupWizard:
         ttk.Button(nav, text="Back", command=self._show_welcome).pack(side="right", padx=6)
 
     def _selection(self) -> tuple[str, ...]:
-        return tuple(key for key, var in self._vars.items() if var.get())
+        selected = []
+        for key, var in self._vars.items():
+            if not var.get():
+                continue
+            if key == "harnesses" and not self._selected_harnesses():
+                continue
+            selected.append(key)
+        return tuple(selected)
+
+    def _selected_harnesses(self) -> tuple[str, ...]:
+        return tuple(
+            key for key, _label in HARNESS_CHOICES
+            if key in self._harness_vars and self._harness_vars[key].get()
+        )
+
+    def _on_harness_choice(self, total: ttk.Label) -> None:
+        if self._selected_harnesses():
+            self._vars["harnesses"].set(True)
+        self._refresh_total(total)
+
+    def _on_harness_feature(self, total: ttk.Label) -> None:
+        if not self._vars["harnesses"].get():
+            for var in self._harness_vars.values():
+                var.set(False)
+        self._refresh_total(total)
 
     def _refresh_total(self, label: ttk.Label) -> None:
-        plan = setup_plan.plan_for(self._selection(), self._state)
+        plan = setup_plan.plan_for(
+            self._selection(), self._state, harnesses=self._selected_harnesses()
+        )
         # Implied features tick themselves so the checklist never disagrees with
         # what is about to be downloaded.
         for key in plan.selected:
@@ -476,7 +519,9 @@ class SetupWizard:
     # -- screen 3 ---------------------------------------------------------
 
     def _show_confirm(self) -> None:
-        plan = setup_plan.plan_for(self._selection(), self._state)
+        plan = setup_plan.plan_for(
+            self._selection(), self._state, harnesses=self._selected_harnesses()
+        )
         body = self._clear()
         self._heading(
             body,
@@ -591,6 +636,9 @@ class SetupWizard:
 
     def _install(self, plan: setup_plan.InstallPlan) -> None:
         """Run the plan on a worker thread. Never raises into the Tk loop."""
+        import egress_log
+
+        egress_log.configure(self._machine.data_root)
         say: Callable[[str], None] = lambda text: self._events.put(("log", text))
         failures: list[str] = []
         essential_failed = False
@@ -677,7 +725,10 @@ class SetupWizard:
             if finetune_pips:
                 jobs.append(finetune_pips)
             winget_chain = [
-                by_key.pop(k) for k in ("node_runtime", "caddy", "harness_clis")
+                by_key.pop(k) for k in (
+                    "node_runtime", "caddy", "harness_claude",
+                    "harness_codex", "harness_opencode",
+                )
                 if k in by_key
             ]
             if winget_chain:
@@ -765,45 +816,30 @@ class SetupWizard:
             )
         self._events.put(("done", summary))
 
-    def _install_harnesses(self, say: Callable[[str], None]) -> setup_env.StepResult:
-        """Install each missing coding harness and report every failure."""
+    def _install_harness(
+        self, harness: str, say: Callable[[str], None]
+    ) -> setup_env.StepResult:
+        """Install one explicitly selected coding harness."""
         import harness_launch
 
         try:
-            detected = harness_launch.detect_harnesses()
+            detected = harness_launch.detect_executable(harness)
         except (OSError, ValueError) as exc:
             return setup_env.StepResult(
-                "harness_clis", False, f"could not detect coding harnesses: {exc}"
+                f"harness_{harness}", False,
+                f"could not detect {harness}: {exc}",
             )
-        missing = [key for key in harness_launch.HARNESSES if not detected.get(key)]
-        if not missing:
+        if detected:
             return setup_env.StepResult(
-                "harness_clis", True, "all coding harnesses already installed", skipped=True
+                f"harness_{harness}", True, f"{harness} already installed",
+                skipped=True,
             )
-
-        failures: list[str] = []
-        installed: list[str] = []
-        for key in missing:
-            say(f"   installing {key}...")
-            try:
-                ok, message = harness_launch.install_harness(key)
-            except (OSError, ValueError) as exc:
-                ok, message = False, str(exc)
-            say(f"   {'ok' if ok else 'FAILED'}: {message}")
-            if not ok:
-                failures.append(f"{key}: {message}")
-                continue
-            installed.append(key)
-            if key == harness_launch.HARNESS_CLAUDE:
-                shim = setup_env.install_claude_local(say)
-                if not shim.ok:
-                    failures.append(f"claude-local: {shim.message}")
-
-        if failures:
-            return setup_env.StepResult("harness_clis", False, "; ".join(failures))
-        return setup_env.StepResult(
-            "harness_clis", True, "installed " + ", ".join(installed)
-        )
+        say(f"   installing {harness}...")
+        try:
+            ok, message = harness_launch.install_harness(harness)
+        except (OSError, ValueError) as exc:
+            ok, message = False, str(exc)
+        return setup_env.StepResult(f"harness_{harness}", ok, message)
 
     def _run_step(
         self,
@@ -876,8 +912,8 @@ class SetupWizard:
             return setup_env.winget_install("OpenJS.NodeJS.LTS")
         if key == "caddy":
             return setup_env.winget_install("CaddyServer.Caddy")
-        if key == "harness_clis":
-            return self._install_harnesses(say)
+        if key.startswith("harness_"):
+            return self._install_harness(key.removeprefix("harness_"), say)
 
         if key == "whisper_bin":
             result, paths = setup_env.install_whisper(

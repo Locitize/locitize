@@ -294,6 +294,22 @@ def test_claude_launch_env_points_at_server_and_sets_real_context():
     assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8080"
     assert env["ANTHROPIC_API_KEY"]
     assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "10000"
+    assert {
+        key: env[key]
+        for key in (
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+                "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL",
+            "DISABLE_TELEMETRY",
+            "DISABLE_ERROR_REPORTING",
+            "DISABLE_AUTOUPDATER",
+        )
+    } == {
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1",
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_AUTOUPDATER": "1",
+    }
 
 
 def test_claude_launch_env_omits_unknown_context():
@@ -534,6 +550,25 @@ def test_install_codex_installer_failure(monkeypatch):
     ok, message = hl.install_codex()
     assert ok is False
     assert "boom" in message
+
+
+def test_official_installers_record_distinct_egress_reasons(monkeypatch):
+    import egress_log
+
+    recorded = []
+    monkeypatch.setattr(
+        egress_log,
+        "record",
+        lambda url: recorded.append((url, egress_log.current_reason())),
+    )
+    monkeypatch.setattr(hl, "_run_powershell", lambda _script: (False, "stopped"))
+
+    assert hl.install_claude_code()[0] is False
+    assert hl.install_codex()[0] is False
+    assert recorded == [
+        ("https://claude.ai/install.ps1", "claude-code-install"),
+        ("https://chatgpt.com/codex/install.ps1", "codex-install"),
+    ]
 
 
 def test_install_opencode_skips_node_install_when_already_available(monkeypatch):

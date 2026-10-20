@@ -18,6 +18,7 @@ Security invariants enforced here:
 
 from __future__ import annotations
 
+import json
 import socket
 import subprocess
 import sys
@@ -1121,6 +1122,7 @@ class ModelController:
         spec_builder: SpecBuilder,
         process_factory: ManagedProcessFactory,
         stale_server_check: Callable[[set[int]], list[str]] | None = None,
+        state_path: Path | str | None = None,
     ) -> None:
         self._manager = service_manager
         self._spec_builder = spec_builder
@@ -1139,12 +1141,33 @@ class ModelController:
         # nothing about GPUs, and so the whole path is testable with no
         # nvidia-smi. None -> no check, which is every existing caller.
         self._stale_server_check = stale_server_check
+        self._state_path = Path(state_path) if state_path is not None else None
         self._current_model_id: str | None = None
         self._current_name: str | None = None
         self._current: ManagedProcess | None = None
         # Every service started this session (running or since stopped), for an
         # honest status snapshot after a switch.
         self._started: dict[str, ManagedProcess] = {}
+
+    def _publish_state(self) -> None:
+        """Best-effort active-port hint for local harness shims."""
+        if self._state_path is None:
+            return
+        try:
+            if not self._child_alive():
+                self._state_path.unlink(missing_ok=True)
+                return
+            from config import _atomic_write
+
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "running_model": self._current_model_id,
+                "running_port": self._current.resolved_port,
+                "pid": self._current.pid,
+            }
+            _atomic_write(self._state_path, json.dumps(payload, separators=(",", ":")) + "\n")
+        except OSError:
+            pass
 
     def _child_alive(self) -> bool:
         """Is the tracked model process still there? A cached id is not evidence.
@@ -1203,6 +1226,7 @@ class ModelController:
             self._current_model_id = None
             self._current_name = None
             self._current = None
+        self._publish_state()
         return status
 
     def _own_pids(self) -> set[int]:
@@ -1285,6 +1309,7 @@ class ModelController:
         self._current = None
         self._current_model_id = None
         self._current_name = None
+        self._publish_state()
         return status
 
     def snapshot(self) -> dict[str, Any]:

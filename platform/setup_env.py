@@ -285,6 +285,9 @@ def detect_state(machine: Machine | None = None) -> tuple[dict[str, bool], Machi
         "vision_projector": False,
         "first_model": _has_registered_model(info.data_root),
         "node_runtime": bool(_which("node")),
+        "harness_claude": bool(_which("claude")),
+        "harness_codex": bool(_which("codex")),
+        "harness_opencode": bool(_which("opencode")),
         "harness_clis": all(
             _which(name) for name in ("claude", "codex", "opencode")
         ),
@@ -1519,8 +1522,10 @@ def ensure_model_store(say: Callable[[str], None] | None = None) -> StepResult:
 def install_claude_local(
     say: Callable[[str], None] | None = None,
     claude_path: Path | str | None = None,
+    data_root: Path | str | None = None,
 ) -> StepResult:
     """Install the local-routing shim beside an existing Claude executable."""
+    ownership_header = "claude-local - run Claude Code against the model locitize is serving."
     note = say or (lambda _text: None)
     claude = str(claude_path) if claude_path else shutil.which("claude")
     if not claude:
@@ -1533,11 +1538,42 @@ def install_claude_local(
     target_dir = Path(claude).resolve().parent
     source_dir = Path(__file__).resolve().parent / "scripts"
     try:
+        sources = []
         for name in ("claude-local.cmd", "claude-local.ps1"):
             source = source_dir / name
             if not source.is_file():
                 return StepResult("claude_local", False, f"shim source missing: {source}")
-            shutil.copyfile(source, target_dir / name)
+            sources.append((source, target_dir / name))
+        foreign = []
+        for _source, target in sources:
+            if not target.exists():
+                continue
+            try:
+                owned = ownership_header in target.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except OSError:
+                owned = False
+            if not owned:
+                foreign.append(target.name)
+        if foreign:
+            names = ", ".join(foreign)
+            message = f"kept existing non-locitize shim file(s): {names}"
+            note(f"   {message}")
+            return StepResult("claude_local", True, message, skipped=True)
+        for source, target in sources:
+            if source.suffix.lower() != ".ps1":
+                shutil.copyfile(source, target)
+                continue
+            root = Path(data_root) if data_root is not None else default_data_root(BASE_DIR)
+            escaped_root = str(root.resolve()).replace("'", "''")
+            script = source.read_text(encoding="utf-8")
+            script = script.replace(
+                '$installedDataRoot = ""',
+                f"$installedDataRoot = '{escaped_root}'",
+                1,
+            )
+            target.write_text(script, encoding="utf-8")
     except OSError as exc:
         return StepResult("claude_local", False, f"could not install claude-local: {exc}")
     note(f"   claude-local installed to {target_dir}")

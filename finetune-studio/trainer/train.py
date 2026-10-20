@@ -11,6 +11,7 @@ from trl import SFTConfig, SFTTrainer
 
 import gguf_export
 from common import load_4bit
+from download_model import pretrained_load_kwargs
 
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 
@@ -58,6 +59,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--dataset", required=True)
     p.add_argument("--model", default="unsloth/Qwen2.5-1.5B-Instruct")
+    p.add_argument("--revision", default="")
     p.add_argument("--output-dir", required=True)
     p.add_argument("--run-name", default="run")
     p.add_argument("--max-seq-length", type=int, default=2048)
@@ -79,7 +81,7 @@ def main():
     log(f"Dataset loaded: {len(dataset)} examples")
 
     log(f"Loading base model {args.model} (4-bit)")
-    model, tokenizer = load_4bit(args.model)
+    model, tokenizer = load_4bit(args.model, revision=args.revision)
 
     log("Formatting dataset with chat template")
 
@@ -145,6 +147,7 @@ def main():
     base = AutoModelForCausalLM.from_pretrained(
         args.model, dtype=torch.bfloat16, device_map={"": "cpu"},
         low_cpu_mem_usage=True,
+        **pretrained_load_kwargs(args.model, revision=args.revision),
     )
     merged = PeftModel.from_pretrained(base, lora_dir).merge_and_unload()
     merged.save_pretrained(merged_dir, safe_serialization=True)

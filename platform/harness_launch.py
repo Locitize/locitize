@@ -381,6 +381,11 @@ def claude_launch_env(
     env = {
         "ANTHROPIC_BASE_URL": model_base_url,
         "ANTHROPIC_API_KEY": "locitize-local",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1",
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_AUTOUPDATER": "1",
     }
     if context_size:
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context_size)
@@ -633,7 +638,12 @@ def _run_powershell(script: str, timeout: int = _INSTALL_TIMEOUT_S) -> tuple[boo
 
 def install_claude_code() -> tuple[bool, str]:
     """Run Claude's official installer, then place the claude-local shim."""
-    ok, detail = _run_powershell("irm https://claude.ai/install.ps1 | iex")
+    import egress_log
+
+    installer_url = "https://claude.ai/install.ps1"
+    with egress_log.reason("claude-code-install"):
+        egress_log.record(installer_url)
+        ok, detail = _run_powershell(f"irm {installer_url} | iex")
     if not ok:
         return False, f"Claude Code install failed: {detail}"
     claude_path = detect_executable_fresh(HARNESS_CLAUDE)
@@ -658,7 +668,12 @@ def install_codex() -> tuple[bool, str]:
     written fresh on every real launch (see _do_launch_harness in
     gui_controller.py), so nothing further needs writing here.
     """
-    ok, detail = _run_powershell("irm https://chatgpt.com/codex/install.ps1 | iex")
+    import egress_log
+
+    installer_url = "https://chatgpt.com/codex/install.ps1"
+    with egress_log.reason("codex-install"):
+        egress_log.record(installer_url)
+        ok, detail = _run_powershell(f"irm {installer_url} | iex")
     if not ok:
         return False, f"Codex install failed: {detail}"
     if detect_executable_fresh(HARNESS_CODEX) is None:

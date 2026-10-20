@@ -181,7 +181,7 @@ def _download_status_result(model: str, proc: subprocess.CompletedProcess) -> di
     fallback = {
         "model": model, "cached": False, "total_bytes": None,
         "missing_bytes": None, "gated": False, "error": None,
-        "cache_state": "missing",
+        "cache_state": "missing", "revision": None,
     }
     data = _last_json_line(proc.stdout)
     if not isinstance(data, dict) or not data:
@@ -203,6 +203,7 @@ def _download_status_result(model: str, proc: subprocess.CompletedProcess) -> di
         value = result.get(key)
         result[key] = value if isinstance(value, int) and value >= 0 else None
     result["error"] = str(result["error"]) if result.get("error") else None
+    result["revision"] = str(result["revision"]) if result.get("revision") else None
     return result
 
 
@@ -210,7 +211,7 @@ def _download_status_fallback(model: str, error: str) -> dict:
     return {
         "model": model, "cached": False, "total_bytes": None,
         "missing_bytes": None, "gated": False, "error": error,
-        "cache_state": "missing",
+        "cache_state": "missing", "revision": None,
     }
 
 
@@ -326,7 +327,8 @@ def run_name_for(label: str, now: datetime | None = None) -> str:
 
 def start_training(settings, *, model: str, dataset_path: str, label: str, steps: int,
                    learning_rate: float, lora_r: int, batch_size: int, grad_accum: int,
-                   quant: str, default_system: str = "", dataset_rows: int = 0) -> Job:
+                   quant: str, default_system: str = "", dataset_rows: int = 0,
+                   revision: str = "") -> Job:
     out_root = outputs_dir(settings)
     run_name = run_name_for(label)
     run_dir = out_root / run_name
@@ -336,12 +338,17 @@ def start_training(settings, *, model: str, dataset_path: str, label: str, steps
         "dataset_rows": dataset_rows, "max_steps": int(steps), "learning_rate": learning_rate,
         "lora_r": lora_r, "batch_size": batch_size, "grad_accum": grad_accum, "gguf_quant": quant,
     }
+    if revision:
+        meta["base_model_revision"] = revision
     (run_dir / RUN_META).write_text(json.dumps(meta, indent=1), encoding="utf-8")
-    process = _spawn(settings, "train.py", [
+    args = [
         "--dataset", dataset_path, "--model", model, "--output-dir", out_root, "--run-name", run_name,
         "--max-steps", int(steps), "--learning-rate", learning_rate, "--lora-r", lora_r,
         "--batch-size", batch_size, "--grad-accum", grad_accum, "--gguf-quant", quant,
-    ], run_dir / TRAIN_LOG)
+    ]
+    if revision:
+        args += ["--revision", revision]
+    process = _spawn(settings, "train.py", args, run_dir / TRAIN_LOG)
     return Job("train", run_name, run_dir / TRAIN_LOG, process, meta=meta)
 
 
@@ -360,13 +367,24 @@ def start_distill(settings, *, teacher: str, system: str, prompts: list[str], ma
     return Job("distill", name, folder / "distill.log", process, out_path=out)
 
 
-def start_download(settings, model: str) -> Job:
+def start_download(settings, model: str, revision: str = "") -> Job:
     """Start a base-model download into the default Hugging Face cache."""
+    import egress_log
+
     name = run_name_for(model.rsplit("/", 1)[-1] or "model-download")
     folder = outputs_dir(settings) / "_downloads" / name
     log_path = folder / "download.log"
-    process = _spawn(settings, "download_model.py", ["--download", model], log_path)
-    return Job("download", name, log_path, process, meta={"model": model})
+    target = "https://huggingface.co/" + urllib.parse.quote(model, safe="/")
+    args = ["--download", model]
+    if revision:
+        args += ["--revision", revision]
+    with egress_log.reason("finetune-model-download"):
+        egress_log.record(target)
+        process = _spawn(settings, "download_model.py", args, log_path)
+    meta = {"model": model}
+    if revision:
+        meta["revision"] = revision
+    return Job("download", name, log_path, process, meta=meta)
 
 
 def stop(job: Job) -> None:
