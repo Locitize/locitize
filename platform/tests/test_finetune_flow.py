@@ -442,10 +442,164 @@ def test_save_model_places_the_file_and_registers_it(tmp_path):
     row = rows[-1]
     assert (row["id"], row["location"], row["context_size"]) == ("support-tone", str(dest), 4096)
     assert "org/M-1B" in row["description"]
-    with pytest.raises(ValueError, match="not added to your model list"):
+    with pytest.raises(ValueError, match="Choose a new id or tick"):
         jobs.save_model(settings, run_dir=run, gguf_name=f"{run.name}.q4_k_m.gguf", folder=str(folder),
                         name="Support Tone", register=True, model_id="support-tone", context_size=4096,
                         prompt="")
+
+
+def test_duplicate_id_is_refused_before_a_colliding_file_can_be_touched(tmp_path):
+    settings = _install(tmp_path)
+    run = _finished_run(settings)
+    folder = tmp_path / "models"
+    folder.mkdir()
+    existing = folder / "Existing.Q4_K_M.gguf"
+    existing.write_bytes(b"irreplaceable existing weights")
+
+    with pytest.raises(ValueError, match="Replace existing model"):
+        jobs.save_model(
+            settings,
+            run_dir=run,
+            gguf_name=f"{run.name}.q4_k_m.gguf",
+            folder=str(folder),
+            name="Existing",
+            register=True,
+            model_id="existing",
+            context_size=4096,
+            prompt="",
+        )
+
+    assert existing.read_bytes() == b"irreplaceable existing weights"
+    assert not (folder / "Existing-2.Q4_K_M.gguf").exists()
+
+
+def test_filename_collision_is_versioned_and_existing_weights_survive(tmp_path):
+    settings = _install(tmp_path)
+    run = _finished_run(settings)
+    folder = tmp_path / "models"
+    folder.mkdir()
+    existing = folder / "Support-Tone.Q4_K_M.gguf"
+    existing.write_bytes(b"old model")
+
+    dest, _message = jobs.save_model(
+        settings,
+        run_dir=run,
+        gguf_name=f"{run.name}.q4_k_m.gguf",
+        folder=str(folder),
+        name="Support Tone",
+        register=True,
+        model_id="support-tone-v2",
+        context_size=4096,
+        prompt="Be kind.",
+    )
+
+    assert dest == folder / "Support-Tone-2.Q4_K_M.gguf"
+    assert dest.read_bytes().startswith(b"GGUF")
+    assert existing.read_bytes() == b"old model"
+
+
+def test_registration_failure_removes_only_the_file_created_by_that_save(
+        tmp_path, monkeypatch):
+    import config
+
+    settings = _install(tmp_path)
+    run = _finished_run(settings)
+    folder = tmp_path / "models"
+    folder.mkdir()
+    existing = folder / "Support-Tone.Q4_K_M.gguf"
+    existing.write_bytes(b"keep me")
+    monkeypatch.setattr(
+        config,
+        "append_model_entry",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            config.RegistryWriteError("registry refused")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="new saved file was removed"):
+        jobs.save_model(
+            settings,
+            run_dir=run,
+            gguf_name=f"{run.name}.q4_k_m.gguf",
+            folder=str(folder),
+            name="Support Tone",
+            register=True,
+            model_id="new-id",
+            context_size=4096,
+            prompt="",
+        )
+
+    assert existing.read_bytes() == b"keep me"
+    assert not (folder / "Support-Tone-2.Q4_K_M.gguf").exists()
+
+
+def test_replace_model_changes_only_registry_row_and_keeps_old_gguf(tmp_path):
+    import yaml
+
+    settings = _install(tmp_path)
+    old = tmp_path / "old-existing.gguf"
+    old.write_bytes(b"old weights")
+    registry = Path(settings.data_dir) / "models.yaml"
+    registry.write_text(
+        registry.read_text(encoding="utf-8").replace(
+            "/locitize-test/models/existing.gguf", str(old).replace("\\", "/")
+        ),
+        encoding="utf-8",
+    )
+    reports = Path(settings.data_dir) / "reports"
+    reports.mkdir()
+    ceilings = reports / "ctx_ceilings.json"
+    ceilings.write_text(json.dumps({
+        "existing": {"best": 8192, "verdict": "old weights"},
+        "other": {"best": 4096},
+    }), encoding="utf-8")
+    run = _finished_run(settings)
+
+    dest, message = jobs.save_model(
+        settings,
+        run_dir=run,
+        gguf_name=f"{run.name}.q4_k_m.gguf",
+        folder=str(tmp_path / "models"),
+        name="Existing v2",
+        register=True,
+        model_id="existing",
+        context_size=16384,
+        prompt="First line\nSecond line",
+        description="Custom description",
+        notes="Custom notes\nTwo lines",
+        gpu_layers=41,
+        replace=True,
+    )
+
+    assert old.read_bytes() == b"old weights"
+    assert dest.is_file() and dest != old
+    assert "replaced 'Existing v2'" in message
+    row = yaml.safe_load(registry.read_text(encoding="utf-8"))["models"][0]
+    assert row["id"] == "existing" and row["location"] == str(dest)
+    assert row["description"] == "Custom description"
+    assert row["notes"] == "Custom notes\nTwo lines"
+    assert row["recommended_prompt"] == "First line\nSecond line"
+    assert (row["context_size"], row["gpu_layers"]) == (16384, 41)
+    assert json.loads(ceilings.read_text(encoding="utf-8")) == {
+        "other": {"best": 4096}
+    }
+
+
+def test_registry_model_entry_treats_a_missing_registry_as_no_match(tmp_path):
+    settings = _install(tmp_path)
+    (Path(settings.data_dir) / "models.yaml").unlink()
+
+    assert jobs.registry_model_entry(settings, "first-model") is None
+
+
+def test_registry_model_entry_still_rejects_corrupt_yaml(tmp_path):
+    settings = _install(tmp_path)
+    (Path(settings.data_dir) / "models.yaml").write_text(
+        "models: [unterminated\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="Could not read your model list"):
+        jobs.registry_model_entry(settings, "model")
 
 
 def test_save_model_refuses_a_relative_folder_and_can_skip_the_list(tmp_path):
@@ -659,6 +813,169 @@ def test_page_opens_a_finished_run_at_the_save_step_and_saves_it(tmp_path, flow_
     flow.save_button.click()
     assert "added 'support-tone'" in flow.save_result.text()
     assert (Path(settings.data_dir) / "models" / "support-tone.Q4_K_M.gguf").is_file()
+
+
+def test_save_step_has_deploy_fields_and_gpu_default(tmp_path, flow_factory):
+    from PySide6 import QtWidgets
+
+    make, _app = flow_factory
+    settings = _install(tmp_path)
+    settings.finetune.default_gpu_layers = 37
+    flow = make(settings)
+    flow.open_run(_finished_run(settings))
+
+    assert flow.save_replace.isChecked() is False
+    assert flow.save_gpu_layers.value() == 37
+    assert isinstance(flow.save_prompt, QtWidgets.QPlainTextEdit)
+    flow.save_description.setText("Description")
+    flow.save_notes.setPlainText("Notes\nsecond line")
+    flow.save_prompt.setPlainText("System\nsecond line")
+    flow.save_button.click()
+
+    import yaml
+
+    row = yaml.safe_load(
+        (Path(settings.data_dir) / "models.yaml").read_text(encoding="utf-8")
+    )["models"][-1]
+    assert row["description"] == "Description"
+    assert row["notes"] == "Notes\nsecond line"
+    assert row["recommended_prompt"] == "System\nsecond line"
+    assert row["gpu_layers"] == 37
+
+
+def test_model_advisor_runs_only_on_click_and_selection_fills_model(
+        tmp_path, flow_factory, monkeypatch):
+    import finetune_page
+
+    make, _app = flow_factory
+    flow = make(_install(tmp_path))
+    calls = []
+    flow._gc.system_specs = lambda: SimpleNamespace(gpu_vram_total_mb=16384)
+    monkeypatch.setattr(
+        finetune_page.advisor,
+        "suggest",
+        lambda vram: (
+            calls.append(vram)
+            or ([{"id": "org/Model-7B", "params_b": 7.0, "est_gb": 7.4}], "estimated")
+        ),
+    )
+    flow._run = lambda fn, done: done(fn(), None)
+
+    assert calls == [] and flow.suggestion_list.count() == 0
+    flow.suggest_models.click()
+    assert calls == [16.0]
+    assert flow.suggestion_list.count() == 1
+    flow.suggestion_list.item(0).setSelected(True)
+    flow._on_suggestion_picked(flow.suggestion_list.item(0))
+    assert flow.custom_model.text() == "org/Model-7B"
+
+
+def test_save_step_duplicate_id_message_points_to_replace_without_writing(
+        tmp_path, flow_factory):
+    make, _app = flow_factory
+    settings = _install(tmp_path)
+    flow = make(settings)
+    flow.open_run(_finished_run(settings))
+    flow.save_id.setText("existing")
+    before = (Path(settings.data_dir) / "models.yaml").read_bytes()
+
+    flow.save_button.click()
+
+    assert "new id" in flow.save_result.text()
+    assert "Replace existing model" in flow.save_result.text()
+    assert (Path(settings.data_dir) / "models.yaml").read_bytes() == before
+    assert not (Path(settings.data_dir) / "models").exists()
+
+
+def test_replace_refuses_the_running_model_before_confirmation(tmp_path, flow_factory, monkeypatch):
+    from PySide6 import QtWidgets
+
+    make, _app = flow_factory
+    settings = _install(tmp_path)
+    flow = make(settings)
+    flow.open_run(_finished_run(settings))
+    flow.save_id.setText("existing")
+    flow.save_replace.setChecked(True)
+    flow._gc.running_model_id = lambda: "existing"
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("confirmation must not open for a running model")
+        ),
+    )
+
+    flow.save_button.click()
+
+    assert "Stop model 'existing'" in flow.save_result.text()
+    assert not (Path(settings.data_dir) / "models").exists()
+
+
+def test_replace_confirmation_cancel_writes_nothing_and_lists_changes(
+        tmp_path, flow_factory, monkeypatch):
+    from PySide6 import QtWidgets
+
+    make, _app = flow_factory
+    settings = _install(tmp_path)
+    flow = make(settings)
+    flow.open_run(_finished_run(settings))
+    flow.save_id.setText("existing")
+    flow.save_name.setText("Replacement")
+    flow.save_replace.setChecked(True)
+    flow._gc.running_model_id = lambda: None
+    before = (Path(settings.data_dir) / "models.yaml").read_bytes()
+    shown = {}
+
+    def decline(_parent, title, text, *_args):
+        shown.update(title=title, text=text)
+        return QtWidgets.QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", decline)
+    flow.save_button.click()
+
+    assert shown["title"] == "Replace existing model?"
+    assert "'existing'" in shown["text"]
+    assert "Old path:" in shown["text"] and "New path:" in shown["text"]
+    assert "name:" in shown["text"] and "location:" in shown["text"]
+    assert (Path(settings.data_dir) / "models.yaml").read_bytes() == before
+    assert not (Path(settings.data_dir) / "models").exists()
+
+
+def test_replace_confirmation_accepts_and_keeps_the_old_file(
+        tmp_path, flow_factory, monkeypatch):
+    import yaml
+    from PySide6 import QtWidgets
+
+    make, _app = flow_factory
+    settings = _install(tmp_path)
+    old = tmp_path / "old.gguf"
+    old.write_bytes(b"old")
+    registry = Path(settings.data_dir) / "models.yaml"
+    registry.write_text(
+        registry.read_text(encoding="utf-8").replace(
+            "/locitize-test/models/existing.gguf", str(old).replace("\\", "/")
+        ),
+        encoding="utf-8",
+    )
+    flow = make(settings)
+    flow.open_run(_finished_run(settings))
+    flow.save_id.setText("existing")
+    flow.save_name.setText("Replacement")
+    flow.save_replace.setChecked(True)
+    flow._gc.running_model_id = lambda: None
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+
+    flow.save_button.click()
+
+    assert "replaced 'Replacement'" in flow.save_result.text()
+    assert old.read_bytes() == b"old"
+    row = yaml.safe_load(registry.read_text(encoding="utf-8"))["models"][0]
+    assert row["id"] == "existing"
+    assert row["location"] != str(old) and Path(row["location"]).is_file()
 
 
 def test_desktop_fine_tune_page_hosts_the_flow_and_no_browser_studio(flow_factory):

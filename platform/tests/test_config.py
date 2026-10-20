@@ -359,7 +359,7 @@ def test_bare_list_models_accepted(tmp_path):
 # keyword: write_model_fields; Architecture G6).
 # --------------------------------------------------------------------------- #
 
-from config import write_model_fields  # noqa: E402
+from config import replace_model_entry, write_model_fields  # noqa: E402
 
 
 # A realistic two-model fixture with comments and quoted values on the exact
@@ -468,6 +468,123 @@ def test_write_model_fields_atomic_leaves_no_temp_file(tmp_path):
     # os.replace is atomic; no sibling temp file should linger after a clean write.
     leftovers = [p.name for p in tmp_path.iterdir() if p.name != "models.yaml"]
     assert leftovers == []
+
+
+def test_replace_model_entry_preserves_other_bytes_and_resets_old_weight_state(tmp_path):
+    old = tmp_path / "old.gguf"
+    new = tmp_path / "new.gguf"
+    old.write_bytes(b"old")
+    new.write_bytes(b"new")
+    original = _MODELS_WITH_COMMENTS.replace(
+        "/locitize-test/models/Qwen3-14B.gguf", str(old).replace("\\", "/")
+    ).replace(
+        "    status: installed\n    server_args: []\n",
+        "    recommended_prompt: \"old prompt\"\n"
+        "    benchmark_score: 88.5\n"
+        "    notes: \"old notes\"\n"
+        "    status: installed\n"
+        "    quantization: \"Q8_0\"\n"
+        "    vram_estimate_mb: 12345\n"
+        "    server_args: [\"--parallel\", \"1\", \"--cache-type-k\", \"q8_0\"]\n"
+        "    sha256: \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n"
+        "    capabilities: [\"chat\", \"coding\"]\n",
+        1,
+    )
+    (tmp_path / "models.yaml").write_text(original, encoding="utf-8")
+    untouched_suffix = original[original.index("  - id: deepseek-r1-distill-14b") :]
+
+    replace_model_entry(
+        tmp_path,
+        "qwen3-14b",
+        name="Fine Tune v2",
+        location=str(new),
+        description="line one\nline two",
+        notes="recipe\nknown issue",
+        context_size=4096,
+        gpu_layers=42,
+        recommended_prompt="Be useful.\nStay concise.",
+        quantization="Q4_K_M",
+    )
+
+    text = (tmp_path / "models.yaml").read_text(encoding="utf-8")
+    assert text[text.index("  - id: deepseek-r1-distill-14b") :] == untouched_suffix
+    import yaml
+
+    rows = yaml.safe_load(text)["models"]
+    row = rows[0]
+    assert row["name"] == "Fine Tune v2"
+    assert row["location"] == str(new)
+    assert row["description"] == "line one\nline two"
+    assert row["notes"] == "recipe\nknown issue"
+    assert row["recommended_prompt"] == "Be useful.\nStay concise."
+    assert (row["context_size"], row["gpu_layers"], row["quantization"]) == (
+        4096,
+        42,
+        "Q4_K_M",
+    )
+    assert row["benchmark_score"] is None
+    assert row["vram_estimate_mb"] == 0
+    assert row["server_args"] == ["--parallel", "1"]
+    assert "sha256" not in row
+    assert row["capabilities"] == ["chat", "coding"]
+
+
+def test_replace_model_entry_same_location_preserves_non_owned_fields(tmp_path):
+    model = tmp_path / "same.gguf"
+    model.write_bytes(b"same")
+    registry = _MODELS_WITH_COMMENTS.replace(
+        "/locitize-test/models/Qwen3-14B.gguf", str(model).replace("\\", "/")
+    ).replace(
+        "    status: installed\n    server_args: []\n",
+        "    benchmark_score: 77.0\n"
+        "    status: installed\n"
+        "    vram_estimate_mb: 9000\n"
+        "    server_args: [\"--parallel\", \"2\"]\n",
+        1,
+    )
+    (tmp_path / "models.yaml").write_text(registry, encoding="utf-8")
+
+    replace_model_entry(tmp_path, "qwen3-14b", location=str(model), name="Renamed")
+
+    import yaml
+
+    row = yaml.safe_load((tmp_path / "models.yaml").read_text(encoding="utf-8"))["models"][0]
+    assert row["benchmark_score"] == 77.0
+    assert row["vram_estimate_mb"] == 9000
+    assert row["server_args"] == ["--parallel", "2"]
+
+
+def test_replace_model_entry_replaces_block_strings_with_multiline_values(tmp_path):
+    model = tmp_path / "same.gguf"
+    model.write_bytes(b"same")
+    registry = _MODELS_WITH_COMMENTS.replace(
+        '    description: "General model."\n',
+        "    description: |\n      old first line\n      old second line\n",
+        1,
+    ).replace(
+        "/locitize-test/models/Qwen3-14B.gguf", str(model).replace("\\", "/")
+    )
+    (tmp_path / "models.yaml").write_text(registry, encoding="utf-8")
+
+    replace_model_entry(
+        tmp_path,
+        "qwen3-14b",
+        description="new first line\nnew second line",
+    )
+
+    import yaml
+
+    row = yaml.safe_load((tmp_path / "models.yaml").read_text(encoding="utf-8"))["models"][0]
+    assert row["description"] == "new first line\nnew second line"
+    assert "old first line" not in (tmp_path / "models.yaml").read_text(encoding="utf-8")
+
+
+def test_replace_model_entry_refuses_unknown_fields_before_writing(tmp_path):
+    (tmp_path / "models.yaml").write_text(_MODELS_WITH_COMMENTS, encoding="utf-8")
+    original = (tmp_path / "models.yaml").read_bytes()
+    with pytest.raises(ValueError, match="does not own"):
+        replace_model_entry(tmp_path, "qwen3-14b", backend="other")
+    assert (tmp_path / "models.yaml").read_bytes() == original
 
 
 # --------------------------------------------------------------------------- #

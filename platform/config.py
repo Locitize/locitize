@@ -2412,6 +2412,221 @@ def append_model_entry(
     _edit_registry(base_dir, edit)
 
 
+_FINETUNE_REPLACE_FIELDS = {
+    "name",
+    "location",
+    "description",
+    "notes",
+    "context_size",
+    "gpu_layers",
+    "recommended_prompt",
+    "quantization",
+}
+_FINETUNE_STRING_FIELDS = {
+    "name",
+    "location",
+    "description",
+    "notes",
+    "recommended_prompt",
+    "quantization",
+}
+_DEFAULT_SERVER_ARGS = ["--parallel", "1"]
+
+
+def replace_model_entry(
+    base_dir: Path | str,
+    model_id: str,
+    **fields: Any,
+) -> None:
+    """Replace the fine-tune deploy fields on one existing model row.
+
+    The edit stays inside the existing model block and goes through
+    ``_edit_registry``, which already owns the registry lock and atomic write.
+    Fields outside the deploy surface are byte-preserved. When ``location``
+    changes, values measured for the old weights are invalidated: the quality
+    score and VRAM estimate return to their unmeasured values, auto-tuned server
+    arguments return to the new-row default, and the old file digest is removed.
+    """
+    model_id = str(model_id).strip()
+    if not model_id:
+        raise ValueError("model id must not be empty")
+    unknown = set(fields) - _FINETUNE_REPLACE_FIELDS
+    if unknown:
+        names = ", ".join(sorted(unknown))
+        raise ValueError(f"replace_model_entry does not own field(s): {names}")
+    if not fields:
+        raise ValueError("give at least one model field to replace")
+
+    cleaned: dict[str, Any] = {}
+    for key, value in fields.items():
+        if key in _FINETUNE_STRING_FIELDS:
+            value = str(value)
+            if key in {"name", "location"}:
+                value = value.strip()
+            cleaned[key] = value
+        else:
+            cleaned[key] = value
+    if "name" in cleaned and not cleaned["name"]:
+        raise ValueError("model name must not be empty")
+    if "location" in cleaned:
+        location = cleaned["location"]
+        if not location:
+            raise ValueError("model location must not be empty")
+        if not Path(location).expanduser().is_file():
+            raise ValueError(
+                f"model file '{location}' does not exist; refusing to replace a row "
+                f"with one that points at nothing"
+            )
+    if "context_size" in cleaned and (
+        not isinstance(cleaned["context_size"], int)
+        or isinstance(cleaned["context_size"], bool)
+        or cleaned["context_size"] <= 0
+    ):
+        raise ValueError(
+            f"context_size must be a positive integer (got {cleaned['context_size']!r})"
+        )
+    if "gpu_layers" in cleaned and (
+        not isinstance(cleaned["gpu_layers"], int)
+        or isinstance(cleaned["gpu_layers"], bool)
+        or cleaned["gpu_layers"] < -1
+    ):
+        raise ValueError(
+            f"gpu_layers must be an integer >= -1 (got {cleaned['gpu_layers']!r})"
+        )
+
+    def edit(lines: list[str], path: Path) -> str:
+        start, end = _locate_model_block(lines, model_id)
+        if start is None or end is None:
+            raise ValueError(
+                f"model id '{model_id}' not found in {MODELS_FILE}; cannot replace"
+            )
+        parsed_before = yaml.safe_load("".join(lines))
+        before_rows = (
+            parsed_before.get("models", [])
+            if isinstance(parsed_before, dict)
+            else parsed_before
+        )
+        old_row = next(
+            (
+                row
+                for row in before_rows or []
+                if isinstance(row, dict)
+                and str(row.get("id", "")).strip() == model_id
+            ),
+            None,
+        )
+        if old_row is None:
+            raise RegistryWriteError(
+                f"post-write verification failed - could not parse '{model_id}'; "
+                f"file left unchanged. Check {path} for a formatting problem, then try again."
+            )
+        old_location = os.path.normcase(
+            os.path.normpath(str(old_row.get("location", "")).strip())
+        )
+        new_location = os.path.normcase(
+            os.path.normpath(cleaned.get("location", str(old_row.get("location", ""))))
+        )
+        location_changed = "location" in cleaned and old_location != new_location
+
+        # Replace present owned fields first. Missing ones are inserted beside
+        # the row's required status line, at the row's own field indentation.
+        missing: list[tuple[str, Any]] = []
+        for key, value in cleaned.items():
+            key_idx = _find_key_line(lines, start, end, key)
+            if key_idx is None:
+                missing.append((key, value))
+                continue
+            if key in _FINETUNE_STRING_FIELDS:
+                _drop_block_scalar(lines, key_idx)
+            rendered = json.dumps(value) if key in _FINETUNE_STRING_FIELDS else str(value)
+            lines[key_idx] = _replace_value_line(lines[key_idx], rendered, quote=False)
+            start, end = _locate_model_block(lines, model_id)
+
+        if missing:
+            # Re-locate after edits so insertion remains correct if a future
+            # value renderer changes the line count.
+            start, end = _locate_model_block(lines, model_id)
+            status_idx = _find_key_line(lines, start, end, "status")
+            if status_idx is None:
+                raise ValueError(
+                    f"could not locate 'status:' line for model '{model_id}' in "
+                    f"{MODELS_FILE}; refusing to guess where to insert fields"
+                )
+            indent = len(lines[status_idx]) - len(lines[status_idx].lstrip())
+            newline = "\r\n" if lines[status_idx].endswith("\r\n") else "\n"
+            rendered_missing = []
+            for key, value in missing:
+                rendered = json.dumps(value) if key in _FINETUNE_STRING_FIELDS else str(value)
+                rendered_missing.append(f"{' ' * indent}{key}: {rendered}{newline}")
+            lines[status_idx:status_idx] = rendered_missing
+
+        if location_changed:
+            start, end = _locate_model_block(lines, model_id)
+            for key, rendered in (
+                ("benchmark_score", "null"),
+                ("vram_estimate_mb", "0"),
+                ("server_args", json.dumps(_DEFAULT_SERVER_ARGS)),
+            ):
+                key_idx = _find_key_line(lines, start, end, key)
+                if key_idx is None:
+                    continue
+                if key == "server_args":
+                    _drop_block_sequence(lines, key_idx)
+                lines[key_idx] = _replace_value_line(
+                    lines[key_idx], rendered, quote=False
+                )
+                start, end = _locate_model_block(lines, model_id)
+            digest_idx = _find_key_line(lines, start, end, "sha256")
+            if digest_idx is not None:
+                del lines[digest_idx]
+
+        new_text = "".join(lines)
+        try:
+            parsed = yaml.safe_load(new_text)
+        except yaml.YAMLError as exc:
+            raise RegistryWriteError(
+                f"post-write verification failed for model '{model_id}'; file left "
+                f"unchanged. Check {path} for a formatting problem, then try again."
+            ) from exc
+        rows = parsed.get("models", []) if isinstance(parsed, dict) else parsed
+        row = next(
+            (
+                candidate
+                for candidate in rows or []
+                if isinstance(candidate, dict)
+                and str(candidate.get("id", "")).strip() == model_id
+            ),
+            None,
+        )
+        if row is None or any(row.get(key) != value for key, value in cleaned.items()):
+            raise RegistryWriteError(
+                f"post-write verification failed for replacement model '{model_id}'; "
+                f"file left unchanged. Check {path} for a formatting problem, then try again."
+            )
+        stale_not_cleared = location_changed and (
+            ("benchmark_score" in old_row and row.get("benchmark_score") is not None)
+            or (
+                "vram_estimate_mb" in old_row
+                and int(row.get("vram_estimate_mb", 0) or 0) != 0
+            )
+            or (
+                "server_args" in old_row
+                and [str(item) for item in (row.get("server_args") or [])]
+                != _DEFAULT_SERVER_ARGS
+            )
+            or ("sha256" in old_row and str(row.get("sha256", "") or ""))
+        )
+        if stale_not_cleared:
+            raise RegistryWriteError(
+                f"post-write verification failed while clearing stale measurements "
+                f"for '{model_id}'; file left unchanged. Check {path} for a formatting "
+                f"problem, then try again."
+            )
+        return new_text
+
+    _edit_registry(base_dir, edit)
+
+
 def _render_model_block(
     model_id: str,
     name: str,
@@ -3082,6 +3297,30 @@ def _drop_block_sequence(lines: list[str], key_idx: int) -> None:
             continue
         break
     # Trailing blank lines belong to whatever follows, not to the list.
+    while end > key_idx + 1 and not lines[end - 1].strip():
+        end -= 1
+    del lines[key_idx + 1:end]
+
+
+def _drop_block_scalar(lines: list[str], key_idx: int) -> None:
+    """Remove continuation lines belonging to a YAML ``|``/``>`` scalar."""
+    import re
+
+    key_line = lines[key_idx]
+    value = re.sub(r"\s+#.*$", "", key_line.rstrip("\r\n")).split(":", 1)[1].strip()
+    if value not in {"|", "|-", "|+", ">", ">-", ">+"}:
+        return
+    indent = len(key_line) - len(key_line.lstrip())
+    end = key_idx + 1
+    while end < len(lines):
+        line = lines[end]
+        if not line.strip():
+            end += 1
+            continue
+        if len(line) - len(line.lstrip()) > indent:
+            end += 1
+            continue
+        break
     while end > key_idx + 1 and not lines[end - 1].strip():
         end -= 1
     del lines[key_idx + 1:end]

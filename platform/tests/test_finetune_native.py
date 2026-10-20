@@ -4,6 +4,7 @@ setup pins. Headless: no GPU, no torch, no network, no llama.cpp process."""
 from __future__ import annotations
 
 import io
+import json
 import sys
 import zipfile
 from pathlib import Path
@@ -14,6 +15,7 @@ TRAINER = Path(__file__).resolve().parents[2] / "finetune-studio" / "trainer"
 sys.path.insert(0, str(TRAINER))
 
 import gguf_export  # noqa: E402
+import finetune_advisor as advisor  # noqa: E402
 import preflight  # noqa: E402
 import setup_env  # noqa: E402
 import setup_plan  # noqa: E402
@@ -69,6 +71,84 @@ def test_query_gpu_missing_binary_is_none():
         raise FileNotFoundError("nvidia-smi")
 
     assert preflight.query_gpu(boom) is None
+
+
+# -------------------------------------------------------------- model advisor
+
+def test_advisor_parses_sizes_and_estimates_qlora_fit():
+    assert advisor.params_b_from_id("org/Llama-3.1-8B-Instruct") == 8.0
+    assert advisor.params_b_from_id("org/model-270M") == 0.27
+    assert advisor.params_b_from_id("org/mix-x7b") == 7.0
+    assert advisor.params_b_from_id("org/no-size") is None
+    assert advisor.qlora_fit_gb(8) == pytest.approx(7.9)
+    assert advisor.fits(8, 8)
+    assert not advisor.fits(8, 7)
+
+
+def test_advisor_reuses_the_gpu_provider_and_picks_the_largest_card():
+    cards = [
+        type("Gpu", (), {"vram_total_mb": 8192})(),
+        type("Gpu", (), {"vram_total_mb": 24576})(),
+    ]
+    provider = type("Provider", (), {"gpus": lambda self: cards})()
+    assert advisor.detect_vram_gb(provider) == 24.0
+
+
+def test_advisor_fetch_uses_injected_checked_opener_and_filters_artifacts():
+    payload = json.dumps([
+        {"id": "org/Good-7B-Instruct", "downloads": 50},
+        {"id": "org/Serving-7B-GGUF", "downloads": 500},
+        {"id": "org/Gated-3B", "downloads": 100, "gated": True},
+        {"id": "org/NoSize", "downloads": 1000},
+    ]).encode("utf-8")
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class Opener:
+        def __init__(self):
+            self.calls = []
+
+        def open(self, request, timeout=None):
+            self.calls.append((request.full_url, timeout))
+            return Response(payload)
+
+    opener = Opener()
+    rows = advisor.fetch_candidates(opener=opener, timeout=7)
+    assert rows == [{"id": "org/Good-7B-Instruct", "downloads": 50, "params_b": 7.0}]
+    assert opener.calls[0][0].startswith("https://huggingface.co/api/models?")
+    assert opener.calls[0][1] == 7
+
+
+def test_advisor_sorts_biggest_fit_first_and_network_failure_is_plain():
+    rows = [
+        {"id": "org/Small-1B", "downloads": 1000, "params_b": 1.0},
+        {"id": "org/Popular-7B", "downloads": 2000, "params_b": 7.0},
+        {"id": "org/Other-7B", "downloads": 1000, "params_b": 7.0},
+        {"id": "org/TooBig-20B", "downloads": 5000, "params_b": 20.0},
+    ]
+    suggestions, note = advisor.suggest(
+        8, limit=3, fetch_fn=lambda **_kwargs: rows
+    )
+    assert [row["id"] for row in suggestions] == [
+        "org/Popular-7B",
+        "org/Other-7B",
+        "org/Small-1B",
+    ]
+    assert suggestions[0]["est_gb"] == 7.4
+    assert "estimate" in note
+
+    failed, error = advisor.suggest(
+        8, fetch_fn=lambda **_kwargs: (_ for _ in ()).throw(OSError("offline"))
+    )
+    assert failed == []
+    assert error == (
+        "could not reach huggingface.co (offline); type a model id by hand"
+    )
 
 
 @pytest.mark.parametrize("log,word", [

@@ -4,7 +4,7 @@ Two decisions meet in this file because one criterion grades both.
 
 DEC-M14-11 (NEW-QA-M14-9). QA watched the real Save-edits and Rename surfaces
 print `[Errno 2] No such file or directory:` followed by a doubled-backslash
-Python repr of models.yaml, with no next step. All four writers raised the raw
+Python repr of models.yaml, with no next step. All registry writers raised the raw
 error. Now every models.yaml mutation goes through ONE private write-open in
 config.py, which raises ONE typed RegistryWriteError whose str() is a finished
 sentence: what happened, the real path via str(path), and what to do next.
@@ -53,10 +53,10 @@ GOOD_REGISTRY = (
 )
 
 
-def all_four_writers(tmp_path: Path):
+def all_registry_writers(tmp_path: Path):
     """Every public models.yaml writer, as a zero-argument call against tmp_path.
 
-    Parametrising over the four is the point: the defect was that each writer
+    Parametrising over every writer is the point: the defect was that each writer
     carried its own copy of the failure behaviour, so a test that checked one
     proved nothing about the other three.
     """
@@ -73,6 +73,9 @@ def all_four_writers(tmp_path: Path):
         "append_model_entry": lambda: config.append_model_entry(
             tmp_path, "new", "New", str(gguf)
         ),
+        "replace_model_entry": lambda: config.replace_model_entry(
+            tmp_path, "m", name="M2", location=str(gguf)
+        ),
     }
 
 
@@ -81,6 +84,7 @@ WRITER_NAMES = (
     "write_model_identity",
     "write_model_score",
     "append_model_entry",
+    "replace_model_entry",
 )
 
 
@@ -99,7 +103,7 @@ def assert_finished_sentence(message: str, path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# The three failure conditions, against all four writers
+# The three failure conditions, against every registry writer
 # --------------------------------------------------------------------------- #
 
 
@@ -107,7 +111,7 @@ def assert_finished_sentence(message: str, path: Path) -> None:
 def test_registry_write_errors_absent_file_is_typed_and_actionable(tmp_path, writer):
     """models.yaml deleted or renamed away while LOCITIZE is open - QA's repro."""
     with pytest.raises(RegistryWriteError) as caught:
-        all_four_writers(tmp_path)[writer]()
+        all_registry_writers(tmp_path)[writer]()
     message = str(caught.value)
     assert_finished_sentence(message, tmp_path / "models.yaml")
     assert "missing" in message
@@ -125,7 +129,7 @@ def test_registry_write_errors_read_only_file_is_typed_and_actionable(tmp_path, 
     os.chmod(registry, stat.S_IREAD)
     try:
         with pytest.raises(RegistryWriteError) as caught:
-            all_four_writers(tmp_path)[writer]()
+            all_registry_writers(tmp_path)[writer]()
     finally:
         os.chmod(registry, stat.S_IWRITE | stat.S_IREAD)
     message = str(caught.value)
@@ -146,7 +150,7 @@ def test_registry_write_errors_missing_models_section_is_typed_and_actionable(
     registry = tmp_path / "models.yaml"
     registry.write_text("version: 1\n", encoding="utf-8")
     with pytest.raises(RegistryWriteError) as caught:
-        all_four_writers(tmp_path)[writer]()
+        all_registry_writers(tmp_path)[writer]()
     message = str(caught.value)
     assert_finished_sentence(message, registry)
     assert "models:" in message and "refuses to guess" in message
@@ -163,7 +167,7 @@ def test_registry_write_errors_never_leak_a_bare_builtin_exception(tmp_path, wri
     doing the same undifferentiated thing it did before.
     """
     with pytest.raises(BaseException) as caught:
-        all_four_writers(tmp_path)[writer]()
+        all_registry_writers(tmp_path)[writer]()
     assert type(caught.value) is RegistryWriteError
     assert not isinstance(caught.value, (OSError, ValueError))
 
@@ -387,6 +391,7 @@ def test_registry_write_errors_no_call_site_catches_oserror_from_a_registry_writ
                 "write_model_identity",
                 "write_model_score",
                 "append_model_entry",
+                "replace_model_entry",
             }:
                 continue
             caught = set()

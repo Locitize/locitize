@@ -19,6 +19,7 @@ from pathlib import Path
 from PySide6 import QtCore, QtGui, QtWidgets
 
 import finetune_dataset as ftd
+import finetune_advisor as advisor
 import finetune_jobs as jobs
 
 STEPS = ("Choose a model", "Prepare the dataset", "Train", "Save your model")
@@ -277,6 +278,15 @@ class FineTuneFlow(QtWidgets.QWidget):
         self.custom_model.setPlaceholderText("Optional: any Hugging Face model id, e.g. org/Model-7B-Instruct")
         self.custom_model.editingFinished.connect(self._on_model_choice)
         body.addLayout(_form(("Or type a model id", self.custom_model)))
+        self.suggest_models = QtWidgets.QPushButton("Suggest models for my GPU")
+        self.suggest_models.clicked.connect(self._on_suggest_models)
+        body.addLayout(_row(self.suggest_models))
+        self.suggestion_status = _label(muted=True)
+        body.addWidget(self.suggestion_status)
+        self.suggestion_list = QtWidgets.QListWidget()
+        self.suggestion_list.setVisible(False)
+        self.suggestion_list.itemClicked.connect(self._on_suggestion_picked)
+        body.addWidget(self.suggestion_list)
         self.fit_chip = _label("", chip=True)
         body.addWidget(self.fit_chip)
         self.model_next = _primary("Next: prepare the dataset")
@@ -312,6 +322,45 @@ class FineTuneFlow(QtWidgets.QWidget):
                 f"{result.get('free_mb', 0) / 1024:.1f} GB free on {result.get('gpu_name', 'your GPU')}.")
         else:
             self.fit_chip.setText(" ".join(result.get("problems", [])))
+
+    def _on_suggest_models(self):
+        self.suggest_models.setEnabled(False)
+        self.suggestion_status.setText("Reading your GPU and asking huggingface.co...")
+        self.suggestion_list.clear()
+        self.suggestion_list.setVisible(False)
+
+        def work():
+            specs_reader = getattr(self._gc, "system_specs", None)
+            specs = specs_reader() if callable(specs_reader) else None
+            vram_gb = advisor.detect_vram_gb(system_specs=specs)
+            return advisor.suggest(vram_gb)
+
+        def done(result, error):
+            self.suggest_models.setEnabled(True)
+            if error or not result:
+                self.suggestion_status.setText(
+                    f"could not reach huggingface.co ({error or 'no response'}); "
+                    f"type a model id by hand"
+                )
+                return
+            suggestions, note = result
+            self.suggestion_status.setText(note)
+            for candidate in suggestions:
+                item = QtWidgets.QListWidgetItem(
+                    f"{candidate['id']} ({candidate['params_b']:g}B, "
+                    f"about {candidate['est_gb']:g} GB to train)"
+                )
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, candidate["id"])
+                self.suggestion_list.addItem(item)
+            self.suggestion_list.setVisible(bool(suggestions))
+
+        self._run(work, done)
+
+    def _on_suggestion_picked(self, item):
+        model_id = str(item.data(QtCore.Qt.ItemDataRole.UserRole) or "")
+        if model_id:
+            self.custom_model.setText(model_id)
+            self._on_model_choice()
 
     def _on_model_next(self):
         model = self.chosen_model()
@@ -1238,24 +1287,53 @@ class FineTuneFlow(QtWidgets.QWidget):
         folder_row.addWidget(browse)
         self.save_register = QtWidgets.QCheckBox("Add it to my model list")
         self.save_register.setChecked(True)
-        self.save_prompt = QtWidgets.QLineEdit()
+        self.save_replace = QtWidgets.QCheckBox("Replace existing model")
+        self.save_replace.setChecked(False)
+        self.save_replace.setToolTip(
+            "Replace only the registry row. The old GGUF file is never deleted."
+        )
+        self.save_register.toggled.connect(self._on_save_register_toggled)
+        self.save_description = QtWidgets.QLineEdit()
+        self.save_description.setPlaceholderText(
+            "Optional; fine-tune provenance is used when blank"
+        )
+        self.save_notes = QtWidgets.QPlainTextEdit()
+        self.save_notes.setPlaceholderText(
+            "Optional training recipe or known issues; provenance is used when blank"
+        )
+        self.save_notes.setMaximumHeight(90)
+        self.save_prompt = QtWidgets.QPlainTextEdit()
+        self.save_prompt.setMaximumHeight(100)
         self.save_context = QtWidgets.QSpinBox()
         self.save_context.setRange(512, 262144)
         self.save_context.setSingleStep(1024)
         self.save_context.setValue(getattr(getattr(self._settings, "finetune", None), "default_context_size", 8192))
+        self.save_gpu_layers = QtWidgets.QSpinBox()
+        self.save_gpu_layers.setRange(-1, 9999)
+        self.save_gpu_layers.setSpecialValueText("All layers")
+        self.save_gpu_layers.setValue(
+            getattr(getattr(self._settings, "finetune", None), "default_gpu_layers", 999)
+        )
         self.save_id = QtWidgets.QLineEdit()
-        self.save_id.setToolTip("The key the model list uses for this model. Must be new.")
+        self.save_id.setToolTip(
+            "The key the model list uses. It must be new unless Replace existing model is ticked."
+        )
         self.save_gguf = QtWidgets.QComboBox()
         form = _form(("Model name", self.save_name))
         form.addRow("Save the model file to", folder_row)
         form.addRow("", self.save_register)
+        form.addRow("", self.save_replace)
+        form.addRow("Description", self.save_description)
+        form.addRow("Notes", self.save_notes)
         form.addRow("System prompt to use with it", self.save_prompt)
         form.addRow("Context size", self.save_context)
+        form.addRow("GPU layers", self.save_gpu_layers)
         form.addRow("Model id", self.save_id)
         form.addRow("Model file", self.save_gguf)
         body.addLayout(form)
         self.save_name.textChanged.connect(self._update_save_preview)
         self.save_folder.textChanged.connect(self._update_save_preview)
+        self.save_gguf.currentTextChanged.connect(self._update_save_preview)
         self.save_preview = _label(muted=True)
         body.addWidget(self.save_preview)
         self.save_button = _primary("Save model")
@@ -1323,7 +1401,10 @@ class FineTuneFlow(QtWidgets.QWidget):
         self.save_id.setText(ftd.safe_name(base, "model").lower())
         if not self.save_folder.text():
             self.save_folder.setText(self._default_models_folder())
-        self.save_prompt.setText(self.default_system)
+        self.save_description.clear()
+        self.save_notes.clear()
+        self.save_prompt.setPlainText(self.default_system)
+        self.save_replace.setChecked(False)
         self.save_gguf.clear()
         self.save_gguf.addItems(files["gguf"])
         self.save_button.setEnabled(bool(files["gguf"]))
@@ -1337,7 +1418,17 @@ class FineTuneFlow(QtWidgets.QWidget):
         name = ftd.safe_name(self.save_name.text(), "model")
         filename = f"{name}.{quant}.gguf" if quant else f"{name}.gguf"
         folder = self.save_folder.text().strip()
-        self.save_preview.setText(f"Will save: {os.path.join(folder, filename)}" if folder else "")
+        if not folder:
+            self.save_preview.setText("")
+            return
+        src = Path(self.run_dir) / gguf if self.run_dir and gguf else Path()
+        target = jobs.planned_destination(src, Path(folder), filename)
+        self.save_preview.setText(f"Will save: {target}")
+
+    def _on_save_register_toggled(self, checked):
+        self.save_replace.setEnabled(bool(checked))
+        if not checked:
+            self.save_replace.setChecked(False)
 
     def _on_browse_folder(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Save the model file to", self.save_folder.text())
@@ -1345,15 +1436,42 @@ class FineTuneFlow(QtWidgets.QWidget):
             self.save_folder.setText(os.path.normpath(folder))
 
     def _on_save(self):
+        replacing = self.save_register.isChecked() and self.save_replace.isChecked()
+        if replacing:
+            model_id = self.save_id.text().strip()
+            running_reader = getattr(self._gc, "running_model_id", None)
+            running_id = running_reader() if callable(running_reader) else None
+            if running_id == model_id:
+                self._show_save_error(
+                    f"Stop model '{model_id}' before replacing its registry entry."
+                )
+                return
+            try:
+                existing = jobs.registry_model_entry(self._settings, model_id)
+            except ValueError as exc:
+                self._show_save_error(str(exc))
+                return
+            if existing is None:
+                self._show_save_error(
+                    f"Model id '{model_id}' does not exist. Untick 'Replace existing "
+                    f"model' to add it as a new entry."
+                )
+                return
+            if not self._confirm_replace(existing):
+                return
         try:
             _dest, message = jobs.save_model(
                 self._settings, run_dir=self.run_dir, gguf_name=self.save_gguf.currentText(),
                 folder=self.save_folder.text(), name=self.save_name.text(),
                 register=self.save_register.isChecked(), model_id=self.save_id.text(),
-                context_size=self.save_context.value(), prompt=self.save_prompt.text())
+                context_size=self.save_context.value(),
+                prompt=self.save_prompt.toPlainText(),
+                description=self.save_description.text(),
+                notes=self.save_notes.toPlainText(),
+                gpu_layers=self.save_gpu_layers.value(),
+                replace=replacing)
         except (ValueError, OSError) as exc:
-            self.save_result.setObjectName("error")
-            self.save_result.setText(str(exc))
+            self._show_save_error(str(exc))
         else:
             self.save_result.setObjectName("")
             self.save_result.setText(message)
@@ -1361,6 +1479,61 @@ class FineTuneFlow(QtWidgets.QWidget):
                 self._on_model_saved()
         self.save_result.style().unpolish(self.save_result)
         self.save_result.style().polish(self.save_result)
+
+    def _show_save_error(self, message):
+        self.save_result.setObjectName("error")
+        self.save_result.setText(str(message))
+        self.save_result.style().unpolish(self.save_result)
+        self.save_result.style().polish(self.save_result)
+
+    @staticmethod
+    def _display_change_value(value):
+        return json.dumps(value, ensure_ascii=True) if isinstance(value, str) else str(value)
+
+    def _confirm_replace(self, existing):
+        gguf = self.save_gguf.currentText()
+        quant = jobs.quant_of(gguf) if gguf else ""
+        safe = ftd.safe_name(self.save_name.text(), "model")
+        filename = f"{safe}.{quant}.gguf" if quant else f"{safe}.gguf"
+        src = Path(self.run_dir) / gguf
+        new_path = jobs.planned_destination(src, Path(self.save_folder.text().strip()), filename)
+        provenance = jobs.provenance_text(Path(self.run_dir))
+        new_values = {
+            "name": self.save_name.text().strip(),
+            "location": str(new_path),
+            "description": self.save_description.text().strip() or provenance,
+            "notes": self.save_notes.toPlainText().strip() or provenance,
+            "context_size": self.save_context.value(),
+            "gpu_layers": self.save_gpu_layers.value(),
+            "recommended_prompt": self.save_prompt.toPlainText().strip(),
+            "quantization": quant,
+        }
+        changed = []
+        for key, value in new_values.items():
+            old = existing.get(key, "")
+            if old != value:
+                changed.append(
+                    f"{key}: {self._display_change_value(old)} -> "
+                    f"{self._display_change_value(value)}"
+                )
+        details = "\n".join(changed) if changed else "No deploy fields would change."
+        old_path = str(existing.get("location", ""))
+        message = (
+            f"Replace registry entry '{self.save_id.text().strip()}'?\n\n"
+            f"Old path: {old_path}\n"
+            f"New path: {new_path}\n\n"
+            f"Changed fields:\n{details}\n\n"
+            f"The old GGUF file will not be deleted."
+        )
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Replace existing model?",
+            message,
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        return answer == QtWidgets.QMessageBox.StandardButton.Yes
 
     def _on_compare(self):
         prompt = self.compare_prompt.text().strip()
@@ -1371,7 +1544,7 @@ class FineTuneFlow(QtWidgets.QWidget):
         self.compare_button.setEnabled(False)
         self.compare_before.setText("Running the original model...")
         self.compare_after.setText("Then your fine-tuned model...")
-        settings, system = self._settings, self.save_prompt.text()
+        settings, system = self._settings, self.save_prompt.toPlainText()
 
         def done(result, error):
             self.compare_button.setEnabled(True)

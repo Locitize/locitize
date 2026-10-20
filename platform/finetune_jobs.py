@@ -489,56 +489,221 @@ def quant_of(gguf_name: str) -> str:
     return parts[-2].upper() if len(parts) == 3 else ""
 
 
-def place_file(src: Path, folder: Path, filename: str) -> Path:
-    """Put src in folder as filename: a hard link on the same drive, else a copy."""
-    folder.mkdir(parents=True, exist_ok=True)
-    dest = folder / filename
-    if dest.exists() and os.path.samefile(dest, src):
+def _versioned_path(folder: Path, filename: str, number: int) -> Path:
+    """Return filename, then filename's ``-2``/``-3`` variants before its tags."""
+    if number <= 1:
+        return folder / filename
+    stem, dot, suffix = filename.partition(".")
+    tail = f"{dot}{suffix}" if dot else ""
+    return folder / f"{stem}-{number}{tail}"
+
+
+def planned_destination(src: Path, folder: Path, filename: str) -> Path:
+    """First non-conflicting destination, without creating the folder or file."""
+    for number in range(1, 100_000):
+        dest = _versioned_path(folder, filename, number)
+        if dest.exists():
+            try:
+                if os.path.samefile(dest, src):
+                    return dest
+            except OSError:
+                pass
+            continue
         return dest
-    if dest.exists():
-        dest.unlink()
+    raise OSError(f"Could not choose a free filename in {folder}.")
+
+
+def _copy_exclusive(src: Path, dest: Path) -> None:
+    """Copy without the overwrite semantics of shutil.copy2."""
+    created = False
     try:
-        os.link(src, dest)
-    except OSError:
-        shutil.copy2(src, dest)
-    return dest
+        with src.open("rb") as reader, dest.open("xb") as writer:
+            created = True
+            shutil.copyfileobj(reader, writer)
+        shutil.copystat(src, dest)
+    except Exception:
+        if created:
+            try:
+                dest.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def _place_file(src: Path, folder: Path, filename: str) -> tuple[Path, bool]:
+    """Place without replacing any different file; return (path, created_here)."""
+    if Path(filename).name != filename or not filename:
+        raise ValueError("The saved model filename must be one plain file name.")
+    folder.mkdir(parents=True, exist_ok=True)
+    for number in range(1, 100_000):
+        dest = _versioned_path(folder, filename, number)
+        if dest.exists():
+            try:
+                if os.path.samefile(dest, src):
+                    return dest, False
+            except OSError:
+                pass
+            continue
+        try:
+            os.link(src, dest)
+            return dest, True
+        except FileExistsError:
+            continue
+        except OSError:
+            try:
+                _copy_exclusive(src, dest)
+                return dest, True
+            except FileExistsError:
+                continue
+    raise OSError(f"Could not choose a free filename in {folder}.")
+
+
+def place_file(src: Path, folder: Path, filename: str) -> Path:
+    """Hard-link src, or copy it, without deleting or overwriting another file."""
+    return _place_file(Path(src), Path(folder), filename)[0]
+
+
+def registry_model_entry(settings, model_id: str) -> dict[str, Any] | None:
+    """Read one raw registry row for preflight/confirmation; never write it."""
+    import yaml
+
+    path = Path(settings.data_dir) / "models.yaml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError(f"Could not read your model list at {path}: {exc}") from None
+    try:
+        parsed = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Could not read your model list at {path}: {exc}") from None
+    rows = parsed.get("models", []) if isinstance(parsed, dict) else parsed
+    for row in rows or []:
+        if isinstance(row, dict) and str(row.get("id", "")).strip() == model_id:
+            return dict(row)
+    return None
+
+
+def provenance_text(run_dir: Path) -> str:
+    """Default description/notes text for a saved fine-tune."""
+    meta = read_meta(run_dir)
+    provenance = "Fine-tuned in LoCiTiZe"
+    if meta.get("base_model"):
+        provenance += f" from {meta['base_model']}"
+    return provenance + f", run {Path(run_dir).name}."
 
 
 def save_model(settings, *, run_dir: Path, gguf_name: str, folder: str, name: str, register: bool,
-               model_id: str, context_size: int, prompt: str) -> tuple[Path, str]:
+               model_id: str, context_size: int, prompt: str, description: str = "",
+               notes: str = "", gpu_layers: int | None = None,
+               replace: bool = False) -> tuple[Path, str]:
     """Save a finished run's GGUF to `folder` and (optionally) add it to the model list.
 
     Returns (saved path, message). Raises ValueError with a plain message when the
     folder or the model list refuses - the page shows it as is.
     """
-    from config import RegistryWriteError, append_model_entry
+    from config import RegistryWriteError, append_model_entry, replace_model_entry
 
     target = Path(os.path.expandvars(os.path.expanduser(folder.strip())))
     if not target.is_absolute():
         raise ValueError("Use a full folder path, for example one that starts with a drive letter.")
-    if not name.strip():
+    clean_name = name.strip()
+    clean_id = model_id.strip()
+    if not clean_name:
         raise ValueError("Give the model a name.")
+    if register and not clean_id:
+        raise ValueError("Give the model an id.")
+    if replace and not register:
+        raise ValueError("Tick 'Add it to my model list' before replacing an entry.")
+    if not isinstance(context_size, int) or isinstance(context_size, bool) or context_size <= 0:
+        raise ValueError("Context size must be a positive number.")
+    cfg = getattr(settings, "finetune", None)
+    resolved_gpu_layers = (
+        getattr(cfg, "default_gpu_layers", 999) if gpu_layers is None else gpu_layers
+    )
+    if (
+        not isinstance(resolved_gpu_layers, int)
+        or isinstance(resolved_gpu_layers, bool)
+        or resolved_gpu_layers < -1
+    ):
+        raise ValueError("GPU layers must be an integer of -1 or greater.")
+
+    existing = registry_model_entry(settings, clean_id) if register else None
+    if existing is not None and not replace:
+        raise ValueError(
+            f"Model id '{clean_id}' already exists. Choose a new id or tick "
+            f"'Replace existing model'."
+        )
+    if replace and existing is None:
+        raise ValueError(
+            f"Model id '{clean_id}' does not exist. Untick 'Replace existing model' "
+            f"to add it as a new entry."
+        )
+    old_location = str(existing.get("location", "")).strip() if existing else ""
     src = Path(run_dir) / gguf_name
     if not src.is_file():
         raise ValueError(f"The model file {gguf_name} is no longer in the run folder.")
     quant = quant_of(gguf_name)
-    filename = f"{ftd.safe_name(name, 'model')}.{quant}.gguf" if quant else f"{ftd.safe_name(name, 'model')}.gguf"
-    dest = place_file(src, target, filename)
+    filename = f"{ftd.safe_name(clean_name, 'model')}.{quant}.gguf" if quant else f"{ftd.safe_name(clean_name, 'model')}.gguf"
+    dest, created = _place_file(src, target, filename)
     if not register:
         return dest, f"Saved {dest}"
-    meta = read_meta(run_dir)
-    provenance = "Fine-tuned in LoCiTiZe"
-    if meta.get("base_model"):
-        provenance += f" from {meta['base_model']}"
-    provenance += f", run {Path(run_dir).name}."
-    cfg = getattr(settings, "finetune", None)
+    provenance = provenance_text(run_dir)
+    final_description = description.strip() or provenance
+    final_notes = notes.strip() or provenance
+    fields = {
+        "description": final_description,
+        "context_size": int(context_size),
+        "gpu_layers": resolved_gpu_layers,
+        "recommended_prompt": prompt.strip(),
+        "quantization": quant,
+        "notes": final_notes,
+    }
     try:
-        append_model_entry(
-            settings.data_dir, model_id.strip(), name.strip(), str(dest),
-            description=provenance, context_size=int(context_size),
-            gpu_layers=getattr(cfg, "default_gpu_layers", 999),
-            recommended_prompt=prompt.strip(), quantization=quant, notes=provenance,
-        )
+        if replace:
+            replace_model_entry(
+                settings.data_dir,
+                clean_id,
+                name=clean_name,
+                location=str(dest),
+                **fields,
+            )
+        else:
+            append_model_entry(
+                settings.data_dir,
+                clean_id,
+                clean_name,
+                str(dest),
+                **fields,
+            )
     except (ValueError, RegistryWriteError) as exc:
-        raise ValueError(f"Saved {dest}, but it was not added to your model list: {exc}") from None
-    return dest, f"Saved {dest} and added '{name.strip()}' to your model list."
+        removed = False
+        if created:
+            try:
+                dest.unlink()
+                removed = True
+            except OSError:
+                pass
+        file_result = (
+            "The new saved file was removed; no existing model file was touched."
+            if removed
+            else f"The file at {dest} was kept because locitize could not prove it was safe to remove."
+        )
+        raise ValueError(
+            f"The model was not added to your model list: {exc} {file_result}"
+        ) from None
+    location_changed = replace and os.path.normcase(os.path.normpath(old_location)) != (
+        os.path.normcase(os.path.normpath(str(dest)))
+    )
+    if location_changed:
+        # The registry write has committed. Ceiling cleanup is a sidecar cache
+        # invalidation and must never turn a successful model save into a failure.
+        try:
+            from context_advice import remove_ceiling
+
+            remove_ceiling(settings.data_dir, clean_id)
+        except Exception:
+            pass
+    action = "replaced" if replace else "added"
+    return dest, f"Saved {dest} and {action} '{clean_name}' in your model list."
