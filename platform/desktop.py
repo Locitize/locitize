@@ -306,20 +306,6 @@ QLabel#statusChip {
     padding: 6px 14px;
     font-weight: 600;
 }
-/* Same raised look as statusChip, but the sidebar's fixed 176px width has no
-   room for that chip's 14px side padding plus "COMMAND CENTER" - it clipped
-   to "COMMAND CENTE". Smaller font and tighter padding fit it instead of
-   widening the whole sidebar for one caption. */
-QLabel#sidebarChip {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #40454e, stop:1 #33373e);
-    color: #dce3f2;
-    border: 1px solid #4c5364;
-    border-top-color: #5a6275;
-    border-radius: 10px;
-    padding: 4px 8px;
-    font-size: 11px;
-    font-weight: 600;
-}
 QListWidget#sidebarList {
     background: transparent;
     border: 0;
@@ -1076,14 +1062,6 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.setFixedWidth(176)
         layout = QtWidgets.QVBoxLayout(frame)
         layout.setContentsMargins(8, 12, 8, 12)
-        caption = QtWidgets.QLabel("locitize")
-        caption.setObjectName("sidebarChip")
-        caption.setContentsMargins(0, 0, 0, 0)
-        caption_row = QtWidgets.QHBoxLayout()
-        caption_row.setContentsMargins(4, 0, 4, 6)
-        caption_row.addWidget(caption)
-        caption_row.addStretch(1)
-        layout.addLayout(caption_row)
         self._sidebar = QtWidgets.QListWidget()
         self._sidebar.setObjectName("sidebarList")
         self._sidebar.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
