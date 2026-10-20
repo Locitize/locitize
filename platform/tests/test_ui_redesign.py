@@ -399,6 +399,25 @@ def test_controller_chat_needs_no_model_follows_router_and_webui(monkeypatch):
     assert gc.chat_needs_no_model() is False
 
 
+def test_my_models_tab_can_delete_the_selected_model_after_asking(win, monkeypatch):
+    window, fake, desktop = win
+    deleted = []
+    fake.delete_model = lambda model_id: deleted.append(model_id)
+    window._model_table.selectRow(1)
+    window._refresh_buttons()
+    assert window._mine_delete_btn.isEnabled()
+    box = desktop.QtWidgets.QMessageBox
+    # Cancel: nothing is deleted.
+    monkeypatch.setattr(box, "warning", lambda *a, **k: box.StandardButton.Cancel)
+    window._mine_delete_btn.click()
+    assert deleted == []
+    # Yes: the selected row goes to the controller's (validating) delete.
+    monkeypatch.setattr(box, "warning", lambda *a, **k: box.StandardButton.Yes)
+    window._mine_delete_btn.click()
+    assert deleted == ["local-code"]
+    assert window._mine_delete_btn.isEnabled() is False
+
+
 def test_advanced_tab_has_one_shared_picker_that_stays_in_sync(win):
     window, fake, _desktop = win
     # My models selection drives the Advanced picker, summary and button names.

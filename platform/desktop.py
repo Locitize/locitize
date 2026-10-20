@@ -1337,8 +1337,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self._use_model_btn.setToolTip("Go to the Start page with this model selected")
         self._use_model_btn.clicked.connect(lambda: self._go_to("Start"))
         footer.addWidget(self._use_model_btn)
+        # The same permanent delete as Advanced > Manage this model, here where
+        # the list is: the old desktop kept Delete beside the table, and the
+        # owner could not find it at the bottom of Advanced.
+        self._mine_delete_btn = QtWidgets.QPushButton("Delete...")
+        self._mine_delete_btn.setObjectName("dangerButton")
+        self._mine_delete_btn.setToolTip(
+            "Permanently delete the selected model's file(s) from disk and "
+            "remove it from the list (asks first)"
+        )
+        self._mine_delete_btn.clicked.connect(self._on_delete_model)
+        footer.addWidget(self._mine_delete_btn)
         footer.addStretch(1)
         body.addLayout(footer)
+        self._model_table.setContextMenuPolicy(
+            QtCore.Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self._model_table.customContextMenuRequested.connect(
+            self._on_model_table_menu
+        )
         self._models_note = self._model_status.mirror()
         body.addWidget(self._models_note)
         mine_layout.addWidget(panel, 1)
@@ -3292,6 +3309,7 @@ class MainWindow(QtWidgets.QMainWindow):
             and self._ui.running_model_id != model.get("id"),
             delete_reason,
         )
+        self._gate(self._mine_delete_btn, self._delete_btn.isEnabled(), delete_reason)
         if self._assistant_live:
             tune_reason = busy_voice
         elif self._autotune_active():
@@ -4018,6 +4036,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._model_status.setText(f"Adding {model['name']} to your models...")
         self._gc.request_register_discovered(model["id"])
 
+    def _on_model_table_menu(self, pos):
+        """Right-click on a model row: Use it, or Delete it (asks first)."""
+        row = self._model_table.rowAt(pos.y())
+        if row < 0:
+            return
+        self._model_table.selectRow(row)
+        menu = QtWidgets.QMenu(self._model_table)
+        use = menu.addAction("Use this model")
+        delete = menu.addAction("Delete...")
+        delete.setEnabled(self._delete_btn.isEnabled())
+        chosen = menu.exec(self._model_table.viewport().mapToGlobal(pos))
+        if chosen is use:
+            self._go_to("Start")
+        elif chosen is delete:
+            self._on_delete_model()
+
     def _on_delete_model(self):
         """Confirm, then queue a permanent Delete (owner request 2026-08-21).
 
@@ -4047,6 +4081,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if confirmed != QtWidgets.QMessageBox.StandardButton.Yes:
             return
         self._delete_btn.setEnabled(False)
+        self._mine_delete_btn.setEnabled(False)
         self._model_status.setText(f"Deleting {model['name']}...")
         self._gc.delete_model(model["id"])
 
