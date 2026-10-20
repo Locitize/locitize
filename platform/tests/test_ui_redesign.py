@@ -90,7 +90,14 @@ def test_start_status_line_is_plain_language(win):
         "running_model", True, {"running_model_id": "local-chat", "running_port": 8080}
     ))
     assert window._start_status_line.text() == "Local Chat is running - ready to chat"
-    assert window._header_status.text() == "Local Chat running"
+    assert "Local Chat running - port 8080" in window._header_status.text()
+    sample = gui_controller.MetricsSample(
+        gen_tokens_s=12.5, n_tokens_max=1024, n_ctx=16384
+    )
+    window._render_metrics(sample)
+    assert "12.5 tokens per second" in window._header_status.text()
+    assert "ctx 1024/16384 (6%)" in window._header_status.text()
+    assert window._health_btn.text().startswith("Health:")
 
 
 def test_fit_hint_uses_the_gpu_size(win):
@@ -100,7 +107,7 @@ def test_fit_hint_uses_the_gpu_size(win):
     assert gui_controller.format_fit(None, 16303) == "-"
     assert gui_controller.format_fit(5000, None) == "-"
     assert "Fits your GPU" in window._start_fit_label.text()
-    assert "Yes" in window._model_table.item(0, 2).text()
+    assert "Yes" in window._model_table.item(0, 4).text()
 
 
 def test_models_page_lists_plain_columns_and_keeps_advanced_tools(win):
@@ -109,7 +116,22 @@ def test_models_page_lists_plain_columns_and_keeps_advanced_tools(win):
         window._model_table.horizontalHeaderItem(i).text()
         for i in range(window._model_table.columnCount())
     ]
-    assert headers == ["Model", "Size", "Fits your GPU?", "Speed", "Status"]
+    assert headers == [
+        "Model", "Capabilities", "Source", "Size", "Fits your GPU?",
+        "On GPU", "On CPU", "Speed", "Context", "Status",
+    ]
+    assert window._model_table.item(0, 1).text() == "Chat, Vision"
+    assert window._model_table.item(0, 5).text() == "10.3 GB"
+    assert window._model_table.item(0, 6).text() == "-"
+    context = window._model_table.item(0, 8)
+    assert context.text() == "16,384  !"
+    assert "speed cliff" in context.toolTip()
+    assert "speed cliff" not in window._model_table.item(0, 7).toolTip()
+
+    for column, key in ((1, "capabilities_display"), (5, "vram"), (8, "context")):
+        window._sort_col = None
+        window._on_sort(column)
+        assert window._sort_col == key
     models = window.pages["Models"]
     for widget in (
         window._autotune_btn, window._autotune_all_btn, window._thinking_combo,
@@ -146,13 +168,8 @@ def test_code_page_has_launcher_sessions_memory_and_one_release_button(win):
     assert "Settings" in missing.toolTip()
 
 
-def test_code_tool_uses_running_model_else_session_dialog(win, monkeypatch):
+def test_code_tool_always_uses_session_dialog(win, monkeypatch):
     window, fake, _desktop = win
-    from PySide6 import QtWidgets
-
-    monkeypatch.setattr(
-        QtWidgets.QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: "/locitize-test/proj")
-    )
     launched = []
     monkeypatch.setattr(
         window._sessions_page, "local_launch", lambda session, tool=None: launched.append(tool)
@@ -161,7 +178,7 @@ def test_code_tool_uses_running_model_else_session_dialog(win, monkeypatch):
     assert launched == ["codex"]  # nothing running: the dialog starts a model
     window._ui.running_model_id = "local-chat"
     window._on_code_tool("codex")
-    assert fake.calls[-1] == ("request_launch_harness", "codex", "/locitize-test/proj", False)
+    assert launched == ["codex", "codex"]
 
 
 def test_old_entry_points_are_gone_from_the_chat_chooser(win):

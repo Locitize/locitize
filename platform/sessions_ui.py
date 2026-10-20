@@ -341,14 +341,27 @@ class SessionsPage(QtWidgets.QWidget):
         elif tool and provider.findData(tool) >= 0:
             provider.setCurrentIndex(provider.findData(tool))
         models = QtWidgets.QComboBox()
+        models.setObjectName("localLaunchModel")
         for row in self.controller.list_models():
             if row.get("launchable"):
                 models.addItem(row.get("name", row["id"]), row["id"])
         meta = self.metadata.get((session.provider, session.id), {}) if session else {}
-        saved = models.findData(meta.get("model_id") or (session.model if session else ""))
+        running_model = ""
+        running_model_id = getattr(self.controller, "running_model_id", None)
+        if callable(running_model_id):
+            running_model = running_model_id() or ""
+        saved = models.findData(
+            meta.get("model_id")
+            or (session.model if session else "")
+            or running_model
+        )
         if saved >= 0:
             models.setCurrentIndex(saved)
-        folder = QtWidgets.QLineEdit(meta.get("project") or (session.project if session else ""))
+        last_project = getattr(self.controller, "last_project_dir", lambda: "")()
+        folder = QtWidgets.QLineEdit(
+            meta.get("project") or (session.project if session else "") or last_project
+        )
+        folder.setObjectName("localLaunchProject")
         browse = QtWidgets.QPushButton("Choose folder")
         def pick():
             chosen = QtWidgets.QFileDialog.getExistingDirectory(dialog, "Project folder", folder.text())
@@ -359,6 +372,10 @@ class SessionsPage(QtWidgets.QWidget):
         form.addRow("Local model", models)
         form.addRow("Project", folder)
         form.addRow("", browse)
+        remember = QtWidgets.QCheckBox("Remember this project folder")
+        remember.setObjectName("localLaunchRemember")
+        remember.setChecked(True)
+        form.addRow("", remember)
         notice = QtWidgets.QLabel("The selected model will start before the terminal opens. The coding tool retains its own permissions and network behavior. Keep locitize open while working.")
         notice.setWordWrap(True)
         form.addRow(notice)
@@ -369,7 +386,8 @@ class SessionsPage(QtWidgets.QWidget):
         form.addRow(buttons)
         if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             payload = {"choice": provider.currentData(), "model_id": models.currentData(),
-                       "project_dir": folder.text(), "resume_id": session.id if session else ""}
+                       "project_dir": folder.text(), "resume_id": session.id if session else "",
+                       "remember": remember.isChecked()}
             self.controller.request_session_launch(payload)
             self.status.setText("Preparing the local model and coding terminal...")
 

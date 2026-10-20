@@ -40,6 +40,10 @@ class FakeGuiController:
                 "vram_need_mb": 10300,
                 "gpu_portion_display": "10.3 GB",
                 "cpu_portion_display": "-",
+                "capabilities_display": "Chat, Vision",
+                "source_display": "Registered",
+                "context_display": "16,384",
+                "ctx_warning": "Configured context is past the measured speed cliff.",
                 "benchmark_score": None,
                 "score_display": "-",
             },
@@ -57,6 +61,10 @@ class FakeGuiController:
                 "vram_need_mb": 7200,
                 "gpu_portion_display": "7.2 GB",
                 "cpu_portion_display": "-",
+                "capabilities_display": "Code",
+                "source_display": "Discovered",
+                "context_display": "8,192",
+                "ctx_warning": "",
                 "benchmark_score": 31.5,
                 "score_display": "31.5 tok/s",
             },
@@ -1011,6 +1019,22 @@ def test_thinking_box_forwards_a_picked_level(qapp):
     assert window._selected_thinking("local-chat") == ({"enabled": False}, [])
     window._thinking_combo.setCurrentIndex(window._thinking_combo.findText("Deep"))
     assert window._selected_thinking("local-chat") == ({"effort": "xhigh"}, [])
+
+
+def test_thinking_box_accepts_typed_model_specific_values(qapp):
+    app, desktop, qt_gui = qapp
+    fake = FakeGuiController()
+    window = desktop.MainWindow(fake, health="OK")
+    assert window._thinking_combo.isEditable()
+
+    window._thinking_combo.setEditText("high")
+    assert window._selected_thinking("local-chat") == ({"effort": "high"}, [])
+
+    window._thinking_combo.setEditText("low/2048")
+    assert window._selected_thinking("local-chat") == (
+        {"effort": "low", "budget": 2048},
+        [],
+    )
 
 
 def test_an_externally_started_model_appears_in_the_window(qapp):

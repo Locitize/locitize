@@ -518,10 +518,12 @@ def test_finetune_models_page_shows_source_and_gates_register(qapp):
         window._model_table.horizontalHeaderItem(i).text()
         for i in range(window._model_table.columnCount())
     ]
-    assert headers == ["Model", "Size", "Fits your GPU?", "Speed", "Status"]
-    # The source is no longer a column; a fine-tune found on disk says so on hover.
-    assert "Discovered" not in window._model_table.item(0, 0).toolTip()
-    assert "Discovered" in window._model_table.item(1, 0).toolTip()
+    assert headers == [
+        "Model", "Capabilities", "Source", "Size", "Fits your GPU?",
+        "On GPU", "On CPU", "Speed", "Context", "Status",
+    ]
+    assert window._model_table.item(0, 2).text() == "Registered"
+    assert window._model_table.item(1, 2).text() == "Discovered"
 
     window._model_table.setCurrentCell(0, 0)
     assert not window._register_btn.isEnabled()
@@ -573,7 +575,7 @@ def test_finetune_discovered_throughput_cell_is_a_persisted_measurement(qapp):
             desktop.QtCore.Qt.ItemDataRole.UserRole
         ) == "ft:DemoGPT-v5"
     )
-    score_cell = window._model_table.item(discovered_row, 3)
+    score_cell = window._model_table.item(discovered_row, 7)
     assert score_cell.text() == "31.5 tokens per second"
     assert score_cell.toolTip() == ""
     assert "31.5 tok/s generation" in window._model_status.text()
@@ -592,8 +594,8 @@ def test_finetune_discovered_throughput_cell_is_a_persisted_measurement(qapp):
             desktop.QtCore.Qt.ItemDataRole.UserRole
         ) == "manual"
     )
-    assert window._model_table.item(registered_row, 3).text() == "44.0 tokens per second"
-    assert window._model_table.item(registered_row, 3).toolTip() == ""
+    assert window._model_table.item(registered_row, 7).text() == "44.0 tokens per second"
+    assert window._model_table.item(registered_row, 7).toolTip() == ""
 
     window.closeEvent(desktop.QtGui.QCloseEvent())
     window.deleteLater()

@@ -1257,9 +1257,20 @@ class MainWindow(QtWidgets.QMainWindow):
         # ---- My models -------------------------------------------------
         mine, mine_layout = self._tab_body()
         panel, body = self._panel()
-        self._model_table = QtWidgets.QTableWidget(0, 5)
+        self._model_table = QtWidgets.QTableWidget(0, 10)
         self._model_table.setHorizontalHeaderLabels(
-            ["Model", "Size", "Fits your GPU?", "Speed", "Status"]
+            [
+                "Model",
+                "Capabilities",
+                "Source",
+                "Size",
+                "Fits your GPU?",
+                "On GPU",
+                "On CPU",
+                "Speed",
+                "Context",
+                "Status",
+            ]
         )
         self._model_table.setSelectionBehavior(
             QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
@@ -1275,7 +1286,17 @@ class MainWindow(QtWidgets.QMainWindow):
         header = self._model_table.horizontalHeader()
         header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
-        for column, width in {0: 300, 1: 90, 2: 150, 3: 190}.items():
+        for column, width in {
+            0: 260,
+            1: 170,
+            2: 110,
+            3: 90,
+            4: 135,
+            5: 90,
+            6: 90,
+            7: 120,
+            8: 120,
+        }.items():
             header.resizeSection(column, width)
         self._model_table.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
@@ -1419,11 +1440,13 @@ class MainWindow(QtWidgets.QMainWindow):
         think_title.setObjectName("sectionTitle")
         think_row.addWidget(think_title)
         self._thinking_combo = QtWidgets.QComboBox()
+        self._thinking_combo.setEditable(True)
         for label, value in THINKING_CHOICES:
             self._thinking_combo.addItem(label, value)
         self._thinking_combo.setToolTip(
             "How hard the model thinks before it answers. More thinking gives "
-            "better answers on hard questions but takes longer."
+            "better answers on hard questions but takes longer. You can also "
+            "type a model-specific value such as 'high' or 'low/2048'."
         )
         think_row.addWidget(self._thinking_combo, 1)
         think_body.addLayout(think_row)
@@ -2044,12 +2067,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self._on_memory_search()
 
     def _on_code_tool(self, key):
-        """Open a coding tool: straight onto the running model, else via the
-        session dialog, which starts the chosen model first."""
-        if self._ui.running_model_id:
-            self._launch_harness_with_folder(key, False)
-        else:
-            self._sessions_page.local_launch(None, tool=key)
+        """Open the one coding-session dialog for every launch.
+
+        The dialog shows the selected model and project before anything starts,
+        including when a model is already running.
+        """
+        self._sessions_page.local_launch(None, tool=key)
 
     def _on_release_model(self):
         """Release the coding-terminal reservation (the one Release button)."""
@@ -2908,38 +2931,34 @@ class MainWindow(QtWidgets.QMainWindow):
             fit_text = {"Yes": "Yes", "Partly": "Partly (slower)"}.get(fit, "-")
             values = (
                 model["name"],
+                model.get("capabilities_display", "Chat"),
+                model.get("source_display", "Registered"),
                 model["size_display"],
                 fit_text,
+                model.get("gpu_portion_display", "-"),
+                model.get("cpu_portion_display", "-"),
                 plain_speed(model.get("score_display", "-")),
+                model.get("context_display", str(model.get("context_size", "-"))),
                 status,
             )
-            tip_parts = []
-            capabilities = model.get("capabilities_display")
-            if capabilities:
-                tip_parts.append(f"Good for: {capabilities}")
-            if model.get("source_display") and model.get("source_display") != "Registered":
-                tip_parts.append(str(model["source_display"]))
-            if model.get("context_display"):
-                tip_parts.append(f"Working memory: {model['context_display']} tokens")
             for column, value in enumerate(values):
                 item = QtWidgets.QTableWidgetItem(str(value))
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, model["id"])
-                if column == 1:
+                if column in (3, 5, 6, 7, 8):
                     item.setTextAlignment(
                         QtCore.Qt.AlignmentFlag.AlignRight
                         | QtCore.Qt.AlignmentFlag.AlignVCenter
                     )
-                if column == 0 and tip_parts:
-                    item.setToolTip(plain_tooltip_text("\n".join(tip_parts)))
-                if column == 2 and fit == "Partly":
+                if column == 4 and fit == "Partly":
                     item.setForeground(QtGui.QColor("#ffd166"))
-                if column == 4:
+                if column == 9:
                     self._style_status_item(item, status)
-                if column == 3 and model.get("score_note"):
+                if column == 7 and model.get("score_note"):
                     item.setToolTip(plain_tooltip_text(model["score_note"]))
-                if column == 3 and model.get("ctx_warning"):
+                if column == 8 and model.get("ctx_warning"):
                     # A context past the measured cliff makes this model slow.
                     item.setForeground(QtGui.QColor("#ffd166"))
+                    item.setText(str(value) + "  !")
                     item.setToolTip(plain_tooltip_text(model["ctx_warning"]))
                 self._model_table.setItem(row_index, column, item)
         self._model_table.blockSignals(False)
@@ -2984,7 +3003,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_sort(self, column_index):
         """Sort headers through the controller's stable model-row helper."""
-        keys = ("name", "size", None, "benchmark_tok_s", "status")
+        keys = (
+            "name",
+            "capabilities_display",
+            None,
+            "size",
+            "vram",
+            "vram",
+            None,
+            "benchmark_tok_s",
+            "context",
+            "status",
+        )
         column = keys[column_index]
         if column is None:
             return
@@ -3305,15 +3335,24 @@ class MainWindow(QtWidgets.QMainWindow):
         return None
 
     def _health_line(self):
-        """The header's model status, in plain words."""
+        """The running model, port, speed and context beside the health chip."""
         running = self._ui.running_model_id
         if not running and not self._assistant_port:
             return "No model running"
         name = self._model_name(running) if running else "Voice chat model"
+        visible_port = self._ui.running_port or self._assistant_port
+        port_text = f" - port {visible_port}" if visible_port else ""
         sample = self._ui.latest_metrics
-        if sample is not None and sample.metrics_available and sample.gen_tokens_s:
-            return f"{name} running - {sample.gen_tokens_s:.0f} tokens per second"
-        return f"{name} running"
+        rate = "-"
+        context = "-"
+        if sample is not None and sample.metrics_available:
+            rate = (
+                "idle"
+                if not sample.gen_tokens_s
+                else f"{sample.gen_tokens_s:.1f} tokens per second"
+            )
+            context = gui_controller._format_ctx(sample, self._selected_context_size())
+        return f"{name} running{port_text} - {rate} - ctx {context}"
 
     def _on_start(self):
         """Queue a start or switch and immediately render an honest working state."""
@@ -3349,7 +3388,14 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         from config import parse_reasoning_choice
 
-        text = str(self._thinking_combo.currentData() or "").strip()
+        current_text = self._thinking_combo.currentText().strip()
+        index = self._thinking_combo.findText(
+            current_text, QtCore.Qt.MatchFlag.MatchExactly
+        )
+        if index >= 0:
+            text = str(self._thinking_combo.itemData(index) or "").strip()
+        else:
+            text = current_text
         if not text:
             return None, []
         return parse_reasoning_choice(text, model_id)
@@ -4980,20 +5026,6 @@ class MainWindow(QtWidgets.QMainWindow):
         choice = "openwebui" if rich.isChecked() else "llamacpp"
         self._gc.open_chat(choice, remember.isChecked())
 
-    def _launch_harness_with_folder(self, choice, remember):
-        """Ask for the project folder (defaulting to the remembered one), then
-        queue the launch. The folder picker is per-launch on purpose - the
-        remembered path is only a default, never silently reused without the
-        person seeing which folder is about to be opened."""
-        default_dir = self._gc.last_project_dir() or str(Path.home())
-        project_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Choose a project folder", default_dir
-        )
-        if not project_dir:
-            return
-        self._model_status.setText(f"Opening {choice}...")
-        self._gc.request_launch_harness(choice, project_dir, remember)
-
     def _apply_launch_harness_result(self, result):
         """Surface a coding-tool launch's outcome without hiding a failure."""
         if not result.ok:
@@ -5001,8 +5033,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         choice = result.payload.get("choice", "")
         note = result.payload.get("note", "")
+        warning = result.payload.get("warning", "")
         message = f"{choice} opened in a new terminal."
-        self._model_status.setText(f"{message} {note}".strip() if note else message)
+        details = " ".join(part for part in (note, warning) if part)
+        self._model_status.setText(f"{message} {details}".strip())
 
     def _refresh_chat_harness_buttons(self):
         """Back-compat name for the Code page's tool buttons."""

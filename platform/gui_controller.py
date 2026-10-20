@@ -2401,6 +2401,10 @@ class GuiController:
         to; "" if no harness has ever been launched from this install."""
         return self._settings.chat_harness.last_project_dir
 
+    def running_model_id(self) -> str | None:
+        """Return the model currently serving, for launch-dialog preselection."""
+        return self._controller.running_model_id
+
     def request_launch_harness(
         self, choice: str, project_dir: str, remember: bool = True
     ) -> None:
@@ -2450,11 +2454,32 @@ class GuiController:
             self._local_session_launches = getattr(self, "_local_session_launches", 0) + 1
             sid = payload.get("resume_id")
             result_payload = dict(payload)
+            if payload.get("remember"):
+                current = getattr(
+                    getattr(self._settings, "chat_harness", None),
+                    "last_project_dir",
+                    "",
+                )
+                if project != current:
+                    from config import write_chat_harness_dir
+
+                    try:
+                        write_chat_harness_dir(self._settings.data_dir, project)
+                        self._settings.chat_harness.last_project_dir = project
+                    except (ValueError, OSError) as exc:
+                        result_payload["warning"] = (
+                            "Terminal opened, but the project folder could not be "
+                            f"remembered: {exc}"
+                        )
             if sid:
                 try:
                     SessionStore(self._settings.data_dir).update(choice, sid, model_id=model_id, project=project)
                 except (OSError, ValueError, sqlite3.Error) as exc:
-                    result_payload["warning"] = f"Terminal opened, but its profile could not be saved: {exc}"
+                    profile_warning = f"Terminal opened, but its profile could not be saved: {exc}"
+                    if result_payload.get("warning"):
+                        result_payload["warning"] += f" {profile_warning}"
+                    else:
+                        result_payload["warning"] = profile_warning
             self.result_q.put(Result("session_launch", True, result_payload))
         except (OSError, ValueError) as exc:
             self.result_q.put(Result("session_launch", False, dict(payload), error=str(exc)))
@@ -3285,20 +3310,29 @@ class GuiController:
             )
             return
 
+        warning = ""
         if remember and project_dir != self._settings.chat_harness.last_project_dir:
             from config import write_chat_harness_dir
 
             try:
                 write_chat_harness_dir(self._settings.data_dir, project_dir)
                 self._settings.chat_harness.last_project_dir = project_dir
-            except (ValueError, OSError):
-                pass  # non-fatal: the harness was still launched
+            except (ValueError, OSError) as exc:
+                warning = (
+                    "Terminal opened, but the project folder could not be "
+                    f"remembered: {exc}"
+                )
 
         self.result_q.put(
             Result(
                 "launch_harness",
                 True,
-                {"choice": choice, "project_dir": project_dir, "note": note},
+                {
+                    "choice": choice,
+                    "project_dir": project_dir,
+                    "note": note,
+                    "warning": warning,
+                },
             )
         )
 

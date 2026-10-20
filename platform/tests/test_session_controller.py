@@ -10,7 +10,10 @@ from session_store import SessionStore
 def controller(tmp_path, running="chosen"):
     gc = object.__new__(gui_controller.GuiController)
     gc.result_q = queue.Queue()
-    gc._settings = SimpleNamespace(data_dir=tmp_path)
+    gc._settings = SimpleNamespace(
+        data_dir=tmp_path,
+        chat_harness=SimpleNamespace(last_project_dir=""),
+    )
     gc._registry = SimpleNamespace(get=lambda name: SimpleNamespace(context_size=8192) if name == "chosen" else None)
     gc._controller = SimpleNamespace(running_model_id=running)
     gc._active_port = 8080 if running else None
@@ -67,3 +70,56 @@ def test_annotation_failure_after_spawn_reports_open_terminal(tmp_path, monkeypa
     result = gc.result_q.get()
     assert result.ok and "Terminal opened" in result.payload["warning"]
     assert gc._controller._session_reserved_model == "chosen"
+
+
+def test_remembered_project_is_saved_only_after_terminal_opens(tmp_path, monkeypatch):
+    gc = controller(tmp_path)
+    events = []
+    monkeypatch.setattr(harness_launch, "detect_executable", lambda _: "codex")
+    monkeypatch.setattr(
+        harness_launch, "spawn_in_terminal", lambda *a, **kw: events.append("spawn")
+    )
+    import config
+
+    def remember(data_dir, project):
+        assert events == ["spawn"]
+        events.append(("remember", project))
+
+    monkeypatch.setattr(config, "write_chat_harness_dir", remember)
+    gc._do_session_launch({
+        "choice": "codex",
+        "model_id": "chosen",
+        "project_dir": str(tmp_path),
+        "resume_id": "",
+        "remember": True,
+    })
+
+    result = gc.result_q.get()
+    assert result.ok
+    assert events == ["spawn", ("remember", str(tmp_path))]
+    assert gc._settings.chat_harness.last_project_dir == str(tmp_path)
+
+
+def test_remember_failure_warns_but_launch_still_succeeds(tmp_path, monkeypatch):
+    gc = controller(tmp_path)
+    monkeypatch.setattr(harness_launch, "detect_executable", lambda _: "codex")
+    monkeypatch.setattr(harness_launch, "spawn_in_terminal", lambda *a, **kw: None)
+    import config
+
+    monkeypatch.setattr(
+        config,
+        "write_chat_harness_dir",
+        lambda *a: (_ for _ in ()).throw(OSError("settings locked")),
+    )
+    gc._do_session_launch({
+        "choice": "codex",
+        "model_id": "chosen",
+        "project_dir": str(tmp_path),
+        "resume_id": "",
+        "remember": True,
+    })
+
+    result = gc.result_q.get()
+    assert result.ok
+    assert "Terminal opened" in result.payload["warning"]
+    assert "could not be remembered" in result.payload["warning"]

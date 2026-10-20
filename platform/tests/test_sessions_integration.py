@@ -200,3 +200,63 @@ def test_qt_session_search_edit_archive_reopen(tmp_path):
         app.processEvents()
         time.sleep(.01)
     page.close()
+
+
+def test_local_launch_dialog_preselects_running_model_and_remembered_project(
+    tmp_path, monkeypatch
+):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+    from sessions_ui import SessionsPage
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    payloads = []
+
+    class Controller:
+        def list_models(self):
+            return [
+                {"id": "first", "name": "First", "launchable": True},
+                {"id": "running", "name": "Running", "launchable": True},
+            ]
+
+        def running_model_id(self):
+            return "running"
+
+        def last_project_dir(self):
+            return str(tmp_path)
+
+        def request_session_launch(self, payload):
+            payloads.append(payload)
+
+    captured = {}
+
+    def accept(dialog):
+        captured["model"] = dialog.findChild(
+            QtWidgets.QComboBox, "localLaunchModel"
+        ).currentData()
+        captured["project"] = dialog.findChild(
+            QtWidgets.QLineEdit, "localLaunchProject"
+        ).text()
+        captured["remember"] = dialog.findChild(
+            QtWidgets.QCheckBox, "localLaunchRemember"
+        ).isChecked()
+        return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QtWidgets.QDialog, "exec", accept)
+    page = SessionsPage(Controller(), SessionService(tmp_path, []))
+    page.local_launch(None, tool="codex")
+
+    assert captured == {
+        "model": "running",
+        "project": str(tmp_path),
+        "remember": True,
+    }
+    assert payloads == [{
+        "choice": "codex",
+        "model_id": "running",
+        "project_dir": str(tmp_path),
+        "resume_id": "",
+        "remember": True,
+    }]
+    page.close()
+    app.processEvents()
