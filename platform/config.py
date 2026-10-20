@@ -32,6 +32,7 @@ Security notes (Permission Matrix sections 1-2):
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 from dataclasses import dataclass, field, fields, replace
@@ -1742,6 +1743,36 @@ def _edit_registry(
         _atomic_write(path, new_text)
     except OSError as exc:
         raise RegistryWriteError(_registry_os_message(path, exc, "write")) from exc
+    _remember_own_registry_write(path)
+
+
+# Fingerprint of models.yaml as this process last wrote it, per resolved path.
+# The desktop's on-disk watcher uses it to tell its own auto-tune / benchmark
+# saves apart from an edit made outside the app.
+_OWN_REGISTRY_WRITES: dict[str, str] = {}
+
+
+def _registry_fingerprint(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _remember_own_registry_write(path: Path) -> None:
+    digest = _registry_fingerprint(path)
+    if digest is not None:
+        _OWN_REGISTRY_WRITES[str(path.resolve())] = digest
+
+
+def registry_is_own_write(path: Path | str) -> bool:
+    """True when models.yaml still holds exactly what this app last wrote."""
+    target = Path(path)
+    try:
+        expected = _OWN_REGISTRY_WRITES.get(str(target.resolve()))
+    except OSError:
+        return False
+    return expected is not None and _registry_fingerprint(target) == expected
 
 
 def _registry_os_message(path: Path, exc: OSError, verb: str) -> str:

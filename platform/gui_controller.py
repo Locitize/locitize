@@ -4827,6 +4827,13 @@ class GuiController:
             return
         if mtime is not None and mtime != previous:
             self._registry_mtime = mtime
+            try:
+                from config import registry_is_own_write
+
+                if registry_is_own_write(target):
+                    return  # this app's own save (auto-tune, benchmark, an edit)
+            except Exception:  # noqa: BLE001 - fall through to the notice
+                pass
             self.result_q.put(
                 Result(
                     "status_line",
