@@ -44,6 +44,10 @@ from typing import Any, Callable
 # owner request 2 - "10.3 GB").
 _BYTES_PER_GB = 1_000_000_000
 
+# Row id prefix for a GGUF found in the Models folder but not on the list.
+STORE_ID_PREFIX = "store:"
+
+
 # --------------------------------------------------------------------------- #
 # Marshalled value types (Data Model 6.3). None of these are persisted or hold
 # secrets; they live only in process memory for the GUI session.
@@ -2304,7 +2308,7 @@ class GuiController:
             need = compute_vram_need_mb(0, size)
             out.append(
                 {
-                    "id": "store:" + str(path),
+                    "id": STORE_ID_PREFIX + str(path),
                     "name": path.stem,
                     "location": str(path),
                     "status": "discovered",
@@ -2330,6 +2334,64 @@ class GuiController:
                 }
             )
         return out
+
+    def _do_delete_store_file(self, model_id: str) -> None:
+        """Delete one GGUF found in the Models folder that is not on the list.
+
+        There is no models.yaml row to remove, only the file. The path comes
+        from the row id, and it is deleted only when it is still a .gguf
+        directly under the Models folder that no listed model uses - so a
+        stale or hand-made id can never reach a file outside that folder.
+        """
+        from config import resolve_model_store
+
+        raw_path = model_id[len(STORE_ID_PREFIX):]
+        path = Path(raw_path)
+
+        def refuse(error: str) -> None:
+            self.result_q.put(
+                Result("delete_model", False, {"model_id": model_id}, error=error)
+            )
+
+        try:
+            store = resolve_model_store(self._settings).resolve()
+            target = path.resolve()
+        except OSError as exc:
+            refuse(f"could not check {raw_path}: {exc.strerror or exc}")
+            return
+        if target.suffix.lower() != ".gguf" or not target.is_relative_to(store):
+            refuse(f"{raw_path} is not a model file in your Models folder")
+            return
+        for listed in self._registry.all():
+            for other in (listed.location, listed.mmproj):
+                try:
+                    if other and os.path.samefile(other, target):
+                        refuse(f"{raw_path} is used by {listed.id} on your list")
+                        return
+                except OSError:
+                    continue
+        missing = []
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            missing.append(raw_path)
+        except OSError as exc:
+            refuse(
+                f"could not delete {raw_path}: {exc.strerror or exc}. Close any "
+                f"program using it, then try again."
+            )
+            return
+        self.result_q.put(
+            Result(
+                "delete_model", True,
+                {
+                    "model_id": model_id,
+                    "deleted_files": [] if missing else [raw_path],
+                    "skipped_shared_files": [],
+                    "missing_files": missing,
+                },
+            )
+        )
 
     def _publish_finetune_state(self, warning: str = "", error: str = "") -> None:
         """Push one finetune_state Result carrying the current lifecycle snapshot."""
@@ -4635,6 +4697,9 @@ class GuiController:
         from config import Config, RegistryWriteError, remove_model_entry
 
         model_id = payload["model_id"]
+        if model_id.startswith(STORE_ID_PREFIX):
+            self._do_delete_store_file(model_id)
+            return
         model = self._registry.get(model_id)
         if model is None:
             self.result_q.put(

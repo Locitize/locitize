@@ -440,3 +440,35 @@ def test_advanced_tab_has_one_shared_picker_that_stays_in_sync(win):
     window._models[0]["source"] = "discovered"
     window._update_advanced_header()
     assert not window._register_btn.isHidden()
+
+
+def test_a_models_folder_file_can_be_deleted_from_the_menu(win, monkeypatch):
+    """Owner report 2026-10-20: right-click Delete was greyed out for a GGUF
+    found in the Models folder but not on the list."""
+    window, fake, desktop = win
+    deleted = []
+    fake.delete_model = lambda model_id: deleted.append(model_id)
+    window._model_table.selectRow(1)
+    model = window._selected_model()
+    model["source"] = "store-discovered"
+    window._refresh_buttons()
+    assert window._mine_delete_btn.isEnabled()
+    box = desktop.QtWidgets.QMessageBox
+    asked = []
+
+    def answer(*args, **_kwargs):
+        asked.append(args[2])
+        return box.StandardButton.Yes
+
+    monkeypatch.setattr(box, "warning", answer)
+    window._mine_delete_btn.click()
+    assert deleted == [model["id"]]
+    assert "not on your list" in asked[0]
+
+
+def test_menus_are_drawn_in_the_app_font():
+    """Owner report 2026-10-20: a right-click menu used the Windows menu font."""
+    import desktop
+
+    assert "QMenu {" in desktop.APP_STYLE
+    assert "QMenu::item:selected" in desktop.APP_STYLE

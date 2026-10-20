@@ -2379,3 +2379,70 @@ def test_cancel_works_between_two_models_of_an_autotune_all_run():
     assert gc.autotune_in_progress() is True
     assert gc.cancel_autotune() is True
     assert gc._autotune_cancel.is_set()
+
+
+def test_delete_removes_an_unlisted_gguf_found_in_the_models_folder(tmp_path):
+    """Owner report 2026-10-20: Delete on a Models-folder file that is not on
+    the list did nothing. It deletes just the file; the list is untouched."""
+    store = tmp_path / "Models"
+    store.mkdir()
+    found = store / "SmartStartGPT.Q4_K_M.gguf"
+    found.write_bytes(b"GGUF")
+    gc, _registry = _real_gui_controller(tmp_path, "version: 1\nmodels: []\n")
+    gc._settings.paths.model_store = str(store)
+
+    gc.delete_model("store:" + str(found))
+    _dispatch_next(gc)
+    result = gc.result_q.get_nowait()
+
+    assert result.kind == "delete_model" and result.ok
+    assert result.payload["deleted_files"] == [str(found)]
+    assert not found.exists()
+
+
+def test_store_delete_never_reaches_outside_the_models_folder(tmp_path):
+    store = tmp_path / "Models"
+    store.mkdir()
+    outside = tmp_path / "elsewhere.gguf"
+    outside.write_bytes(b"GGUF")
+    not_a_model = store / "notes.txt"
+    not_a_model.write_text("keep")
+    gc, _registry = _real_gui_controller(tmp_path, "version: 1\nmodels: []\n")
+    gc._settings.paths.model_store = str(store)
+
+    for target in (outside, not_a_model, store / ".." / "elsewhere.gguf"):
+        gc.delete_model("store:" + str(target))
+        _dispatch_next(gc)
+        result = gc.result_q.get_nowait()
+        assert result.kind == "delete_model" and not result.ok
+    assert outside.exists() and not_a_model.exists()
+
+
+def test_store_delete_keeps_a_file_a_listed_model_uses(tmp_path):
+    import json as _json
+
+    store = tmp_path / "Models"
+    store.mkdir()
+    weights = store / "model-a.gguf"
+    weights.write_bytes(b"GGUF")
+    gc, registry = _real_gui_controller(
+        tmp_path,
+        f"""version: 1
+models:
+  - id: model-a
+    name: "Model A"
+    location: {_json.dumps(str(weights))}
+    context_size: 8192
+    gpu_layers: -1
+    status: installed
+""",
+    )
+    gc._settings.paths.model_store = str(store)
+
+    gc.delete_model("store:" + str(weights))
+    _dispatch_next(gc)
+    result = gc.result_q.get_nowait()
+
+    assert result.kind == "delete_model" and not result.ok
+    assert "model-a" in result.error
+    assert weights.exists() and registry.get("model-a") is not None

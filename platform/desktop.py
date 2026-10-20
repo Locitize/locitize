@@ -327,6 +327,20 @@ QListWidget#sidebarList::item:selected {
    Refresh, Stop, ...) now carries the same raised gradient/pill look the header's
    Offload GPU button and the statusChip badges use - one consistent button
    language app-wide instead of Offload GPU being a one-off exception. */
+/* Owner request 2026-10-20: with no rule of its own a right-click menu was
+   drawn by Windows in the system menu font, unlike the rest of the app. A
+   full rule makes Qt draw it with the app's face, size and colours. */
+QMenu {
+    background: #2b2d30;
+    color: #e8eaed;
+    border: 1px solid #4c5364;
+    border-radius: 6px;
+    padding: 4px;
+}
+QMenu::item { padding: 6px 18px; border-radius: 4px; background: transparent; }
+QMenu::item:selected { background: #284b7a; color: #ffffff; }
+QMenu::item:disabled { color: #6f7379; }
+QMenu::separator { height: 1px; background: #35383d; margin: 4px 6px; }
 QPushButton {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #40454e, stop:1 #33373e);
     border: 1px solid #4c5364;
@@ -3402,18 +3416,19 @@ class MainWindow(QtWidgets.QMainWindow):
             store_discovered,
             "Select a discovered GGUF from the Models folder first.",
         )
-        # Delete: only a registered row has a list entry to remove, and never the
-        # running model, whose file is open.
+        # Delete: a registered row (list entry and file) or a GGUF found in the
+        # Models folder (file only), and never the running model, whose file
+        # is open. A discovered fine-tune is deleted from the Fine-tune page.
+        source = model.get("source", "registry") if model else None
         if model is None:
             delete_reason = "Pick a model first."
-        elif model.get("source", "registry") != "registry":
-            delete_reason = "This discovered model is not on your list, so there is nothing to delete here."
+        elif source not in ("registry", "store-discovered"):
+            delete_reason = "Delete a fine-tune run from the Fine-tune page."
         else:
             delete_reason = "Stop the model before deleting it."
         self._gate(
             self._delete_btn,
-            model is not None
-            and model.get("source", "registry") == "registry"
+            source in ("registry", "store-discovered")
             and self._ui.running_model_id != model.get("id"),
             delete_reason,
         )
@@ -4196,12 +4211,15 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         paths = [p for p in (model.get("location"), model.get("mmproj")) if p]
         file_list = "\n".join(f"  - {p}" for p in paths) or "  (no file on disk recorded)"
+        if model.get("source") == "store-discovered":
+            what = "It is not on your list. This deletes this file from disk"
+        else:
+            what = "This removes it from your list AND deletes these files from disk"
         confirmed = QtWidgets.QMessageBox.warning(
             self,
             "Delete model",
             f'Permanently delete "{model["name"]}"?\n\n'
-            f"This removes it from your list AND deletes these files from "
-            f"disk:\n{file_list}\n\n"
+            f"{what}:\n{file_list}\n\n"
             f"This cannot be undone.",
             QtWidgets.QMessageBox.StandardButton.Yes
             | QtWidgets.QMessageBox.StandardButton.Cancel,
