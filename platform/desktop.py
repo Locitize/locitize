@@ -1475,14 +1475,14 @@ class MainWindow(QtWidgets.QMainWindow):
         think_title = QtWidgets.QLabel("Thinking level")
         think_title.setObjectName("sectionTitle")
         think_row.addWidget(think_title)
+        # A fixed list (owner request 2026-10-20): free text let any typo
+        # through to the model's chat template.
         self._thinking_combo = QtWidgets.QComboBox()
-        self._thinking_combo.setEditable(True)
         for label, value in THINKING_CHOICES:
             self._thinking_combo.addItem(label, value)
         self._thinking_combo.setToolTip(
             "How hard the model thinks before it answers. More thinking gives "
-            "better answers on hard questions but takes longer. You can also "
-            "type a model-specific value such as 'high' or 'low/2048'."
+            "better answers on hard questions but takes longer."
         )
         think_row.addWidget(self._thinking_combo, 1)
         think_body.addLayout(think_row)
@@ -3426,14 +3426,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         from config import parse_reasoning_choice
 
-        current_text = self._thinking_combo.currentText().strip()
-        index = self._thinking_combo.findText(
-            current_text, QtCore.Qt.MatchFlag.MatchExactly
-        )
-        if index >= 0:
-            text = str(self._thinking_combo.itemData(index) or "").strip()
-        else:
-            text = current_text
+        text = str(self._thinking_combo.currentData() or "").strip()
         if not text:
             return None, []
         return parse_reasoning_choice(text, model_id)

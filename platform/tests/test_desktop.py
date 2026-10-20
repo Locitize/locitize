@@ -1036,20 +1036,14 @@ def test_thinking_box_forwards_a_picked_level(qapp):
     assert window._selected_thinking("local-chat") == ({"effort": "xhigh"}, [])
 
 
-def test_thinking_box_accepts_typed_model_specific_values(qapp):
+def test_thinking_box_is_a_fixed_list_not_free_text(qapp):
+    """Owner request 2026-10-20: only the listed levels can be chosen."""
     app, desktop, qt_gui = qapp
     fake = FakeGuiController()
     window = desktop.MainWindow(fake, health="OK")
-    assert window._thinking_combo.isEditable()
-
-    window._thinking_combo.setEditText("high")
-    assert window._selected_thinking("local-chat") == ({"effort": "high"}, [])
-
-    window._thinking_combo.setEditText("low/2048")
-    assert window._selected_thinking("local-chat") == (
-        {"effort": "low", "budget": 2048},
-        [],
-    )
+    assert not window._thinking_combo.isEditable()
+    labels = [window._thinking_combo.itemText(i) for i in range(window._thinking_combo.count())]
+    assert labels == [label for label, _value in desktop.THINKING_CHOICES]
 
 
 def test_an_externally_started_model_appears_in_the_window(qapp):
