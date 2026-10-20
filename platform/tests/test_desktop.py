@@ -778,6 +778,23 @@ def test_autotune_button_asks_before_starting_and_queues_on_yes(qapp, monkeypatc
     app.processEvents()
 
 
+def test_autotune_is_greyed_out_with_a_reason_when_the_model_file_is_missing(qapp):
+    """A row whose .gguf is gone cannot be tuned, so the button says why."""
+    app, desktop, qt_gui = qapp
+    fake = FakeGuiController()
+    rows = fake.list_models()
+    rows[0]["file_present"] = False
+    fake.list_models = lambda: rows
+    window = desktop.MainWindow(fake, health="OK")
+    assert window._selected_model()["id"] == "local-chat"
+    assert window._autotune_btn.isEnabled() is False
+    assert "file is missing" in window._autotune_hint.text()
+    # The other model still has its file, so Auto-tune all stays available.
+    assert window._autotune_all_btn.isEnabled() is True
+    window.deleteLater()
+    app.processEvents()
+
+
 def test_autotune_button_does_nothing_when_the_confirmation_is_declined(qapp, monkeypatch):
     """Several minutes of GPU time must never start from a misclick."""
     app, desktop, qt_gui = qapp

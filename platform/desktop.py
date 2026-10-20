@@ -662,6 +662,17 @@ def plain_tooltip_text(text):
     return html.escape(str(text or ""), quote=False)
 
 
+def _model_file_present(model):
+    """True when a model row's file is on disk, so Auto-tune can load it.
+
+    A row left behind after its .gguf was moved or deleted used to offer
+    Auto-tune, which then failed with "could not read the model file". The
+    controller checks the disk when it lists the models; a row without the
+    flag is treated as present.
+    """
+    return bool(model.get("file_present", True))
+
+
 def plain_speed(score_display):
     """Speed cell in everyday words ("31.5 tokens per second")."""
     text = str(score_display or "-").strip()
@@ -3238,13 +3249,19 @@ class MainWindow(QtWidgets.QMainWindow):
             tune_reason = "Stop the running model first - the test needs the GPU to itself."
         elif model is None:
             tune_reason = "Pick a model first."
-        else:
+        elif model.get("source") == "discovered":
             tune_reason = "This fine-tuned model is not on your list yet. Add it first."
+        else:
+            tune_reason = (
+                f"This model's file is missing ({model.get('location') or 'no file set'}). "
+                "Point it at the right file or remove it from your list."
+            )
         self._gate(
             self._autotune_btn,
             not self._assistant_live
             and model is not None
             and model.get("source") != "discovered"
+            and _model_file_present(model)
             and self._ui.running_model_id is None
             and not self._autotune_active(),
             tune_reason,
@@ -3260,7 +3277,10 @@ class MainWindow(QtWidgets.QMainWindow):
             not self._assistant_live
             and self._ui.running_model_id is None
             and not self._autotune_active()
-            and any(m.get("source") != "discovered" for m in self._models),
+            and any(
+                m.get("source") != "discovered" and _model_file_present(m)
+                for m in self._models
+            ),
             busy_voice if self._assistant_live else (
                 "A speed test is already running." if self._autotune_active()
                 else "Stop the running model first - the test needs the GPU to itself."
@@ -3495,11 +3515,18 @@ class MainWindow(QtWidgets.QMainWindow):
         """Confirm, then queue an auto-tune of every registered model."""
         if not self._autotune_all_btn.isEnabled():
             return
-        count = sum(1 for m in self._models if m.get("source") != "discovered")
+        registered = [m for m in self._models if m.get("source") != "discovered"]
+        count = sum(1 for m in registered if _model_file_present(m))
+        missing = len(registered) - count
+        missing_note = (
+            f"{missing} model(s) on your list are skipped because their file is "
+            f"missing.\n\n" if missing else ""
+        )
         confirmed = QtWidgets.QMessageBox.question(
             self,
             "Auto-tune all models",
             f"Auto-tune all {count} models?\n\n"
+            f"{missing_note}"
             f"Each model is started several times to find the biggest working "
             f"memory this computer can hold, then its speed is measured. That "
             f"takes a few minutes per model - roughly "
@@ -3544,6 +3571,8 @@ class MainWindow(QtWidgets.QMainWindow):
             text += f", {p['failed']} failed"
         if p.get("canceled"):
             text += f", canceled ({p.get('skipped', 0)} not tuned)"
+        if p.get("missing"):
+            text += f"; {p['missing']} skipped because their file is missing"
         self._autotune_status.setText(text + ".")
         self._model_status.setText(text)
         self._on_refresh_models()

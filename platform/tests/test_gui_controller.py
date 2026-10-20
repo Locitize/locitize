@@ -2204,8 +2204,42 @@ def test_autotune_all_tunes_each_model_and_stops_when_canceled():
         results.append(gc.result_q.get_nowait())
     final = [r for r in results if r.kind == "autotune_all"]
     assert len(final) == 1
-    assert final[0].payload == {"total": 3, "tuned": 1, "failed": 0, "skipped": 2, "canceled": True}
+    assert final[0].payload == {
+        "total": 3, "tuned": 1, "failed": 0, "skipped": 2, "canceled": True, "missing": 0,
+    }
     assert not gc.autotune_in_progress()
+
+
+def test_autotune_all_skips_models_whose_file_is_missing(tmp_path):
+    present = tmp_path / "here.gguf"
+    present.write_bytes(b"gguf")
+    registry = FakeRegistry([
+        _model("here", location=str(present)),
+        _model("gone", location=str(tmp_path / "gone.gguf")),
+    ])
+    registry.launchable = lambda: registry.all()
+    gc = GuiController(
+        Settings(), registry, FakeModelController(), FakeWhisper(), FakeManager(),
+        fetch=lambda port, path: None,
+    )
+    gc._is_discovered = lambda mid: False
+    gc.request_autotune_all()
+    command = gc.command_q.get_nowait()
+    assert command.payload == {"model_ids": ["here"], "missing": 1}
+
+
+def test_autotune_all_refuses_when_every_model_file_is_missing(tmp_path):
+    registry = FakeRegistry([_model("gone", location=str(tmp_path / "gone.gguf"))])
+    registry.launchable = lambda: registry.all()
+    gc = GuiController(
+        Settings(), registry, FakeModelController(), FakeWhisper(), FakeManager(),
+        fetch=lambda port, path: None,
+    )
+    gc._is_discovered = lambda mid: False
+    gc.request_autotune_all()
+    assert gc.command_q.empty()
+    result = gc.result_q.get_nowait()
+    assert not result.ok and "missing its file" in result.error
 
 
 def test_cancel_works_between_two_models_of_an_autotune_all_run():

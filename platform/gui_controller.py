@@ -85,6 +85,14 @@ def _today_stamp() -> str:
     return datetime.date.today().isoformat()
 
 
+def _file_present(location: str | None) -> bool:
+    """True when a model's location names a file that exists right now."""
+    try:
+        return bool(location) and Path(location).is_file()
+    except OSError:
+        return False
+
+
 DISCOVERED_EDIT_REFUSAL = (
     "This fine-tuned model is not on your list yet. Use Add to my models first."
 )
@@ -1249,6 +1257,9 @@ class GuiController:
                         model.id, model.context_size, ceilings
                     ),
                     "launchable": bool(model.location) and model.status == "installed",
+                    # False when the row's .gguf was moved or deleted, so
+                    # Auto-tune is greyed out with a reason instead of failing.
+                    "file_present": _file_present(model.location),
                     # Size column (owner request 2): raw bytes for numeric sorting,
                     # plus the pre-formatted decimal-GB string the table renders.
                     "size_bytes": size_bytes,
@@ -1822,7 +1833,9 @@ class GuiController:
 
         Same refusal as a single tune (nothing may be running: each trial
         start needs the GPU and the reserved port). Discovered fine-tunes are
-        skipped - they have no models.yaml block to write back into.
+        skipped - they have no models.yaml block to write back into - and so is
+        a row whose file is gone: tuning it can only fail, and used to count as
+        a failure in the tally for a model nobody could have tuned.
         """
         if self._controller.running_model_id is not None:
             self.result_q.put(Result(
@@ -1830,16 +1843,22 @@ class GuiController:
                 error="stop the running model before auto-tuning",
             ))
             return
-        model_ids = [
-            m.id for m in self._registry.launchable() if not self._is_discovered(m.id)
+        registered = [
+            m for m in self._registry.launchable() if not self._is_discovered(m.id)
         ]
+        model_ids = [m.id for m in registered if _file_present(m.location)]
+        missing = len(registered) - len(model_ids)
         if not model_ids:
-            self.result_q.put(Result(
-                "autotune_all", False, {}, error="no registered models to auto-tune",
-            ))
+            error = (
+                "every model on your list is missing its file"
+                if missing else "no registered models to auto-tune"
+            )
+            self.result_q.put(Result("autotune_all", False, {}, error=error))
             return
         self._autotune_cancel.clear()
-        self.command_q.put(Command("autotune_all", {"model_ids": model_ids}))
+        self.command_q.put(
+            Command("autotune_all", {"model_ids": model_ids, "missing": missing})
+        )
 
     def autotune_in_progress(self) -> bool:
         """True while an auto-tune is occupying the ops worker.
@@ -2845,7 +2864,10 @@ class GuiController:
         elif command.kind == "autotune":
             self._do_autotune_context(command.payload.get("model_id", ""))
         elif command.kind == "autotune_all":
-            self._do_autotune_all(list(command.payload.get("model_ids", [])))
+            self._do_autotune_all(
+                list(command.payload.get("model_ids", [])),
+                missing=int(command.payload.get("missing", 0)),
+            )
         elif command.kind == "remember_chat_ui":
             self._do_remember_chat_ui(command.payload.get("choice", ""))
         elif command.kind == "open_openwebui_ready":
@@ -4150,7 +4172,7 @@ class GuiController:
             return "canceled"
         return "ok" if outcome.ok else "failed"
 
-    def _do_autotune_all(self, model_ids: list[str]) -> None:
+    def _do_autotune_all(self, model_ids: list[str], missing: int = 0) -> None:
         """Auto-tune (and benchmark) every given model, one after another.
 
         Each model goes through exactly the single-model path, so each one
@@ -4183,6 +4205,7 @@ class GuiController:
             "failed": tally["failed"],
             "skipped": total - tally["ok"] - tally["failed"],
             "canceled": canceled,
+            "missing": missing,
         }))
 
     def _do_delete_model(self, payload: dict[str, Any]) -> None:
