@@ -1024,10 +1024,12 @@ MUTATIONS: list[Mutation] = [
         "LOCITIZE_MODELS_HUB" + "_API_BASE is reintroduced, so the egress "
         "boundary is widenable from the environment again (SEC-M14-3)",
         "config.py",
-        """    if environ.get("LOCITIZE_MODELS_HUB_DOWNLOAD_DIR"):
-        settings.models_hub.download_dir = environ["LOCITIZE_MODELS_HUB_DOWNLOAD_DIR"]""",
-        """    if environ.get("LOCITIZE_MODELS_HUB_DOWNLOAD_DIR"):
-        settings.models_hub.download_dir = environ["LOCITIZE_MODELS_HUB_DOWNLOAD_DIR"]
+        """    if (environ.get("LOCITIZE_MODELS_HUB_DOWNLOAD_DIR")
+            and not environ.get("LOCITIZE_MODEL_STORE")):
+        settings.paths.model_store = environ["LOCITIZE_MODELS_HUB_DOWNLOAD_DIR"]""",
+        """    if (environ.get("LOCITIZE_MODELS_HUB_DOWNLOAD_DIR")
+            and not environ.get("LOCITIZE_MODEL_STORE")):
+        settings.paths.model_store = environ["LOCITIZE_MODELS_HUB_DOWNLOAD_DIR"]
     if environ.get("LOCITIZE_MODELS_HUB" + "_API_BASE"):
         settings.models_hub.api_base = environ["LOCITIZE_MODELS_HUB" + "_API_BASE"]""",
     ),

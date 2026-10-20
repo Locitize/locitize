@@ -36,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import uuid
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1239,6 +1240,36 @@ config.write_openwebui_enabled(sys.argv[1], True)
 print("openwebui enabled")
 """
 
+_WRITE_MODEL_STORE_SNIPPET = """
+import sys
+import config
+config.write_model_store(sys.argv[1], sys.argv[2])
+print("Models folder saved")
+"""
+
+
+def write_model_store_via_venv(
+    python_exe: Path | str,
+    data_root: Path | str,
+    model_store: Path | str,
+) -> StepResult:
+    """Persist the wizard's folder through config's targeted settings writer."""
+    exe = Path(python_exe)
+    if not exe.is_file():
+        return StepResult("model_store", False, f"interpreter not found: {exe}")
+    rc, out = _run(
+        [str(exe), "-c", _WRITE_MODEL_STORE_SNIPPET,
+         str(data_root), str(model_store)],
+        timeout=30,
+        cwd=BASE_DIR,
+    )
+    if rc != 0:
+        return StepResult(
+            "model_store", False,
+            f"could not save the Models folder: {out[-200:]}",
+        )
+    return StepResult("model_store", True, str(model_store))
+
 
 def enable_openwebui_via_venv(
     python_exe: Path | str, data_root: Path | str
@@ -1476,7 +1507,7 @@ MODEL_STORE_DEFAULT = str(
 )
 
 
-def model_store_path() -> Path:
+def model_store_path(configured: Path | str = "") -> Path:
     """The shared, tool-agnostic model store (M22).
 
     One folder every local-AI tool on the machine can feed from - LOCITIZE
@@ -1484,22 +1515,82 @@ def model_store_path() -> Path:
     downloads into it. LOCITIZE_MODEL_STORE overrides the default
     location; the default is deliberately outside any one app's tree so
     no uninstall ever takes the user's models with it."""
+    selected = str(configured or "").strip()
     override = (os.environ.get("LOCITIZE_MODEL_STORE") or "").strip()
-    return Path(override) if override else Path(MODEL_STORE_DEFAULT)
+    return Path(os.path.expandvars(override or selected or MODEL_STORE_DEFAULT)).expanduser()
 
 
-def ensure_model_store(say: Callable[[str], None] | None = None) -> StepResult:
+def validate_model_store(
+    path: Path | str,
+    *,
+    install_dir: Path | str | None = None,
+) -> StepResult:
+    """Create and write-probe a model store, refusing the install tree.
+
+    Resolving first catches junctions that point back into the application. The
+    exclusive probe is removed before success; a cleanup failure is reported
+    because leaving test files behind is not a valid folder check.
+    """
+    raw = model_store_path(path)
+    install = Path(install_dir or REPO_DIR).resolve(strict=False)
+    try:
+        resolved = raw.resolve(strict=False)
+    except OSError as exc:
+        return StepResult("model_store", False, f"could not resolve {raw}: {exc}")
+    if resolved == install or install in resolved.parents:
+        return StepResult(
+            "model_store", False,
+            "Choose a Models folder outside the locitize installation folder.",
+        )
+    probe = resolved / f".locitize-write-test-{uuid.uuid4().hex}.tmp"
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+        handle = os.open(str(probe), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        try:
+            os.write(handle, b"locitize model store check\n")
+        finally:
+            os.close(handle)
+        probe.unlink()
+    except OSError as exc:
+        try:
+            if probe.exists():
+                probe.unlink()
+        except OSError as cleanup:
+            return StepResult(
+                "model_store", False,
+                f"Could not clean up the folder check in {resolved}: {cleanup}",
+            )
+        return StepResult(
+            "model_store", False,
+            f"Could not create and write to the Models folder {resolved}: {exc}",
+        )
+    return StepResult("model_store", True, str(resolved))
+
+
+def ensure_model_store(
+    path: Path | str = "",
+    say: Callable[[str], None] | None = None,
+) -> StepResult:
     """Create the shared model store if missing (M22). Best-effort.
 
     Drops a one-paragraph README into a store it CREATES so a user who
     finds the folder knows what it is and what to put there. An existing
     folder is left byte-for-byte alone."""
+    if callable(path) and say is None:  # compatibility with the former (say) API
+        say = path
+        path = ""
     note = say or (lambda _t: None)
-    store = model_store_path()
+    store = model_store_path(path)
+    existed = store.is_dir()
+    checked = validate_model_store(store)
+    if not checked.ok:
+        return checked
+    store = Path(checked.message)
+    if existed:
+        return StepResult(
+            "model_store", True, str(store), skipped=True
+        )
     try:
-        if store.is_dir():
-            return StepResult("model_store", True, f"model store present: {store}", skipped=True)
-        store.mkdir(parents=True, exist_ok=True)
         readme = store / "README.txt"
         if not readme.exists():
             readme.write_text(
@@ -1512,8 +1603,8 @@ def ensure_model_store(say: Callable[[str], None] | None = None) -> StepResult:
             )
     except OSError as exc:
         return StepResult("model_store", False, f"could not create {store}: {exc}")
-    note(f"   created model store: {store}")
-    return StepResult("model_store", True, f"created model store: {store}")
+    note(f"   Models folder ready: {store}")
+    return StepResult("model_store", True, str(store))
 
 
 def install_claude_local(
@@ -1544,11 +1635,11 @@ def install_claude_local(
     return StepResult("claude_local", True, f"claude-local -> {target_dir}")
 
 
-def discovery_roots() -> list[Path]:
+def discovery_roots(model_store: Path | str = "") -> list[Path]:
     """Where local models plausibly already live. Environment-derived only."""
     home = Path.home()
     roots = [
-        model_store_path(),  # M22: the shared store scans first
+        model_store_path(model_store),  # the chosen store scans first
         home / "Downloads",
         home / ".lmstudio" / "models",
         home / ".cache" / "huggingface" / "hub",
@@ -1635,6 +1726,7 @@ def pair_mmproj(model_path: Path | str, allow_generic: bool = True) -> str:
 def find_local_models(
     roots: Iterable[Path | str] | None = None,
     say: Callable[[str], None] | None = None,
+    model_store: Path | str = "",
 ) -> list[dict]:
     """Scan for GGUF model files the user already has. Read-only, best-effort.
 
@@ -1648,7 +1740,11 @@ def find_local_models(
     note = say or (lambda _t: None)
     seen: set[tuple[int, int]] = set()
     by_identity: dict[tuple[str, int], dict] = {}
-    scan_roots = [Path(r) for r in roots] if roots is not None else discovery_roots()
+    scan_roots = (
+        [Path(r) for r in roots]
+        if roots is not None
+        else discovery_roots(model_store)
+    )
     for root in scan_roots:
         note(f"   scanning {root} ...")
         try:

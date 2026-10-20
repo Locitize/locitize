@@ -67,6 +67,7 @@ class ChatDecision(Enum):
     OPEN_OPENWEBUI = "open_openwebui"
     ASK = "ask"
     OFFER_START_OPENWEBUI = "offer_start_openwebui"
+    OFFER_INSTALL_OPENWEBUI = "offer_install_openwebui"
     DEGRADE_TO_LLAMACPP = "degrade_to_llamacpp"
     NO_MODEL = "no_model"
 
@@ -90,10 +91,10 @@ class ChatResolution:
 # surfaces). docs/chat.md is the install/troubleshoot reference.
 _REASON_NO_MODEL = "no model running - start one first"
 _REASON_NOT_INSTALLED = (
-    "Open WebUI is not installed; opening the built-in llama.cpp UI. "
-    "To install it, see docs/chat.md"
+    "Open WebUI is not installed yet."
 )
 _REASON_NOT_RUNNING = "Open WebUI is installed but not running"
+_REASON_DISABLED = "Open WebUI is installed but turned off in Settings."
 
 
 def resolve_chat_choice(
@@ -102,6 +103,7 @@ def resolve_chat_choice(
     model_running: bool,
     webui_installed: bool,
     webui_ready: bool,
+    webui_enabled: bool = True,
 ) -> ChatResolution:
     """Pure chat-UI decision (Architecture M9.3). No tkinter, no I/O, no network.
 
@@ -130,18 +132,25 @@ def resolve_chat_choice(
     if effective not in ("ask", "llamacpp", "openwebui"):
         effective = "ask"
 
-    # A backend must be running before either UI is worth opening (guard first).
+    if effective == "llamacpp":
+        if not model_running:
+            return ChatResolution(ChatDecision.NO_MODEL, _REASON_NO_MODEL)
+        return ChatResolution(ChatDecision.OPEN_LLAMACPP)
+
+    # Installation is useful with or without a running model. In router mode it
+    # is also the path to choosing a model, so offer it before the no-model gate.
+    if not webui_installed:
+        return ChatResolution(
+            ChatDecision.OFFER_INSTALL_OPENWEBUI, _REASON_NOT_INSTALLED
+        )
+    if not webui_enabled:
+        if model_running:
+            return ChatResolution(ChatDecision.DEGRADE_TO_LLAMACPP, _REASON_DISABLED)
+        return ChatResolution(ChatDecision.NO_MODEL, _REASON_DISABLED)
     if not model_running:
         return ChatResolution(ChatDecision.NO_MODEL, _REASON_NO_MODEL)
 
-    if effective == "llamacpp":
-        return ChatResolution(ChatDecision.OPEN_LLAMACPP)
-
     if effective == "openwebui":
-        if not webui_installed:
-            return ChatResolution(
-                ChatDecision.DEGRADE_TO_LLAMACPP, _REASON_NOT_INSTALLED
-            )
         if not webui_ready:
             return ChatResolution(
                 ChatDecision.OFFER_START_OPENWEBUI, _REASON_NOT_RUNNING
@@ -149,8 +158,6 @@ def resolve_chat_choice(
         return ChatResolution(ChatDecision.OPEN_OPENWEBUI)
 
     # effective == 'ask': only a real choice when Open WebUI is actually available.
-    if not webui_installed:
-        return ChatResolution(ChatDecision.OPEN_LLAMACPP, _REASON_NOT_INSTALLED)
     return ChatResolution(ChatDecision.ASK)
 
 
@@ -222,6 +229,48 @@ def webui_data_dir(settings: Settings) -> Path:
     return data_dir
 
 
+def webui_install_state(settings: Settings) -> str:
+    """Return ``missing``, ``partial`` or ``installed`` for the pinned package."""
+    try:
+        py = webui_venv_python(settings)
+        entry = webui_console_script(settings)
+    except ValueError:
+        return "partial"
+    venv_root = py.parent.parent
+    if not venv_root.exists():
+        return "missing"
+    if not py.is_file() or not entry.is_file():
+        return "partial"
+    try:
+        from setup_env import OPENWEBUI_VERSION
+        site = py.parent.parent / "Lib" / "site-packages"
+        versions = []
+        for metadata in site.glob("open_webui-*.dist-info/METADATA"):
+            try:
+                for line in metadata.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("Version:"):
+                        versions.append(line.split(":", 1)[1].strip())
+                        break
+            except OSError:
+                continue
+        return "installed" if OPENWEBUI_VERSION in versions else "partial"
+    except Exception:  # noqa: BLE001 - an unreadable package is partial
+        return "partial"
+
+
+def webui_enabled(settings: Settings) -> bool:
+    return bool(settings.openwebui.enabled)
+
+
+def webui_ready(settings: Settings) -> bool:
+    """True only when the pinned enabled install answers its health endpoint."""
+    return (
+        webui_enabled(settings)
+        and webui_install_state(settings) == "installed"
+        and wait_openwebui_healthy(int(settings.ports.openwebui), timeout_s=0.05)
+    )
+
+
 def webui_available(settings: Settings) -> bool:
     """Cheap check: is Open WebUI usable (enabled, venv present, console script there)?
 
@@ -231,16 +280,7 @@ def webui_available(settings: Settings) -> bool:
     half-installed venv). A False here makes the chooser degrade honestly to the
     built-in UI rather than trying to start a broken service (Architecture M9.5).
     """
-    if not settings.openwebui.enabled:
-        return False
-    try:
-        entry = webui_console_script(settings)
-    except ValueError:
-        return False
-    # The console entry point Open WebUI installs into the venv Scripts dir. Its
-    # presence is a reliable, import-free signal that `pip install open-webui`
-    # completed in this venv.
-    return entry.is_file()
+    return webui_enabled(settings) and webui_install_state(settings) == "installed"
 
 
 def backend_base_url(settings: Settings) -> str:

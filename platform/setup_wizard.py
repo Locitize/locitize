@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk
+from tkinter import filedialog, ttk
 from typing import Callable
 
 import setup_env
@@ -226,6 +226,7 @@ class SetupWizard:
         # Consent for the V-NONE rung. False until the user ticks it on the
         # confirm screen; download_verified refuses an unchecked binary without it.
         self._unverified_ok = False
+        self._model_store = setup_env.model_store_path()
 
         self._frame = ttk.Frame(self.root, padding=PAD)
         self._frame.pack(fill="both", expand=True)
@@ -276,6 +277,26 @@ class SetupWizard:
         detail.pack(fill="both", expand=True, pady=PAD)
         detail.configure(state="disabled")
 
+        store_row = ttk.Frame(body)
+        store_row.pack(fill="x", pady=(0, PAD))
+        ttk.Label(store_row, text="Models folder").pack(side="left")
+        self._model_store_var = tk.StringVar(value=str(self._model_store))
+        store_entry = ttk.Entry(store_row, textvariable=self._model_store_var)
+        store_entry.pack(side="left", fill="x", expand=True, padx=(8, 6))
+
+        def browse_store() -> None:
+            chosen = filedialog.askdirectory(
+                parent=self.root,
+                title="Choose your Models folder",
+                initialdir=self._model_store_var.get() or str(Path.home()),
+            )
+            if chosen:
+                self._model_store_var.set(chosen)
+
+        ttk.Button(store_row, text="Browse...", command=browse_store).pack(side="left")
+        store_status = ttk.Label(body, text="", style="Muted.TLabel")
+        store_status.pack(anchor="w", pady=(0, 4))
+
         nav = ttk.Frame(body)
         nav.pack(fill="x")
         next_btn = ttk.Button(nav, text="Next", state="disabled", style="Accent.TButton")
@@ -320,9 +341,37 @@ class SetupWizard:
             detail.insert("1.0", "\n".join(lines))
             detail.configure(state="disabled")
             status.configure(text="Ready.")
-            next_btn.configure(state="normal", command=self._show_features)
+            next_btn.configure(
+                state="normal",
+                command=lambda: self._prepare_model_store(next_btn, store_status),
+            )
 
         self._run_async(scan, finish)
+
+    def _prepare_model_store(self, next_btn, status) -> None:
+        """Create and probe the chosen store before the discovery scan starts."""
+        next_btn.configure(state="disabled")
+        status.configure(text="Checking the Models folder...")
+        result = {"value": None}
+        chosen = self._model_store_var.get().strip()
+
+        def work() -> None:
+            result["value"] = setup_env.ensure_model_store(chosen)
+
+        def done() -> None:
+            checked = result["value"]
+            if checked is None or not checked.ok:
+                status.configure(
+                    text=(checked.message if checked is not None
+                          else "The Models folder check did not finish.")
+                )
+                next_btn.configure(state="normal")
+                return
+            self._model_store = Path(checked.message)
+            self._found_models = []
+            self._show_features()
+
+        self._run_async(work, done)
 
     # -- screen 2 ---------------------------------------------------------
 
@@ -443,7 +492,9 @@ class SetupWizard:
                 ).pack(anchor="w")
 
                 def scan() -> None:
-                    self._found_models = setup_env.find_local_models()
+                    self._found_models = setup_env.find_local_models(
+                        model_store=self._model_store
+                    )
 
                 def finish() -> None:
                     render_found(self._found_models)
@@ -743,7 +794,7 @@ class SetupWizard:
             say(f"   {'ok' if shortcut.ok else 'note'}: {shortcut.message}")
             # M22: the shared model store - one folder every local-AI tool
             # can feed from; scanning and downloads both use it.
-            store = setup_env.ensure_model_store(say)
+            store = setup_env.ensure_model_store(self._model_store, say)
             say(f"   {'ok' if store.ok else 'note'}: {store.message}")
         except Exception as exc:  # noqa: BLE001 - a wizard must not die silently
             failures.append(str(exc))
@@ -944,7 +995,14 @@ class SetupWizard:
         )
         if not seeded.ok:
             return setup_env.StepResult(key, False, seeded.message)
-        found = self._found_models or setup_env.find_local_models(say=say)
+        saved = setup_env.write_model_store_via_venv(
+            venv_exe, self._machine.data_root, self._model_store
+        )
+        if not saved.ok:
+            return saved
+        found = self._found_models or setup_env.find_local_models(
+            say=say, model_store=self._model_store
+        )
         if not found:
             return setup_env.StepResult(
                 key, True,
@@ -952,7 +1010,7 @@ class SetupWizard:
                 "page after launch (downloads are checksum-verified)",
                 skipped=True,
             )
-        models_dir = self._machine.data_root / "models"
+        models_dir = self._model_store
         imported = skipped = failed = 0
         for entry in found:
             location = setup_env.place_into_models_dir(entry["path"], models_dir)

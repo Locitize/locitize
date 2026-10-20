@@ -269,6 +269,7 @@ def test_local_download_status_is_offline_and_uses_only_local_mode(tmp_path, mon
     answer = {
         "model": "org/M-1B", "cached": False, "cache_state": "partial",
         "total_bytes": None, "missing_bytes": None, "gated": False, "error": None,
+        "cache_dir": "",
     }
 
     def fake_run(argv, **kwargs):
@@ -290,6 +291,7 @@ def test_download_status_reads_and_normalizes_the_json_line_and_logs_egress(
         "model": "org/M-1B", "cached": False, "total_bytes": 1500,
         "missing_bytes": 1000, "gated": False, "error": None,
         "cache_state": "missing",
+        "cache_dir": "",
     }
     recorded = []
     monkeypatch.setattr(

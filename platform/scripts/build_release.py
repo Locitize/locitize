@@ -24,6 +24,16 @@ from release_info import VERSION  # noqa: E402
 PACKAGES = ("PySide6", "PySide6_Addons", "PySide6_Essentials", "shiboken6", "PyYAML", "psutil", "Pillow")
 
 
+def require_supported_python(version_info=None):
+    """Open WebUI 0.11.4 supports only the Python 3.11-3.12 release runtimes."""
+    version = tuple((version_info or sys.version_info)[:2])
+    if not (version >= (3, 11) and version < (3, 13)):
+        raise RuntimeError(
+            "Build releases with Python 3.11 or 3.12; the pinned Open WebUI "
+            "package does not support this interpreter."
+        )
+
+
 def copy_runtime(target: Path):
     base = Path(sys.base_prefix)
     runtime = target / "runtime"
@@ -57,6 +67,7 @@ def copy_runtime(target: Path):
 def build(output: Path, make_zip=True):
     if sys.platform != "win32":
         raise RuntimeError("Build Windows releases on Windows")
+    require_supported_python()
     output = output.resolve()
     if output.exists():
         raise FileExistsError(f"Choose a new output directory: {output}")

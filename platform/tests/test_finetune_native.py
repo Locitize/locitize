@@ -196,7 +196,9 @@ def test_download_status_counts_only_training_files_and_prefers_safetensors(tmp_
     assert status == {
         "model": "org/base", "cached": False, "total_bytes": 1150,
         "missing_bytes": 1000, "gated": False, "error": None,
+        "cache_dir": status["cache_dir"],
     }
+    assert status["cache_dir"]
 
 
 def test_download_status_turns_gated_failure_into_plain_action():

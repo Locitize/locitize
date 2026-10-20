@@ -480,6 +480,9 @@ class Launcher:
             # M9-lite: start Open WebUI on the SHARED manager (no orphan) when the
             # owner accepts the offer-start dialog; returns True when it went ready.
             openwebui_start_fn=lambda: self._start_openwebui(settings),
+            openwebui_lock=self.__dict__.setdefault(
+                "_openwebui_start_lock", threading.Lock()
+            ),
             # M10: the single-front-door builders. Each reuses an existing CLI path on
             # the GUI's SHARED, atexit-backstopped manager so the no-orphan guarantee
             # (M10.4) covers the assistant's model/mic/voice, the vision model, and the
@@ -591,6 +594,9 @@ class Launcher:
             listen_fn=lambda seconds, emit: self._gui_listen(settings, seconds, emit),
             speak_fn=lambda text, voice: self._gui_speak(settings, text, voice),
             openwebui_start_fn=lambda: self._start_openwebui(settings),
+            openwebui_lock=self.__dict__.setdefault(
+                "_openwebui_start_lock", threading.Lock()
+            ),
             assistant_start_fn=lambda events, voice, speak, model_id=None: self._gui_assistant_start(
                 settings, models, events, voice=voice, speaking=speak, model_id=model_id
             ),
@@ -1347,12 +1353,14 @@ class Launcher:
         from webui import (
             ChatDecision,
             resolve_chat_choice,
-            webui_available,
+            webui_enabled,
+            webui_install_state,
         )
 
         model_port = self._active_model_port(controller)
-        installed = webui_available(settings)
-        ready = self._openwebui_ready(settings) if installed else False
+        installed = webui_install_state(settings) == "installed"
+        enabled = webui_enabled(settings)
+        ready = self._openwebui_ready(settings) if installed and enabled else False
         override = getattr(self, "_chat_ui_override", None)
 
         resolution = resolve_chat_choice(
@@ -1361,6 +1369,7 @@ class Launcher:
             model_running=model_port is not None,
             webui_installed=installed,
             webui_ready=ready,
+            webui_enabled=enabled,
         )
         decision = resolution.decision
 
@@ -1391,6 +1400,11 @@ class Launcher:
                     "  Open WebUI did not become ready. Check its log in the data "
                     "folder, or run with --chat-ui llamacpp for the built-in page."
                 )
+            return
+        if decision is ChatDecision.OFFER_INSTALL_OPENWEBUI:
+            self._out("  Open WebUI is not installed yet. Use the desktop Chat button to review and install it.")
+            if model_port is not None:
+                self._open_chat_browser(settings, self._llamacpp_chat_url(settings, model_port))
             return
         # ASK: present the numbered choice; the owner may remember it.
         self._prompt_chat_choice(settings, controller, model_port, input_fn)
@@ -2183,12 +2197,20 @@ class Launcher:
 
             self._out(json.dumps({
                 "total": summary.total, "hosts": summary.hosts,
+                "connections": summary.connections,
+                "installer_events": summary.installer_events,
                 "recent": summary.recent,
             }))
             return 0
         self._out(egress_log.render_line(summary))
         for r in summary.recent:
-            self._out(f"  {r.get('ts', '')}  {r.get('host', '?'):24} {r.get('reason', '')}")
+            if r.get("kind") == "external-installer":
+                self._out(
+                    f"  {r.get('ts', '')}  {r.get('program', 'installer'):24} "
+                    f"{r.get('action', '')} {r.get('outcome', '')}"
+                )
+            else:
+                self._out(f"  {r.get('ts', '')}  {r.get('host', '?'):24} {r.get('reason', '')}")
         return 0
 
     def _gpu_processes(self, settings: Any) -> list:

@@ -101,9 +101,10 @@ def test_data_root_ownership_every_resolver_returns_a_path_under_the_data_root(
     for label, path in resolved.items():
         assert path is not None, f"{label} did not resolve"
         resolved_path = Path(path).resolve()
-        assert data.resolve() in resolved_path.parents or resolved_path == data.resolve(), (
-            f"{label} resolved to {resolved_path}, which is not under the data root"
-        )
+        if label != "models":
+            assert data.resolve() in resolved_path.parents or resolved_path == data.resolve(), (
+                f"{label} resolved to {resolved_path}, which is not under the data root"
+            )
         assert install.resolve() not in resolved_path.parents, (
             f"{label} resolved into the INSTALL tree ({resolved_path}) - "
             f"this is the shipped defect NEW-QA-M14-8"
@@ -118,7 +119,9 @@ def test_data_root_ownership_every_resolver_returns_a_path_under_the_data_root(
     assert resolved["Caddyfile"] == data / "Caddyfile"
     assert resolved["finetune outputs"] == data / "finetune" / "outputs"
     assert resolved["finetune datasets"] == data / "finetune" / "datasets"
-    assert resolved["models"] == data / "models"
+    import setup_env
+
+    assert resolved["models"] == Path(setup_env.MODEL_STORE_DEFAULT)
 
 
 def test_data_root_ownership_memory_escape_refusal_is_anchored_on_the_data_root(
@@ -133,13 +136,13 @@ def test_data_root_ownership_memory_escape_refusal_is_anchored_on_the_data_root(
 def test_data_root_ownership_an_explicit_relocation_still_wins(tmp_path):
     """The two documented exceptions stay honoured exactly as configured.
 
-    INSTALL.md names models_hub.download_dir and finetune.outputs_dir as the only
-    two locations outside the data folder, so they must NOT be forced back into
+    paths.model_store and finetune.outputs_dir are the two documented locations
+    outside the data folder, so they must NOT be forced back into
     it - the backup claim names them instead.
     """
     settings, _install, _data = make_settings(tmp_path)
     elsewhere = tmp_path / "other-drive"
-    settings.models_hub.download_dir = str(elsewhere / "models")
+    settings.paths.model_store = str(elsewhere / "models")
     settings.finetune.outputs_dir = str(elsewhere / "outputs")
     assert config.resolve_models_dir(settings) == elsewhere / "models"
     assert finetune.outputs_root(settings) == elsewhere / "outputs"
@@ -409,7 +412,9 @@ def test_data_root_ownership_portable_mode_puts_the_data_root_inside_the_install
     # LOCITIZE_LOG_DIR still outranks the data root (Architecture M5.12), and the
     # suite sets it, so the log dir is compared through the same override-free
     # path the previous test uses rather than re-asserting the override here.
-    assert config.resolve_models_dir(settings) == portable / "models"
+    import setup_env
+
+    assert config.resolve_models_dir(settings) == Path(setup_env.MODEL_STORE_DEFAULT)
 
 
 # --------------------------------------------------------------------------- #

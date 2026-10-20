@@ -455,14 +455,15 @@ def test_registry_write_errors_api_base_is_settings_only_and_env_cannot_widen_it
         tmp_path,
         env={
             "LOCITIZE_MODELS_HUB" + "_API_BASE": "https://evil.example.com",
-            # The two keys that DO survive still work, so this is a targeted
+            # The location compatibility key and feature switch still work.
             # removal rather than the env chain going quiet.
             "LOCITIZE_MODELS_HUB_DOWNLOAD_DIR": str(tmp_path / "elsewhere"),
             "LOCITIZE_MODELS_HUB_ENABLED": "false",
         },
     )
     assert settings.models_hub.api_base == "https://huggingface.co"
-    assert settings.models_hub.download_dir == str(tmp_path / "elsewhere")
+    assert settings.paths.model_store == str(tmp_path / "elsewhere")
+    assert settings.models_hub.download_dir == ""
     assert settings.models_hub.enabled is False
 
 

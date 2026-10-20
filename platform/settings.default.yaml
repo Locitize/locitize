@@ -37,7 +37,7 @@ paths:
   kokoro_model: ""     # kokoro .pth checkpoint      or LOCITIZE_KOKORO_MODEL_PATH
   kokoro_voices: ""    # dir of voice .pt files      or LOCITIZE_KOKORO_VOICES_PATH
   venv: ""             # expected venv path; "" = detect the current interpreter
-  model_store: ""      # shared model folder ("" = the AI Models folder on the system drive)
+  model_store: ""      # Models folder; "" = %SystemDrive%\AI\Models; LOCITIZE_MODEL_STORE overrides
 
 ports:
   allocation: auto   # auto (increment within range on conflict) | strict (fail)
@@ -249,7 +249,7 @@ models_hub:
   search_limit: 100             # results per Search press
   search_timeout_s: 15          # per-request timeout for search/listing
   catalog_path: ""              # "" -> the installed model_catalog.json
-  download_dir: ""              # "" -> <data root>/models
+  download_dir: ""              # deprecated migration input; use paths.model_store
   min_free_disk_headroom_mb: 2048  # free space needed BEYOND the model's own size
   # RESERVED, NOT IMPLEMENTED YET. Resuming a cancelled download (a .partial
   # plus a sidecar, per Architecture M14.14.3) is designed but not built, so

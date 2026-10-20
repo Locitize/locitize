@@ -35,6 +35,7 @@ from webui import (
     build_openwebui_spec,
     resolve_chat_choice,
     webui_available,
+    webui_install_state,
 )
 
 
@@ -79,12 +80,11 @@ def test_chat_chooser_openwebui_installed_not_ready_offers_start():
     assert result.reason == "Open WebUI is installed but not running"
 
 
-def test_chat_chooser_openwebui_not_installed_degrades_with_remedy():
-    """preferred=openwebui but not installed -> DEGRADE_TO_LLAMACPP with a remedy."""
+def test_chat_chooser_openwebui_not_installed_offers_install():
+    """The default rich chat offers its explicit installer when missing."""
     result = resolve_chat_choice("openwebui", None, True, False, False)
-    assert result.decision is ChatDecision.DEGRADE_TO_LLAMACPP
+    assert result.decision is ChatDecision.OFFER_INSTALL_OPENWEBUI
     assert "not installed" in result.reason
-    assert "docs/chat.md" in result.reason
 
 
 def test_chat_chooser_ask_presents_choice_when_openwebui_installed():
@@ -96,11 +96,16 @@ def test_chat_chooser_ask_presents_choice_when_openwebui_installed():
         assert result.reason == ""
 
 
-def test_chat_chooser_ask_collapses_to_llamacpp_when_openwebui_absent():
-    """preferred=ask but Open WebUI not installed -> OPEN_LLAMACPP (nothing to ask)."""
+def test_chat_chooser_ask_offers_install_when_openwebui_absent():
+    """Ask mode still offers the agreed rich-chat install when it is absent."""
     result = resolve_chat_choice("ask", None, True, False, False)
-    assert result.decision is ChatDecision.OPEN_LLAMACPP
+    assert result.decision is ChatDecision.OFFER_INSTALL_OPENWEBUI
     assert "not installed" in result.reason
+
+
+def test_chat_chooser_missing_openwebui_offers_install_without_a_model():
+    result = resolve_chat_choice("openwebui", None, False, False, False)
+    assert result.decision is ChatDecision.OFFER_INSTALL_OPENWEBUI
 
 
 def test_chat_chooser_cli_override_beats_persisted_preference():
@@ -175,7 +180,14 @@ def _fake_codebase(tmp_path: Path, *, install: bool = True) -> Settings:
     if install:
         scripts = tmp_path / "Codebase" / ".webui-venv" / "Scripts"
         scripts.mkdir(parents=True)
+        (scripts / "python.exe").write_bytes(b"fake python")
         (scripts / "open-webui.exe").write_bytes(b"fake console script")
+        metadata = (
+            tmp_path / "Codebase" / ".webui-venv" / "Lib" / "site-packages"
+            / "open_webui-0.11.4.dist-info" / "METADATA"
+        )
+        metadata.parent.mkdir(parents=True)
+        metadata.write_text("Name: open-webui\nVersion: 0.11.4\n", encoding="utf-8")
     return settings
 
 
@@ -310,6 +322,18 @@ def test_openwebui_spec_webui_available_reflects_install_and_enabled(tmp_path):
 
     missing = _fake_codebase(tmp_path / "other", install=False)
     assert webui_available(missing) is False
+
+
+def test_openwebui_install_state_distinguishes_missing_partial_installed(tmp_path):
+    missing = _fake_codebase(tmp_path / "missing", install=False)
+    assert webui_install_state(missing) == "missing"
+    partial = _fake_codebase(tmp_path / "partial", install=False)
+    scripts = tmp_path / "partial" / "Codebase" / ".webui-venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "python.exe").touch()
+    assert webui_install_state(partial) == "partial"
+    installed = _fake_codebase(tmp_path / "installed")
+    assert webui_install_state(installed) == "installed"
 
 
 # --------------------------------------------------------------------------- #

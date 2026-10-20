@@ -997,6 +997,8 @@ class GuiController:
         speak_fn: Callable[[str, str], tuple[bool, str]] | None = None,
         proxy_factory: Callable[..., Any] | None = None,
         openwebui_start_fn: Callable[[], bool] | None = None,
+        openwebui_lock: threading.Lock | None = None,
+        openwebui_installer_factory: Callable[..., Any] | None = None,
         assistant_start_fn: Callable[[AssistantEvents, str, bool], Any] | None = None,
         describe_fn: Callable[[str, str], tuple[bool, str]] | None = None,
         memory_search_fn: Callable[[str], list[dict[str, Any]]] | None = None,
@@ -1024,6 +1026,9 @@ class GuiController:
         # injected means gui_controller drives the service without gui.py touching
         # any subprocess/HTTP code (presentation discipline, Reviewer G1).
         self._openwebui_start_fn = openwebui_start_fn
+        self._openwebui_lock = openwebui_lock or threading.Lock()
+        self._openwebui_installer_factory = openwebui_installer_factory
+        self._openwebui_installer: Any = None
         # speak_fn(text, voice) -> (ok, detail) runs the real Kokoro synthesize+play
         # off the UI thread. The launcher supplies the real one (reusing the M6 TTS
         # path on the SHARED ServiceManager, so no orphan); tests supply a fake, so
@@ -1998,6 +2003,71 @@ class GuiController:
             cancel = self._hub_cancel
         cancel.set()
 
+    def model_store_path(self) -> str:
+        """Current effective Models folder; resolving it performs no I/O."""
+        from config import resolve_model_store
+
+        return str(resolve_model_store(self._settings))
+
+    def request_model_store_change(self, path: str) -> None:
+        """Validate and save a new Models folder on the ops worker."""
+        self.command_q.put(Command("model_store_change", {"path": path}))
+
+    def openwebui_install_state(self) -> str:
+        from webui import webui_install_state
+
+        return webui_install_state(self._settings)
+
+    def request_openwebui_install(self) -> None:
+        """Start the dedicated installer after the view obtained consent."""
+        if self._openwebui_installer is None:
+            if self._openwebui_installer_factory is not None:
+                self._openwebui_installer = self._openwebui_installer_factory(
+                    self._settings, self._openwebui_lock
+                )
+            else:
+                from openwebui_install import OpenWebUIInstaller
+
+                self._openwebui_installer = OpenWebUIInstaller(
+                    self._settings, self._openwebui_lock,
+                    stop_fn=self._stop_managed_openwebui,
+                )
+
+        def progress(payload: dict[str, Any]) -> None:
+            self.result_q.put(Result("openwebui_install_progress", True, payload))
+
+        def done(outcome: Any) -> None:
+            payload = {
+                "state": outcome.state,
+                "message": outcome.message,
+                "log_path": outcome.log_path,
+            }
+            self.result_q.put(Result(
+                "openwebui_install_done", outcome.ok, payload,
+                error=None if outcome.ok else outcome.message,
+            ))
+            if outcome.ok and not self._shutdown_started:
+                self.command_q.put(Command("start_openwebui"))
+
+        if not self._openwebui_installer.start(progress, done):
+            self.result_q.put(Result(
+                "openwebui_install_done", False,
+                {"state": "refused", "message": "Open WebUI installation is already running."},
+                error="Open WebUI installation is already running.",
+            ))
+
+    def cancel_openwebui_install(self) -> None:
+        installer = self._openwebui_installer
+        if installer is not None:
+            installer.cancel()
+
+    def _stop_managed_openwebui(self) -> None:
+        """Stop LOCITIZE's registered instance before its venv is modified."""
+        try:
+            self._manager.stop("openwebui")
+        except (KeyError, ValueError):
+            pass
+
     def request_finetune_state(self) -> None:
         """Enqueue a refresh of the Fine-tune page's lifecycle state.
 
@@ -2313,17 +2383,23 @@ class GuiController:
         checks here (it is the controller, not the presentation shell); gui.py stays
         free of subprocess/HTTP/yaml.
         """
-        from webui import ChatDecision, resolve_chat_choice, webui_available
+        from webui import (
+            ChatDecision,
+            resolve_chat_choice,
+            webui_enabled,
+            webui_install_state,
+        )
 
-        installed = webui_available(self._settings)
-        ready = installed and self._openwebui_listening()
+        installed = webui_install_state(self._settings) == "installed"
+        enabled = webui_enabled(self._settings)
+        ready = installed and enabled and self._openwebui_listening()
         # With the router on, Open WebUI lists every model and loading one is a
         # pick in its own picker - so Open WebUI needs no model running first.
         # The built-in llama.cpp page still does (it IS the running model).
         router_on = bool(getattr(getattr(self._settings, "router", None), "enabled", False))
         preferred = (self._settings.chat.preferred_ui or "").strip().lower()
         backend_ready = self._active_port is not None or (
-            router_on and installed and preferred == "openwebui"
+            router_on and installed and enabled and preferred == "openwebui"
         )
         resolution = resolve_chat_choice(
             preferred=self._settings.chat.preferred_ui,
@@ -2331,6 +2407,7 @@ class GuiController:
             model_running=backend_ready,
             webui_installed=installed,
             webui_ready=ready,
+            webui_enabled=enabled,
         )
         decision = resolution.decision
         if decision is ChatDecision.NO_MODEL:
@@ -2356,6 +2433,11 @@ class GuiController:
                            "database and can take a few minutes)...",
             }))
             self.command_q.put(Command("start_openwebui"))
+        elif decision is ChatDecision.OFFER_INSTALL_OPENWEBUI:
+            self.result_q.put(Result("chat_offer_install", True, {
+                "reason": resolution.reason,
+                "simple_available": self._active_port is not None,
+            }))
 
     def open_chat(self, choice: str | None = None, remember: bool = False) -> None:
         """Open the chosen chat UI, optionally remembering the choice (M9.3/M9.4).
@@ -2752,6 +2834,7 @@ class GuiController:
         # (0b) M14.14.3: stop a live model download the same way the user's Cancel
         #      does, and join it with a bounded wait.
         step("download", self._shutdown_hub_thread)
+        step("openwebui_installer", self._shutdown_openwebui_installer)
         # (0c) cancel a running auto-tune (owner request 2026-08-22). Without
         #      this, closing the window during a tune would leave the ops worker
         #      inside a multi-minute trial: the bounded join below would time
@@ -2836,6 +2919,11 @@ class GuiController:
         nothing (request_autotune_context clears it before every run).
         """
         self._autotune_cancel.set()
+
+    def _shutdown_openwebui_installer(self) -> None:
+        installer = getattr(self, "_openwebui_installer", None)
+        if installer is not None:
+            installer.shutdown()
 
     def _shutdown_signal_workers(self) -> None:
         """Teardown step 1: wake the monitor and break the ops worker's get()."""
@@ -2980,6 +3068,8 @@ class GuiController:
             self._do_hub_download(command.payload)
         elif command.kind == "hub_cancel":
             self._do_hub_cancel()
+        elif command.kind == "model_store_change":
+            self._do_model_store_change(command.payload.get("path", ""))
 
     # ---- M14.14 model acquisition handlers (ops worker, Thread B) --------- #
 
@@ -2999,6 +3089,50 @@ class GuiController:
                     system_provider=self._sys_provider,
                 )
         return self._hub_downloader
+
+    def _do_model_store_change(self, requested: str) -> None:
+        """Save a validated store and invalidate the cached downloader."""
+        with self._hub_lock:
+            if self._hub_thread is not None and self._hub_thread.is_alive():
+                self.result_q.put(Result(
+                    "model_store_change", False, {},
+                    error="Wait for the current model download to finish or cancel it first.",
+                ))
+                return
+            import setup_env
+            from config import write_model_store
+
+            checked = setup_env.validate_model_store(requested)
+            if not checked.ok:
+                self.result_q.put(Result(
+                    "model_store_change", False, {}, error=checked.message
+                ))
+                return
+            effective = checked.message
+            try:
+                write_model_store(self._settings.data_dir, effective)
+            except (OSError, ValueError) as exc:
+                self.result_q.put(Result(
+                    "model_store_change", False, {}, error=str(exc)
+                ))
+                return
+            self._settings.paths.model_store = effective
+            self._settings.models_hub.download_dir = ""
+            self._hub_downloader = None
+        source_drive = os.path.splitdrive(str(self._settings.data_dir))[0].casefold()
+        store_drive = os.path.splitdrive(effective)[0].casefold()
+        link_note = ""
+        if effective.startswith("\\\\") or (
+            source_drive and store_drive and source_drive != store_drive
+        ):
+            link_note = (
+                " Files found on another drive are registered where they are "
+                "because Windows hardlinks cannot cross drives."
+            )
+        self.result_q.put(Result(
+            "model_store_change", True, {"path": effective,
+            "message": f"Models folder saved: {effective}{link_note}"}
+        ))
 
     def _do_hub_catalog(self) -> None:
         """Publish the shipped catalog from disk (page paint; no egress)."""
@@ -3179,19 +3313,6 @@ class GuiController:
             return
         if payload.get("register"):
             self._hub_register(done, outcome)
-        # M22: give the shared model store a name for the finished file.
-        # A hardlink when possible (zero bytes), silently skipped when the
-        # store is on another volume or missing - never a second copy and
-        # never a failure after a download that already succeeded.
-        try:
-            import setup_env
-
-            if done.get("path") and setup_env.model_store_path().is_dir():
-                setup_env.place_into_models_dir(
-                    done["path"], setup_env.model_store_path()
-                )
-        except Exception:  # noqa: BLE001 - cosmetic convenience only
-            pass
         self.result_q.put(Result("hub_download_done", True, done))
 
     def _hub_register(self, done: dict[str, Any], outcome: Any) -> None:

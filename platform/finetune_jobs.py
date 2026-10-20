@@ -182,6 +182,7 @@ def _download_status_result(model: str, proc: subprocess.CompletedProcess) -> di
         "model": model, "cached": False, "total_bytes": None,
         "missing_bytes": None, "gated": False, "error": None,
         "cache_state": "missing",
+        "cache_dir": "",
     }
     data = _last_json_line(proc.stdout)
     if not isinstance(data, dict) or not data:
@@ -203,6 +204,7 @@ def _download_status_result(model: str, proc: subprocess.CompletedProcess) -> di
         value = result.get(key)
         result[key] = value if isinstance(value, int) and value >= 0 else None
     result["error"] = str(result["error"]) if result.get("error") else None
+    result["cache_dir"] = str(result.get("cache_dir") or "")
     return result
 
 
@@ -211,6 +213,7 @@ def _download_status_fallback(model: str, error: str) -> dict:
         "model": model, "cached": False, "total_bytes": None,
         "missing_bytes": None, "gated": False, "error": error,
         "cache_state": "missing",
+        "cache_dir": "",
     }
 
 

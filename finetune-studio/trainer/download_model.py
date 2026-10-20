@@ -219,8 +219,12 @@ def local_model_status(model: str, cache_info=None) -> dict:
         "missing_bytes": None,
         "gated": False,
         "error": None,
+        "cache_dir": "",
     }
     try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        result["cache_dir"] = str(HF_HUB_CACHE)
         if cache_info is None:
             from huggingface_hub import scan_cache_dir
 
@@ -255,8 +259,12 @@ def model_status(model: str, api=None, cache_lookup=None) -> dict:
         "missing_bytes": None,
         "gated": False,
         "error": None,
+        "cache_dir": "",
     }
     try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        result["cache_dir"] = str(HF_HUB_CACHE)
         info, files, missing, _revision = _inspect(model, api=api, cache_lookup=cache_lookup)
         result.update(
             cached=not missing,

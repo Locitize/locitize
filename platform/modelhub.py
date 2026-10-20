@@ -1462,7 +1462,7 @@ class Downloader:
                 "reason": (
                     f"could not check free space for '{target_dir}': {exc}. "
                     f"Make sure that folder exists and you can write to it, or "
-                    f"set models_hub.download_dir in settings.yaml to another "
+                    f"set paths.model_store in settings.yaml to another "
                     f"location, then press Download again."
                 ),
             }
@@ -1480,7 +1480,7 @@ class Downloader:
                     f"{(needed_mb + headroom) / 1024:.1f} GB needed "
                     f"(the model plus {headroom / 1024:.1f} GB headroom). "
                     f"Free up space on that drive, or set "
-                    f"models_hub.download_dir in settings.yaml to a drive with "
+                    f"paths.model_store in settings.yaml to a drive with "
                     f"more room, then press Download again."
                 )
             ),
@@ -1648,7 +1648,7 @@ class Downloader:
                 error=(
                     f"could not create the models folder '{target_dir}': {exc}. "
                     f"Check that you can write to that location, or set "
-                    f"models_hub.download_dir in settings.yaml to a folder you "
+                    f"paths.model_store in settings.yaml to a folder you "
                     f"own, then press Download again."
                 ),
             )

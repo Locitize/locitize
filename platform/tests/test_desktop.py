@@ -2,6 +2,7 @@
 
 import os
 import queue
+from pathlib import Path
 from types import SimpleNamespace
 
 import gui_controller
@@ -206,6 +207,46 @@ def test_model_table_defaults_to_fastest_generation_throughput(qapp):
     assert window._model_table.item(0, 0).text() == "Local Code"
     assert window._model_table.item(1, 0).text() == "Local Chat"
 
+    window.closeEvent(qt_gui.QCloseEvent())
+    window.deleteLater()
+
+
+def test_consumer_settings_show_models_folder_and_missing_webui_banner(qapp):
+    app, desktop, qt_gui = qapp
+    fake = FakeGuiController()
+    fake.model_store_path = lambda: str(Path("model-store"))
+    fake.openwebui_install_state = lambda: "missing"
+    window = desktop.MainWindow(fake, health="OK")
+    window.show()
+    app.processEvents()
+    assert window._model_store_edit.text().endswith("model-store")
+    assert window._model_store_edit.isReadOnly()
+    assert window._openwebui_banner.isVisible()
+    assert window._openwebui_install_btn.text() == "Install Open WebUI"
+    window.closeEvent(qt_gui.QCloseEvent())
+    window.deleteLater()
+
+
+def test_openwebui_install_offer_disables_simple_chat_without_model(qapp, monkeypatch):
+    app, desktop, qt_gui = qapp
+    fake = FakeGuiController()
+    fake.openwebui_install_state = lambda: "missing"
+    window = desktop.MainWindow(fake, health="OK")
+    captured = {}
+
+    class Rejected:
+        def exec(self):
+            return desktop.QtWidgets.QDialog.DialogCode.Rejected
+
+    def inspect(dialog):
+        buttons = dialog.findChildren(desktop.QtWidgets.QPushButton)
+        simple = next(button for button in buttons if "simple chat" in button.text())
+        captured["enabled"] = simple.isEnabled()
+        return Rejected()
+
+    monkeypatch.setattr(desktop, "harden_text_rendering", inspect)
+    window._show_openwebui_install_offer("Open WebUI is not installed yet.", False)
+    assert captured["enabled"] is False
     window.closeEvent(qt_gui.QCloseEvent())
     window.deleteLater()
     app.processEvents()

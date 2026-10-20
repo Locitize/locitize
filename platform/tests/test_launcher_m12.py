@@ -220,6 +220,7 @@ def test_run_desktop_wires_one_shared_manager_and_final_cleanup(monkeypatch):
         "listen_fn",
         "speak_fn",
         "openwebui_start_fn",
+            "openwebui_lock",
         "assistant_start_fn",
         "describe_fn",
         "memory_search_fn",

@@ -11,8 +11,10 @@ are identified as such.
 
 Package installers, optional pip/npm environments, vendor coding CLI installers,
 browsers, Open WebUI plugins, and launched coding tools can make their own network
-requests. The locitize egress ledger is not a machine-wide firewall or a complete
-record of those processes. Pointing inference at localhost does not disable a
+requests. The desktop records explicit Open WebUI installer events, including the
+requested pin and expected package endpoints, but does not claim to observe every
+connection pip makes. The locitize egress ledger is not a machine-wide firewall or
+a complete record of those processes. Pointing inference at localhost does not disable a
 tool's telemetry, extensions, authentication, or network tools.
 
 The Sessions page reads existing local histories when opened. It does not invoke

@@ -2215,6 +2215,32 @@ class MainWindow(QtWidgets.QMainWindow):
         features_body.addLayout(wizard_row)
         layout.addWidget(features_panel)
 
+        # ---- Models folder --------------------------------------------
+        models_folder, models_folder_body = self._panel()
+        self._section(
+            models_folder_body,
+            "Models folder",
+            "New model downloads and setup imports go here. Existing model "
+            "list entries stay where they are.",
+        )
+        folder_row = QtWidgets.QHBoxLayout()
+        current_store = ""
+        if hasattr(self._gc, "model_store_path"):
+            current_store = self._gc.model_store_path()
+        self._model_store_edit = QtWidgets.QLineEdit(current_store)
+        self._model_store_edit.setReadOnly(True)
+        self._model_store_edit.setAccessibleName("Models folder")
+        folder_row.addWidget(self._model_store_edit, 1)
+        self._model_store_change = QtWidgets.QPushButton("Change...")
+        self._model_store_change.clicked.connect(self._on_change_model_store)
+        folder_row.addWidget(self._model_store_change)
+        models_folder_body.addLayout(folder_row)
+        self._model_store_note = QtWidgets.QLabel("")
+        self._model_store_note.setObjectName("muted")
+        self._model_store_note.setWordWrap(True)
+        models_folder_body.addWidget(self._model_store_note)
+        layout.addWidget(models_folder)
+
         # ---- Coding tools -------------------------------------------------
         clis_panel, clis_body = self._panel()
         self._section(
@@ -2348,6 +2374,25 @@ class MainWindow(QtWidgets.QMainWindow):
             self._gc.request_feature_state()
         layout.addStretch(1)
         return self._scrollable(page)
+
+    def _on_change_model_store(self):
+        current = self._model_store_edit.text().strip()
+        chosen = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Choose your Models folder", current
+        )
+        if not chosen:
+            return
+        self._model_store_change.setEnabled(False)
+        self._model_store_note.setText("Checking the folder...")
+        self._gc.request_model_store_change(chosen)
+
+    def _apply_model_store_change(self, result):
+        self._model_store_change.setEnabled(True)
+        if not result.ok:
+            self._model_store_note.setText(result.error or "Could not save the Models folder.")
+            return
+        self._model_store_edit.setText(result.payload.get("path", ""))
+        self._model_store_note.setText(result.payload.get("message", "Models folder saved."))
 
     def _phone_access_text(self):
         """Plain status for the Settings > Phone access section."""
@@ -2502,6 +2547,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
         chat_card, chat_body = self._panel()
         self._section(chat_body, "2. Chat")
+        self._openwebui_banner = QtWidgets.QFrame()
+        banner_layout = QtWidgets.QHBoxLayout(self._openwebui_banner)
+        banner_layout.setContentsMargins(0, 0, 0, 8)
+        self._openwebui_banner_text = QtWidgets.QLabel(
+            "Open WebUI is not installed yet. Add richer chat with history and uploads."
+        )
+        self._openwebui_banner_text.setWordWrap(True)
+        banner_layout.addWidget(self._openwebui_banner_text, 1)
+        self._openwebui_install_btn = QtWidgets.QPushButton("Install Open WebUI")
+        self._openwebui_install_btn.clicked.connect(self._on_openwebui_banner_install)
+        banner_layout.addWidget(self._openwebui_install_btn)
+        self._openwebui_cancel_btn = QtWidgets.QPushButton("Cancel")
+        self._openwebui_cancel_btn.clicked.connect(self._on_openwebui_install_cancel)
+        self._openwebui_cancel_btn.setVisible(False)
+        banner_layout.addWidget(self._openwebui_cancel_btn)
+        chat_body.addWidget(self._openwebui_banner)
+        self._refresh_openwebui_banner()
         self._chat_hint = QtWidgets.QLabel("")
         self._chat_hint.setObjectName("muted")
         self._chat_hint.setWordWrap(True)
@@ -4762,6 +4824,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self._apply_hub_progress(result)
         elif kind == "hub_download_done":
             self._apply_hub_done(result)
+        elif kind == "model_store_change":
+            self._apply_model_store_change(result)
+        elif kind == "openwebui_install_progress":
+            self._apply_openwebui_install_progress(result)
+        elif kind == "openwebui_install_done":
+            self._apply_openwebui_install_done(result)
         elif kind == "chat":
             self._apply_chat_result(result)
         elif kind == "chat_status":
@@ -4771,6 +4839,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._show_chat_chooser()
         elif kind == "chat_offer_start":
             self._show_openwebui_start_offer(result.payload.get("reason", ""))
+        elif kind == "chat_offer_install":
+            self._show_openwebui_install_offer(
+                result.payload.get("reason", ""),
+                bool(result.payload.get("simple_available")),
+            )
         elif kind == "launch_harness":
             self._apply_launch_harness_result(result)
         elif kind == "install_harness":
@@ -5298,6 +5371,120 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Starting Open WebUI. The first start can take up to 5 minutes..."
             )
             self._gc.start_openwebui_and_open(remember.isChecked())
+
+    def _refresh_openwebui_banner(self):
+        state_reader = getattr(self._gc, "openwebui_install_state", None)
+        state = state_reader() if callable(state_reader) else "installed"
+        missing = state in ("missing", "partial")
+        self._openwebui_banner.setVisible(missing)
+        if missing:
+            self._openwebui_banner_text.setText(
+                "Open WebUI is not installed yet. Add richer chat with history and uploads."
+                if state == "missing"
+                else "Open WebUI setup is incomplete. Install it again to repair it."
+            )
+
+    def _on_openwebui_banner_install(self):
+        simple_available = bool(getattr(self._gc, "_active_port", None))
+        self._show_openwebui_install_offer("", simple_available)
+
+    def _show_openwebui_install_offer(self, reason, simple_available):
+        """Collect explicit consent before the external pip installer can run."""
+        import setup_plan
+
+        estimate = setup_plan.format_size(
+            int(setup_plan.REQUIREMENTS["webui_pip"].size_mb or 0)
+        )
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Install Open WebUI?")
+        dialog.setModal(True)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        message = QtWidgets.QLabel(
+            (reason + "\n\n" if reason else "")
+            + "This installs the pinned Open WebUI package in its own environment. "
+            + f"The estimated download is {estimate}."
+        )
+        message.setWordWrap(True)
+        layout.addWidget(message)
+        if not simple_available:
+            note = QtWidgets.QLabel(
+                "Simple chat is unavailable until a model is running. You can install "
+                "Open WebUI now, or cancel and start a model first."
+            )
+            note.setObjectName("muted")
+            note.setWordWrap(True)
+            layout.addWidget(note)
+        buttons = QtWidgets.QHBoxLayout()
+        install = QtWidgets.QPushButton("Install")
+        install.setObjectName("primaryButton")
+        simple = QtWidgets.QPushButton("Use the simple chat this time")
+        simple.setEnabled(simple_available)
+        cancel = QtWidgets.QPushButton("Cancel")
+        choice = {"value": ""}
+
+        def accept(value):
+            choice["value"] = value
+            dialog.accept()
+
+        install.clicked.connect(lambda: accept("install"))
+        simple.clicked.connect(lambda: accept("simple"))
+        cancel.clicked.connect(dialog.reject)
+        buttons.addWidget(install)
+        buttons.addWidget(simple)
+        buttons.addStretch(1)
+        buttons.addWidget(cancel)
+        layout.addLayout(buttons)
+        if harden_text_rendering(dialog).exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        if choice["value"] == "simple":
+            self._gc.open_chat("llamacpp", False)
+            return
+        self._openwebui_banner.setVisible(True)
+        self._openwebui_banner_text.setText("Starting Open WebUI installation...")
+        self._openwebui_install_btn.setEnabled(False)
+        self._openwebui_cancel_btn.setVisible(True)
+        self._gc.request_openwebui_install()
+
+    def _on_openwebui_install_cancel(self):
+        self._openwebui_banner_text.setText("Cancelling Open WebUI installation...")
+        self._openwebui_cancel_btn.setEnabled(False)
+        self._gc.cancel_openwebui_install()
+
+    def _apply_openwebui_install_progress(self, result):
+        message = result.payload.get("message", "Installing Open WebUI...")
+        self._openwebui_banner.setVisible(True)
+        self._openwebui_banner_text.setText(message)
+        self._openwebui_install_btn.setEnabled(False)
+        self._openwebui_cancel_btn.setEnabled(True)
+        self._openwebui_cancel_btn.setVisible(True)
+
+    def _apply_openwebui_install_done(self, result):
+        self._openwebui_install_btn.setEnabled(True)
+        self._openwebui_cancel_btn.setEnabled(True)
+        self._openwebui_cancel_btn.setVisible(False)
+        if result.ok:
+            self._openwebui_banner.setVisible(False)
+            self._model_status.setText(
+                "Open WebUI is installed. Starting it now..."
+            )
+            return
+        self._refresh_openwebui_banner()
+        self._openwebui_banner_text.setText(
+            result.error or "Open WebUI installation did not finish."
+        )
+        log_path = result.payload.get("log_path", "")
+        if log_path:
+            box = QtWidgets.QMessageBox(self)
+            box.setWindowTitle("Open WebUI was not installed")
+            box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+            box.setText(result.error or "Open WebUI installation did not finish.")
+            open_logs = box.addButton("Open log folder", QtWidgets.QMessageBox.ButtonRole.ActionRole)
+            box.addButton(QtWidgets.QMessageBox.StandardButton.Close)
+            harden_text_rendering(box).exec()
+            if box.clickedButton() is open_logs:
+                QtGui.QDesktopServices.openUrl(
+                    QtCore.QUrl.fromLocalFile(str(Path(log_path).parent))
+                )
 
     def _on_assistant_started(self, payload):
         """Unlock session controls only after the controller reports readiness."""

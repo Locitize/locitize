@@ -598,12 +598,12 @@ class ModelsHubConfig:
 
     Drives the Models page's "Get models" section: browsing a shipped catalog,
     searching HuggingFace on an explicit press, and downloading one verified
-    GGUF into the data root's models/ directory.
+    GGUF into the canonical paths.model_store directory.
 
     Every default here is safe and machine-independent, so M14.2's "no
     machine-specific default ships" rule is satisfied by construction:
-    download_dir ships blank (meaning <data root>/models) and catalog_path ships
-    blank (meaning the installed model_catalog.json).
+    download_dir ships blank and is retained only as a legacy migration input;
+    catalog_path ships blank (meaning the installed model_catalog.json).
 
     - enabled: false -> the Get models section renders a disabled state and no
       network call is reachable at all
@@ -901,21 +901,26 @@ def resolve_data_dir(
 
 
 def resolve_models_dir(settings: "Settings") -> Path:
-    """Return the one directory downloaded model files may be written into.
+    """Compatibility alias for the canonical model-store resolver."""
+    return resolve_model_store(settings)
 
-    Blank models_hub.download_dir (the shipped default) means <data root>/models,
-    which keeps every downloaded byte inside the single folder M14.2.3 made the
-    user's whole backup story. An explicitly configured download_dir is honoured
-    as-is so a user can put tens of gigabytes on another drive.
 
-    This resolves a location; it creates nothing and validates nothing. The
-    caller confines the final file path with modelhub.resolve_destination, which
-    is where the escape-proofing actually lives.
+def resolve_model_store(settings: "Settings") -> Path:
+    """Return the single configured folder for new GGUF downloads and imports.
+
+    ``paths.model_store`` is authoritative. A nonblank legacy
+    ``models_hub.download_dir`` is accepted only when the canonical value is
+    blank, so an older owner config keeps working until it is saved through
+    ``write_model_store``. Resolution creates nothing.
     """
-    configured = str(getattr(settings.models_hub, "download_dir", "") or "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return Path(settings.data_dir) / "models"
+    configured = str(getattr(settings.paths, "model_store", "") or "").strip()
+    legacy = str(getattr(settings.models_hub, "download_dir", "") or "").strip()
+    chosen = configured or legacy
+    if chosen:
+        return Path(os.path.expandvars(chosen)).expanduser()
+    from setup_env import MODEL_STORE_DEFAULT
+
+    return Path(MODEL_STORE_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -1219,6 +1224,7 @@ _PATH_ENV = {
     "LOCITIZE_KOKORO_MODEL_PATH": "kokoro_model",
     "LOCITIZE_KOKORO_VOICES_PATH": "kokoro_voices",
     "LOCITIZE_VENV_PATH": "venv",
+    "LOCITIZE_MODEL_STORE": "model_store",
 }
 
 # Env var -> ports field.
@@ -1258,7 +1264,8 @@ def _apply_env_overrides(
             environ["LOCITIZE_PORTS_FINETUNE"], settings.finetune.port
         )
 
-    # M14 model-acquisition overrides. Exactly TWO keys (DEC-M14-10), and
+    # M14 model-acquisition override. The feature switch remains here; the
+    # destination moved to the normal paths mapping as LOCITIZE_MODEL_STORE.
     # deliberately neither allowed_hosts nor api_base: a control that decides
     # WHO LOCITIZE will talk to may be widened only from a file the user owns and
     # can audit, never from the environment. An environment variable can be set
@@ -1268,15 +1275,19 @@ def _apply_env_overrides(
     # refused unless allowed_hosts names its host), and HubConfig's api_base
     # constructor argument remains the test seam.
     #
-    # The two that stay select a LOCATION rather than a counterparty:
-    # download_dir relocates a confinement root whose destination is still
-    # confined by resolve_destination, and enabled turns the feature off.
     if "LOCITIZE_MODELS_HUB_ENABLED" in environ:
         settings.models_hub.enabled = _env_flag(
             environ["LOCITIZE_MODELS_HUB_ENABLED"], settings.models_hub.enabled
         )
-    if environ.get("LOCITIZE_MODELS_HUB_DOWNLOAD_DIR"):
-        settings.models_hub.download_dir = environ["LOCITIZE_MODELS_HUB_DOWNLOAD_DIR"]
+    # Retained for one compatibility cycle. It feeds the canonical field only
+    # when the new variable was not supplied.
+    if (environ.get("LOCITIZE_MODELS_HUB_DOWNLOAD_DIR")
+            and not environ.get("LOCITIZE_MODEL_STORE")):
+        settings.paths.model_store = environ["LOCITIZE_MODELS_HUB_DOWNLOAD_DIR"]
+        issues.append(ConfigIssue(
+            "WARNING", SETTINGS_FILE,
+            "LOCITIZE_MODELS_HUB_DOWNLOAD_DIR is deprecated; use LOCITIZE_MODEL_STORE",
+        ))
 
     # Per-model location override: LOCITIZE_MODEL_<ID> where <ID> is the model id
     # uppercased with non-alphanumeric characters turned into underscores.
@@ -1362,6 +1373,23 @@ def _validate(
                 f"{list(SUPPORTED_SETTINGS_VERSIONS)}; parsing it anyway",
             )
         )
+    canonical_store = str(getattr(settings.paths, "model_store", "") or "").strip()
+    legacy_store = str(getattr(settings.models_hub, "download_dir", "") or "").strip()
+    if legacy_store:
+        if canonical_store and Path(canonical_store) != Path(legacy_store):
+            issues.append(ConfigIssue(
+                "WARNING", SETTINGS_FILE,
+                "paths.model_store and legacy models_hub.download_dir differ; "
+                "paths.model_store is used",
+            ))
+        elif not canonical_store:
+            settings.paths.model_store = legacy_store
+            issues.append(ConfigIssue(
+                "WARNING", SETTINGS_FILE,
+                "models_hub.download_dir is deprecated; its value was migrated "
+                "to paths.model_store for this session",
+            ))
+
     ports = settings.ports
     if ports.allocation not in VALID_PORT_ALLOCATION:
         issues.append(
@@ -2942,6 +2970,46 @@ def write_openwebui_enabled(base_dir: Path | str, enabled: bool) -> None:
             "file left unchanged"
         )
 
+    _atomic_write(path, new_text)
+
+
+def write_model_store(base_dir: Path | str, model_store: Path | str) -> None:
+    """Rewrite only ``paths.model_store`` and clear the legacy destination.
+
+    The edit is targeted, comment-preserving and atomic. Clearing the legacy
+    scalar in the same verified write prevents two destination authorities from
+    reappearing after the next load.
+    """
+    value = str(model_store).strip()
+    if not value:
+        raise ValueError("the Models folder cannot be blank")
+    base = Path(base_dir)
+    path = base / SETTINGS_FILE
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    start, end = _locate_top_section(lines, "paths")
+    if start is None:
+        raise ValueError("'paths:' section not found in settings.yaml")
+    key_idx = _find_key_line(lines, start + 1, end, "model_store")
+    if key_idx is None:
+        raise ValueError("could not locate paths.model_store in settings.yaml")
+    safe_value = yaml.safe_dump(
+        value, default_style='"', width=10**9
+    ).split("\n", 1)[0]
+    lines[key_idx] = _replace_value_line(lines[key_idx], safe_value, quote=False)
+
+    legacy_start, legacy_end = _locate_top_section(lines, "models_hub")
+    if legacy_start is not None:
+        legacy_idx = _find_key_line(lines, legacy_start + 1, legacy_end, "download_dir")
+        if legacy_idx is not None:
+            lines[legacy_idx] = _replace_value_line(lines[legacy_idx], "", quote=True)
+
+    new_text = "".join(lines)
+    parsed = yaml.safe_load(new_text)
+    paths = parsed.get("paths", {}) if isinstance(parsed, dict) else {}
+    hub = parsed.get("models_hub", {}) if isinstance(parsed, dict) else {}
+    if (not isinstance(paths, dict) or str(paths.get("model_store", "")) != value
+            or (isinstance(hub, dict) and str(hub.get("download_dir", "") or ""))):
+        raise ValueError("post-write verification failed for paths.model_store")
     _atomic_write(path, new_text)
 
 

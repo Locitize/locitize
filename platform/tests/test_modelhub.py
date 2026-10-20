@@ -1929,7 +1929,7 @@ def test_modelhub_insufficient_space_message_ends_with_a_next_step():
     assert disk["ok"] is False
     assert "not enough free space" in disk["reason"]
     assert "Free up space" in disk["reason"]
-    assert "models_hub.download_dir" in disk["reason"]
+    assert "paths.model_store" in disk["reason"]
 
 
 # =========================================================================== #

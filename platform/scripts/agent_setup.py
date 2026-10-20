@@ -73,6 +73,19 @@ def main(argv: list[str] | None = None) -> int:
     actions = config.ensure_user_config(data_root, setup_env.BASE_DIR)
     say(f"[1/4] config seeded at {data_root} "
         f"({', '.join(a.kind for a in actions) or 'already present'})")
+    settings, _models, _issues = config.Config.load(data_root)
+    model_store = config.resolve_model_store(settings)
+    store = setup_env.ensure_model_store(model_store, say)
+    if not store.ok:
+        say(f"      FAILED Models folder: {store.message}")
+        return 1
+    saved_store = setup_env.write_model_store_via_venv(
+        sys.executable, data_root, store.message
+    )
+    if not saved_store.ok:
+        say(f"      FAILED to save Models folder: {saved_store.message}")
+        return 1
+    model_store = Path(store.message)
 
     # -- 2. llama.cpp --------------------------------------------------------
     has_gpu, gpu_name = setup_env.detect_nvidia()
@@ -96,8 +109,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # -- 3. the user's models ------------------------------------------------
-    found = setup_env.find_local_models(say=say)
-    models_dir = data_root / "models"
+    found = setup_env.find_local_models(say=say, model_store=model_store)
+    models_dir = model_store
     imported = skipped = failed = 0
     if not found:
         say("[3/4] no local GGUF models found; use the Models page (or the "
@@ -158,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
 
     say("")
     say("Done. Verify with: launcher.py --health --json")
-    store = setup_env.ensure_model_store(say)
+    store = setup_env.ensure_model_store(model_store, say)
     say(f"model store: {store.message}")
     # Headless setup never installs Claude Code. It only adds the local shim
     # when the user already has the vendor CLI on PATH.

@@ -302,6 +302,14 @@ class FineTuneFlow(QtWidgets.QWidget):
         body.addWidget(self.fit_chip)
         self.download_status_label = _label("Checking the local model cache...", muted=True)
         body.addWidget(self.download_status_label)
+        self.download_cache_dir = _label("", muted=True)
+        self.download_cache_dir.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.download_cache_open = QtWidgets.QPushButton("Open folder")
+        self.download_cache_open.setEnabled(False)
+        self.download_cache_open.clicked.connect(self._open_download_cache)
+        body.addLayout(_row(self.download_cache_dir, self.download_cache_open))
         self.download_button = _primary("Download model")
         self.download_button.clicked.connect(self._on_download_start)
         self.download_stop = QtWidgets.QPushButton("Stop")
@@ -403,7 +411,18 @@ class FineTuneFlow(QtWidgets.QWidget):
             }
         self._download_status_for = model
         self._download_status_data = result
+        cache_dir = str(result.get("cache_dir") or "")
+        self.download_cache_dir.setText(
+            f"Training model cache: {cache_dir}" if cache_dir else ""
+        )
+        self.download_cache_open.setEnabled(bool(cache_dir))
         self._refresh_download_controls()
+
+    def _open_download_cache(self):
+        status = self._download_status_data or {}
+        cache_dir = str(status.get("cache_dir") or "")
+        if cache_dir:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(cache_dir))
 
     def _refresh_download_controls(self):
         running = bool(self.download_job and self.download_job.running())
@@ -493,7 +512,7 @@ class FineTuneFlow(QtWidgets.QWidget):
             self,
             "Download base model?",
             f"Download {model}?\n\nDownload size: {self._format_bytes(size)}.\n"
-            "It will be stored in the standard Hugging Face cache used by training.",
+            "It will be stored in the training model cache shown above.",
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
             QtWidgets.QMessageBox.StandardButton.No,
         )

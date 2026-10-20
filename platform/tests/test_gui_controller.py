@@ -1983,14 +1983,17 @@ def test_open_openwebui_ready_routes_through_the_ops_worker():
 
     import webui as webui_mod
 
-    original_available = webui_mod.webui_available
+    original_state = webui_mod.webui_install_state
+    original_enabled = webui_mod.webui_enabled
     original_listening = gc._openwebui_listening
-    webui_mod.webui_available = lambda _s: True
+    webui_mod.webui_install_state = lambda _s: "installed"
+    webui_mod.webui_enabled = lambda _s: True
     gc._openwebui_listening = lambda: True
     try:
         gc.request_chat()
     finally:
-        webui_mod.webui_available = original_available
+        webui_mod.webui_install_state = original_state
+        webui_mod.webui_enabled = original_enabled
         gc._openwebui_listening = original_listening
 
     kinds = []
@@ -2150,7 +2153,8 @@ def test_chat_starts_open_webui_itself_instead_of_asking(monkeypatch):
     gc = _controller()
     gc._active_port = 8080
     gc._settings.chat.preferred_ui = "openwebui"
-    monkeypatch.setattr(webui_mod, "webui_available", lambda _s: True)
+    monkeypatch.setattr(webui_mod, "webui_install_state", lambda _s: "installed")
+    monkeypatch.setattr(webui_mod, "webui_enabled", lambda _s: True)
     monkeypatch.setattr(gc, "_openwebui_listening", lambda: False)
     gc.request_chat()
 
