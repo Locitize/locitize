@@ -1091,6 +1091,7 @@ class GuiController:
         # None entry records "location unset or file unstattable" so we never
         # re-stat a missing file every refresh.
         self._size_cache: dict[str, int | None] = {}
+        self._relink_missing_files()
 
         self._stop_event = threading.Event()
         self._ops_thread: threading.Thread | None = None
@@ -1206,7 +1207,44 @@ class GuiController:
         if errors:
             raise RuntimeError("; ".join(str(i) for i in errors[:3]))
         self._registry.reload(models)
+        self._relink_missing_files()
         return self.list_models()
+
+    def _relink_missing_files(self) -> None:
+        """Restore deleted model links from the Models folder (no copies, no yaml).
+
+        A model whose hardlink in the data root's models folder was deleted
+        while the original stays in the Models folder would otherwise show as
+        missing for good. Listed rows only - discovered fine-tunes are never
+        passed. Never raises: a failure just leaves the row reported missing.
+        """
+        try:
+            from config import resolve_model_store
+            from setup_env import relink_missing_model_files
+
+            data_dir = getattr(self._settings, "data_dir", None)
+            all_rows = getattr(self._registry, "all", None)
+            if not data_dir or all_rows is None:
+                return
+            relinked = relink_missing_model_files(
+                all_rows(),
+                resolve_model_store(self._settings),
+                Path(data_dir) / "models",
+            )
+        except Exception:  # noqa: BLE001 - a repair attempt must never break startup
+            return
+        if not relinked:
+            return
+        for model_id, _path in relinked:
+            self._size_cache.pop(model_id, None)
+        try:
+            from logger import get_logger
+
+            log = get_logger("gui_controller")
+            for model_id, path in relinked:
+                log.info("relinked %s from the Models folder: %s", model_id, path)
+        except Exception:  # noqa: BLE001
+            pass
 
     def system_specs(self) -> SystemSpecs:
         """Static host RAM + GPU facts (owner request), computed once and cached.

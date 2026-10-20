@@ -1873,6 +1873,72 @@ def place_into_models_dir(source: Path | str, models_dir: Path | str) -> str:
         return str(src)
 
 
+_REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: symlinks and junctions
+
+
+def _plain_gguf(path: Path) -> bool:
+    """True for a regular .gguf file that is not a symlink or reparse point."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    import stat as _stat
+
+    if not _stat.S_ISREG(st.st_mode):
+        return False
+    if getattr(st, "st_file_attributes", 0) & _REPARSE_POINT:
+        return False
+    return path.suffix.lower() == ".gguf"
+
+
+def relink_missing_model_files(
+    models: Any, store: Path | str, models_dir: Path | str
+) -> list[tuple[str, str]]:
+    """Bring back deleted hardlinks in the models folder from the Models store.
+
+    A listed model whose file under ``models_dir`` is gone, while a file of
+    the same name still sits directly in ``store``, gets that path back as a
+    hardlink - the same zero-copy link place_into_models_dir made in the
+    first place. models.yaml is never touched, nothing is copied, an existing
+    path is never replaced, and a different drive (or any link failure)
+    leaves the model reported as missing. Rows carrying a sha256 are skipped:
+    the name alone cannot prove a download is the same file, and hashing
+    gigabytes here would stall the window. Pass registry rows only, never
+    discovered fine-tunes. Returns (model_id, path) for each link made.
+    """
+    store_dir = Path(store)
+    root = Path(models_dir)
+    try:
+        root_resolved = root.resolve()
+        store_resolved = store_dir.resolve()
+    except OSError:
+        return []
+    relinked: list[tuple[str, str]] = []
+    for model in models:
+        if getattr(model, "sha256", ""):
+            continue
+        for raw in (getattr(model, "location", None), getattr(model, "mmproj", None)):
+            if not raw:
+                continue
+            dest = Path(raw)
+            try:
+                if os.path.lexists(dest):
+                    continue
+                if dest.parent.resolve() != root_resolved:
+                    continue
+                source = store_dir / dest.name
+                if source.parent.resolve() != store_resolved:
+                    continue
+                if not _plain_gguf(source) or dest.suffix.lower() != ".gguf":
+                    continue
+                root.mkdir(parents=True, exist_ok=True)
+                os.link(source, dest)
+            except OSError:
+                continue
+            relinked.append((model.id, str(dest)))
+    return relinked
+
+
 # --------------------------------------------------------------------------- #
 # Update check (M17.4)
 # --------------------------------------------------------------------------- #
