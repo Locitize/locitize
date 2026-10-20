@@ -1745,7 +1745,11 @@ def _edit_registry(
     # Held from staging the fingerprint until the save has landed (or rolled
     # back), so the watcher never classifies the file halfway through.
     _REGISTRY_KNOWN_LOCK.acquire()
-    token = _expect_own_registry_write(path, raw, new_text.encode("utf-8"))
+    try:
+        token = _expect_own_registry_write(path, raw, new_text.encode("utf-8"))
+    except BaseException:
+        _REGISTRY_KNOWN_LOCK.release()
+        raise
     written = False
     try:
         _atomic_write(path, new_text)

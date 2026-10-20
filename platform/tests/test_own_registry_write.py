@@ -107,3 +107,32 @@ def test_two_quick_own_saves_stay_quiet(tmp_path):
     _bump_mtime(path)
     check(watcher)
     assert watcher.result_q.empty()
+
+
+def test_a_staging_failure_releases_the_lock(tmp_path, monkeypatch):
+    path = tmp_path / "models.yaml"
+    path.write_text(_MODELS_WITH_COMMENTS, encoding="utf-8")
+
+    def boom(*_a, **_k):
+        raise OSError("resolve failed")
+
+    monkeypatch.setattr(config, "_expect_own_registry_write", boom)
+    try:
+        config.write_model_fields(tmp_path, "qwen3-14b", gpu_layers=10, context_size=8192)
+    except OSError:
+        pass
+    monkeypatch.undo()
+    import threading
+
+    acquired = []
+
+    def other_thread():
+        got = config._REGISTRY_KNOWN_LOCK.acquire(timeout=2)
+        acquired.append(got)
+        if got:
+            config._REGISTRY_KNOWN_LOCK.release()
+
+    worker = threading.Thread(target=other_thread)
+    worker.start()
+    worker.join()
+    assert acquired == [True]
