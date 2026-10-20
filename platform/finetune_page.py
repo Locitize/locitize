@@ -29,6 +29,8 @@ REVIEW_TABLE_LIMIT = 2000
 POLL_MS = 1500
 DISTILL_LOG_MEMORY_CHARS = 128 * 1024
 DISTILL_LOG_VIEW_CHARS = 16 * 1024
+DOWNLOAD_LOG_MEMORY_CHARS = 128 * 1024
+DOWNLOAD_LOG_VIEW_CHARS = 16 * 1024
 _KEEP, _USER, _ASSISTANT, _PROBLEM, _TOKENS = range(5)
 _EDITABLE = QtCore.Qt.ItemFlag.ItemIsEditable
 
@@ -148,6 +150,12 @@ class FineTuneFlow(QtWidgets.QWidget):
         self.run_dir = None
         self.run_done = False
         self.distill_job = None
+        self.download_job = None
+        self._download_model = None
+        self._download_status_for = None
+        self._download_status_data = None
+        self._download_size_check_for = None
+        self._download_offset, self._download_text = 0, ""
         self._log_offset = 0
         self._log_text = ""
         self._loading_table = False
@@ -249,12 +257,15 @@ class FineTuneFlow(QtWidgets.QWidget):
             button.style().polish(button)
 
     def shutdown(self):
-        """Window closing: stop polling. A live run keeps going (the page warns)."""
+        """Window closing: stop polling and do not orphan a cache download."""
         self._timer.stop()
+        if self.download_job is not None:
+            jobs.stop(self.download_job)
 
     def run_active(self):
         return bool(self.train_job and self.train_job.running()) or bool(
-            self.distill_job and self.distill_job.running())
+            self.distill_job and self.distill_job.running()) or bool(
+            self.download_job and self.download_job.running())
 
     # ------------------------------------------------------------------ #
     # Step 1: model
@@ -289,6 +300,32 @@ class FineTuneFlow(QtWidgets.QWidget):
         body.addWidget(self.suggestion_list)
         self.fit_chip = _label("", chip=True)
         body.addWidget(self.fit_chip)
+        self.download_status_label = _label("Checking the local model cache...", muted=True)
+        body.addWidget(self.download_status_label)
+        self.download_button = _primary("Download model")
+        self.download_button.clicked.connect(self._on_download_start)
+        self.download_stop = QtWidgets.QPushButton("Stop")
+        self.download_stop.setEnabled(False)
+        self.download_stop.clicked.connect(self._on_download_stop)
+        body.addLayout(_row(self.download_button, self.download_stop))
+        self.download_progress = QtWidgets.QProgressBar()
+        self.download_progress.setRange(0, 1000)
+        self.download_progress.setVisible(False)
+        body.addWidget(self.download_progress)
+        self.download_log_toggle = QtWidgets.QPushButton("Show log")
+        self.download_log_toggle.setCheckable(True)
+        self.download_log_toggle.setVisible(False)
+        self.download_log_view = QtWidgets.QPlainTextEdit()
+        self.download_log_view.setReadOnly(True)
+        self.download_log_view.setMinimumHeight(160)
+        self.download_log_view.setVisible(False)
+        self.download_log_toggle.toggled.connect(self.download_log_view.setVisible)
+        body.addLayout(_row(self.download_log_toggle))
+        body.addWidget(self.download_log_view)
+        self.download_hint = _label(
+            "Training downloads it automatically if you skip this.", muted=True
+        )
+        body.addWidget(self.download_hint)
         self.model_next = _primary("Next: prepare the dataset")
         self.model_next.clicked.connect(self._on_model_next)
         body.addLayout(_row(self.model_next))
@@ -300,15 +337,21 @@ class FineTuneFlow(QtWidgets.QWidget):
 
     def _on_model_choice(self, *_args):
         model = self.chosen_model()
+        if self._download_size_check_for not in (None, model):
+            self._download_size_check_for = None
         note = dict(jobs.MODEL_CHOICES).get(model, "A model of your choice from Hugging Face.")
         self.model_note.setText(note)
-        if model == self._fit_for or self.unavailable.isVisible():
+        if self.unavailable.isVisible():
+            self.download_status_label.setText("Set up fine-tuning to check or download this model.")
+            self.download_button.setEnabled(False)
             return
-        self._fit_for = model
-        self.fit_chip.setText("Checking whether it fits your graphics card...")
-        settings = self._settings
-        self._run(lambda: jobs.preflight(settings, model),
-                  lambda result, error, model=model: self._on_fit(model, result, error))
+        if model != self._fit_for:
+            self._fit_for = model
+            self.fit_chip.setText("Checking whether it fits your graphics card...")
+            settings = self._settings
+            self._run(lambda: jobs.preflight(settings, model),
+                      lambda result, error, model=model: self._on_fit(model, result, error))
+        self._request_local_download_status(model)
 
     def _on_fit(self, model, result, error):
         if model != self.chosen_model():
@@ -322,6 +365,161 @@ class FineTuneFlow(QtWidgets.QWidget):
                 f"{result.get('free_mb', 0) / 1024:.1f} GB free on {result.get('gpu_name', 'your GPU')}.")
         else:
             self.fit_chip.setText(" ".join(result.get("problems", [])))
+
+    @staticmethod
+    def _format_bytes(value):
+        if not isinstance(value, int) or value < 0:
+            return "size unknown"
+        amount = float(value)
+        for unit in ("bytes", "KB", "MB", "GB", "TB"):
+            if amount < 1024 or unit == "TB":
+                return f"{amount:.0f} {unit}" if unit == "bytes" else f"{amount:.1f} {unit}"
+            amount /= 1024
+
+    def _request_local_download_status(self, model, force=False):
+        if not model:
+            return
+        if (not force and model == self._download_status_for
+                and self._download_status_data is not None):
+            self._refresh_download_controls()
+            return
+        self._download_status_for = model
+        self._download_status_data = None
+        self._refresh_download_controls()
+        settings = self._settings
+        self._run(lambda: jobs.local_download_status(settings, model),
+                  lambda result, error, model=model: self._on_local_download_status(
+                      model, result, error
+                  ))
+
+    def _on_local_download_status(self, model, result, error):
+        if model != self.chosen_model():
+            return
+        if error or not isinstance(result, dict):
+            result = {
+                "model": model, "cached": False, "total_bytes": None,
+                "missing_bytes": None, "gated": False,
+                "error": error or "The download check did not finish.",
+            }
+        self._download_status_for = model
+        self._download_status_data = result
+        self._refresh_download_controls()
+
+    def _refresh_download_controls(self):
+        running = bool(self.download_job and self.download_job.running())
+        training = bool(self.train_job and self.train_job.running())
+        if running:
+            self.download_status_label.setText(f"Downloading {self._download_model}...")
+            self.download_button.setEnabled(False)
+            self.download_stop.setEnabled(True)
+            self.download_progress.setVisible(True)
+            self.download_log_toggle.setVisible(True)
+            return
+        self.download_stop.setEnabled(False)
+        if training:
+            self.download_status_label.setText(
+                "Training is running. It downloads the base model automatically if needed."
+            )
+            self.download_button.setEnabled(False)
+            return
+        if self._download_size_check_for == self.chosen_model():
+            self.download_status_label.setText("Checking size on huggingface.co...")
+            self.download_button.setEnabled(False)
+            return
+        status = self._download_status_data if self._download_status_for == self.chosen_model() else None
+        if status is None:
+            self.download_status_label.setText("Checking the local model cache...")
+            self.download_button.setEnabled(False)
+            return
+        if status.get("cached"):
+            self.download_status_label.setText("Downloaded")
+            self.download_button.setEnabled(False)
+            return
+        self.download_status_label.setText("Not downloaded yet")
+        self.download_button.setEnabled(not training and bool(self.chosen_model()))
+
+    def _on_download_start(self):
+        model = self.chosen_model()
+        if (not model or self._download_size_check_for is not None
+                or (self.download_job and self.download_job.running())):
+            return
+        if self.train_job and self.train_job.running():
+            self.download_status_label.setText("Wait for training to finish before downloading a model.")
+            self.download_button.setEnabled(False)
+            return
+        status = self._download_status_data if self._download_status_for == model else {}
+        if status.get("cached"):
+            return
+        self._download_size_check_for = model
+        self._refresh_download_controls()
+        settings = self._settings
+        self._run(
+            lambda: jobs.download_status(settings, model),
+            lambda result, error, model=model: self._on_download_size(model, result, error),
+        )
+
+    def _on_download_size(self, model, status, error):
+        if self._download_size_check_for != model:
+            return
+        self._download_size_check_for = None
+        if model != self.chosen_model():
+            self._refresh_download_controls()
+            return
+        if error or not isinstance(status, dict):
+            self.download_status_label.setText(
+                str(error or "The download size check did not finish.")
+            )
+            self.download_button.setEnabled(True)
+            return
+        if status.get("error"):
+            self.download_status_label.setText(str(status["error"]))
+            self.download_button.setEnabled(True)
+            return
+        if status.get("cached"):
+            self._download_status_for = model
+            self._download_status_data = status
+            self._refresh_download_controls()
+            return
+        size = status.get("missing_bytes")
+        if size is None:
+            size = status.get("total_bytes")
+        if size is None:
+            self.download_status_label.setText(
+                "Could not determine the download size. Check your connection and access, then try again."
+            )
+            self.download_button.setEnabled(True)
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Download base model?",
+            f"Download {model}?\n\nDownload size: {self._format_bytes(size)}.\n"
+            "It will be stored in the standard Hugging Face cache used by training.",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+            self._refresh_download_controls()
+            return
+        try:
+            self.download_job = jobs.start_download(self._settings, model)
+        except (OSError, jobs.FineTuneUnavailable) as exc:
+            self.download_status_label.setText(f"Could not start the download: {exc}")
+            self.download_button.setEnabled(True)
+            return
+        self._download_model = model
+        self._download_offset, self._download_text = 0, ""
+        self.download_log_view.clear()
+        self.download_log_toggle.setChecked(False)
+        self.download_progress.setRange(0, 1000)
+        self.download_progress.setValue(0)
+        self.download_progress.setFormat("Starting download...")
+        self._refresh_download_controls()
+        self._timer.start()
+
+    def _on_download_stop(self):
+        jobs.stop(self.download_job)
+        self.download_status_label.setText("Stopping the download...")
+        self.download_stop.setEnabled(False)
 
     def _on_suggest_models(self):
         self.suggest_models.setEnabled(False)
@@ -1128,11 +1326,16 @@ class FineTuneFlow(QtWidgets.QWidget):
         self._update_steps_note()
 
     def _update_steps_note(self, *_args):
-        self.steps_note.setText(f"{self.steps.value()} training steps. The first run with a model downloads it "
-                                "first, which can take a few minutes.")
+        self.steps_note.setText(
+            f"{self.steps.value()} training steps. The base model downloads automatically when training "
+            "starts if you did not download it in Step 1."
+        )
 
     def _on_train_start(self):
         if not self._check_environment():
+            return
+        if self.download_job and self.download_job.running():
+            self.steps_note.setText("The base model download is still running. Stop it or wait for it to finish.")
             return
         self.train_start.setEnabled(False)
         self.train_stage.setText("Checking your graphics card...")
@@ -1167,6 +1370,7 @@ class FineTuneFlow(QtWidgets.QWidget):
         self.train_stage.setText("Starting up")
         self.train_bar.setRange(0, 0)
         self._show_train_form(False)
+        self._refresh_download_controls()
         self._timer.start()
 
     def loss_graph_reset(self):
@@ -1188,6 +1392,8 @@ class FineTuneFlow(QtWidgets.QWidget):
             busy |= self._poll_training()
         if self.distill_job is not None:
             busy |= self._poll_distill()
+        if self.download_job is not None:
+            busy |= self._poll_download()
         if not busy:
             self._timer.stop()
 
@@ -1232,6 +1438,7 @@ class FineTuneFlow(QtWidgets.QWidget):
                           reason or "See the log for details, then change settings and try again."))
             self.log_toggle.setChecked(True)
         self._show_train_form(False)
+        self._refresh_download_controls()
         self._refresh_stepper()
         if self.history_toggle.isChecked():
             self._refresh_run_history()
@@ -1261,6 +1468,46 @@ class FineTuneFlow(QtWidgets.QWidget):
             self._fail("The teacher model stopped before finishing. Log: " + str(job.log_path))
             self.distill_log_toggle.setChecked(True)
         self.distill_job = None
+        return False
+
+    def _poll_download(self):
+        job = self.download_job
+        text, self._download_offset = jobs.read_new(
+            job.log_path, self._download_offset, max_bytes=DOWNLOAD_LOG_MEMORY_CHARS
+        )
+        self._download_text = (self._download_text + text)[-DOWNLOAD_LOG_MEMORY_CHARS:]
+        if text:
+            self.download_log_view.setPlainText(self._download_text[-DOWNLOAD_LOG_VIEW_CHARS:])
+            bar = self.download_log_view.verticalScrollBar()
+            bar.setValue(bar.maximum())
+        state = jobs.download_progress(self._download_text)
+        if state["total"]:
+            self.download_progress.setRange(0, 1000)
+            self.download_progress.setValue(round(state["fraction"] * 1000))
+            self.download_progress.setFormat(
+                f"{self._format_bytes(state['current'])} / {self._format_bytes(state['total'])}"
+            )
+        else:
+            self.download_progress.setRange(0, 0)
+            self.download_progress.setFormat("Downloading...")
+        if job.running():
+            return True
+        model = str(job.meta.get("model") or self._download_model or self.chosen_model())
+        self.download_job = None
+        self.download_stop.setEnabled(False)
+        if state["done"]:
+            self.download_status_label.setText("Download finished. Checking the cache...")
+            self.download_progress.setRange(0, 1000)
+            self.download_progress.setValue(1000)
+        else:
+            code = job.exit_code()
+            detail = state["error"] or "The download stopped before finishing."
+            self.download_status_label.setText(detail + (f" (exit code {code})" if code else ""))
+            self.download_log_toggle.setChecked(True)
+        if state["done"]:
+            self._request_local_download_status(self.chosen_model(), force=True)
+        else:
+            self.download_button.setEnabled(bool(self.chosen_model()))
         return False
 
     # ------------------------------------------------------------------ #

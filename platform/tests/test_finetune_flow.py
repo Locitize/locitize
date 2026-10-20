@@ -34,7 +34,8 @@ def _install(tmp_path: Path) -> Settings:
     """A settings tree whose fine-tune environment and data root exist on disk."""
     studio = tmp_path / "studio"
     (studio / "trainer").mkdir(parents=True)
-    for script in ("train.py", "distill.py", "preflight.py", "build_dataset.py", "infer.py"):
+    for script in ("train.py", "distill.py", "preflight.py", "build_dataset.py", "infer.py",
+                   "download_model.py"):
         (studio / "trainer" / script).write_text("# stand-in\n", encoding="utf-8")
     python = studio / ".venv" / "Scripts" / "python.exe"
     python.parent.mkdir(parents=True)
@@ -263,6 +264,82 @@ def test_preflight_reads_the_json_line_and_reports_a_silent_environment(tmp_path
     assert not result["ok"] and "did not answer" in result["problems"][0]
 
 
+def test_local_download_status_is_offline_and_uses_only_local_mode(tmp_path, monkeypatch):
+    settings = _install(tmp_path)
+    answer = {
+        "model": "org/M-1B", "cached": False, "cache_state": "partial",
+        "total_bytes": None, "missing_bytes": None, "gated": False, "error": None,
+    }
+
+    def fake_run(argv, **kwargs):
+        assert argv[-2:] == ["--local-status", "org/M-1B"]
+        assert kwargs["timeout"] == jobs.DOWNLOAD_STATUS_TIMEOUT
+        assert kwargs["env"]["HF_HUB_OFFLINE"] == "1"
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(answer) + "\n", stderr="")
+
+    monkeypatch.setattr(jobs.subprocess, "run", fake_run)
+    assert jobs.local_download_status(settings, "org/M-1B") == answer
+
+
+def test_download_status_reads_and_normalizes_the_json_line_and_logs_egress(
+        tmp_path, monkeypatch):
+    import egress_log
+
+    settings = _install(tmp_path)
+    answer = {
+        "model": "org/M-1B", "cached": False, "total_bytes": 1500,
+        "missing_bytes": 1000, "gated": False, "error": None,
+        "cache_state": "missing",
+    }
+    recorded = []
+    monkeypatch.setattr(
+        egress_log,
+        "record",
+        lambda url: recorded.append((url, egress_log.current_reason())),
+    )
+
+    def fake_run(argv, **kwargs):
+        assert argv[-2:] == ["--status", "org/M-1B"]
+        assert kwargs["timeout"] == jobs.DOWNLOAD_STATUS_TIMEOUT
+        return subprocess.CompletedProcess(argv, 0, stdout="noise\n" + json.dumps(answer) + "\n", stderr="")
+
+    monkeypatch.setattr(jobs.subprocess, "run", fake_run)
+    assert jobs.download_status(settings, "org/M-1B") == answer
+    assert recorded == [
+        ("https://huggingface.co/api/models/org/M-1B", "finetune-model-size")
+    ]
+
+    monkeypatch.setattr(
+        jobs.subprocess, "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1, stdout="", stderr="plain failure"),
+    )
+    assert jobs.download_status(settings, "org/M-1B")["error"] == "plain failure"
+
+
+def test_start_download_uses_finetune_python_and_outputs_log(tmp_path, monkeypatch):
+    settings = _install(tmp_path)
+    seen = {}
+
+    class FakePopen:
+        pid = 11
+
+        def __init__(self, argv, **kwargs):
+            seen["argv"], seen["cwd"] = argv, kwargs["cwd"]
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(jobs.subprocess, "Popen", FakePopen)
+    job = jobs.start_download(settings, "org/M-1B")
+
+    assert job.kind == "download" and job.running()
+    assert seen["argv"][-2:] == ["--download", "org/M-1B"]
+    assert seen["argv"][1].endswith("download_model.py")
+    assert job.log_path.name == "download.log"
+    assert job.log_path.parent.parent.name == "_downloads"
+    assert job.meta == {"model": "org/M-1B"}
+
+
 def test_progress_reads_stage_steps_losses_and_outcome():
     log = ("[STATUS] Loading base model org/M (4-bit)\n"
            "{'loss': 4.31, 'epoch': 0.1}\n 3/40 [00:01<00:10]\r 7/40 [00:02<00:09]\n"
@@ -274,6 +351,15 @@ def test_progress_reads_stage_steps_losses_and_outcome():
     failed = jobs.progress(log + "Traceback (most recent call last):\n")
     assert failed["failed"] and failed["stage"] == "Stopped with an error"
     assert jobs.progress("[DISTILL] 3/9\n")["current"] == 3
+
+
+def test_download_progress_reads_bytes_done_and_errors():
+    state = jobs.download_progress("DOWNLOAD 0/100\nDOWNLOAD 25/100\n")
+    assert (state["current"], state["total"], state["fraction"]) == (25, 100, 0.25)
+    assert not state["done"] and not state["failed"]
+    assert jobs.download_progress("DOWNLOAD 100/100\nDOWNLOAD DONE\n")["done"]
+    failed = jobs.download_progress("DOWNLOAD 10/100\nDOWNLOAD ERROR: token needed\n")
+    assert failed["failed"] and failed["error"] == "token needed"
 
 
 def test_read_new_returns_only_appended_text(tmp_path):
@@ -387,6 +473,7 @@ def test_run_history_scans_status_meta_losses_and_never_guesses_running(tmp_path
     corrupt.mkdir()
     (corrupt / jobs.RUN_META).write_text("{bad", encoding="utf-8")
     (root / "_distill" / "not-training").mkdir(parents=True)
+    (root / "_downloads" / "not-training").mkdir(parents=True)
 
     rows = jobs.scan_training_runs(settings)
     by_name = {row["name"]: row for row in rows}
@@ -658,6 +745,15 @@ def flow_factory(monkeypatch):
     # No real preflight children from the page's background checks.
     monkeypatch.setattr(jobs, "preflight", lambda *a, **k: {"ok": True, "need_mb": 2048, "free_mb": 9000,
                                                             "gpu_name": "Test GPU"})
+    monkeypatch.setattr(jobs, "local_download_status", lambda _settings, model: {
+        "model": model, "cached": False, "cache_state": "missing",
+        "total_bytes": None, "missing_bytes": None, "gated": False, "error": None,
+    })
+    monkeypatch.setattr(jobs, "download_status", lambda _settings, model: {
+        "model": model, "cached": False, "cache_state": "missing",
+        "total_bytes": 2 * 1024 ** 3, "missing_bytes": 2 * 1024 ** 3,
+        "gated": False, "error": None,
+    })
 
     def make(settings):
         controller = SimpleNamespace(_settings=settings, result_q=queue.Queue())
@@ -702,6 +798,227 @@ def test_page_walks_model_then_dataset_review_then_train(tmp_path, flow_factory)
     assert flow.train_name.text() == "my-set"
     assert flow.steps.value() == ftd.recommended_steps(4, 3, 2, 4)
     assert not flow.step_buttons[3].isEnabled()
+
+
+def test_page_build_and_model_change_only_run_local_download_status(
+        tmp_path, flow_factory, monkeypatch):
+    make, app = flow_factory
+    local_calls = []
+    monkeypatch.setattr(
+        jobs,
+        "local_download_status",
+        lambda _settings, model: (
+            local_calls.append(model)
+            or {
+                "model": model, "cached": False, "cache_state": "missing",
+                "total_bytes": None, "missing_bytes": None,
+                "gated": False, "error": None,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        jobs,
+        "download_status",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("page build and model changes must not use network status")
+        ),
+    )
+
+    flow = make(_install(tmp_path))
+    assert flow._pool.waitForDone(2000)
+    app.processEvents()
+    first = flow.model_combo.currentData()
+    flow.custom_model.setText("org/Changed-1B")
+    flow._on_model_choice()
+    assert flow._pool.waitForDone(2000)
+    app.processEvents()
+
+    assert local_calls == [first, "org/Changed-1B"]
+    assert flow.download_status_label.text() == "Not downloaded yet"
+
+
+def test_download_button_states_for_cached_missing_and_running(tmp_path, flow_factory):
+    make, _app = flow_factory
+    flow = make(_install(tmp_path))
+    model = flow.chosen_model()
+
+    flow._on_local_download_status(model, {
+        "model": model, "cached": False, "total_bytes": 3 * 1024 ** 3,
+        "missing_bytes": 2 * 1024 ** 3, "gated": False, "error": None,
+    }, None)
+    assert flow.download_button.isEnabled()
+    assert flow.download_status_label.text() == "Not downloaded yet"
+
+    flow._on_local_download_status(model, {
+        "model": model, "cached": True, "total_bytes": 3 * 1024 ** 3,
+        "missing_bytes": 0, "gated": False, "error": None,
+    }, None)
+    assert not flow.download_button.isEnabled()
+    assert flow.download_status_label.text() == "Downloaded"
+
+    class LiveProcess:
+        def poll(self):
+            return None
+
+    flow.download_job = jobs.Job("download", "run", tmp_path / "download.log", LiveProcess(),
+                                 meta={"model": model})
+    flow._download_model = model
+    flow._refresh_download_controls()
+    assert not flow.download_button.isEnabled()
+    assert flow.download_stop.isEnabled()
+    assert flow.download_progress.isVisibleTo(flow)
+
+    flow.download_job = None
+    flow.train_job = jobs.Job("train", "train", tmp_path / "train.log", LiveProcess())
+    flow._refresh_download_controls()
+    assert not flow.download_button.isEnabled()
+    assert "Training is running" in flow.download_status_label.text()
+
+
+def test_download_confirmation_cancel_does_not_start_a_job(tmp_path, flow_factory, monkeypatch):
+    from PySide6 import QtWidgets
+
+    make, _app = flow_factory
+    flow = make(_install(tmp_path))
+    model = flow.chosen_model()
+    flow._on_local_download_status(model, {
+        "model": model, "cached": False, "total_bytes": None,
+        "missing_bytes": None, "gated": False, "error": None,
+    }, None)
+    remote_calls = []
+
+    def remote_status(_settings, selected):
+        remote_calls.append(selected)
+        return {
+            "model": selected, "cached": False, "total_bytes": 14 * 1024 ** 3,
+            "missing_bytes": 14 * 1024 ** 3, "gated": False, "error": None,
+        }
+
+    checking_states = []
+
+    def run_now(fn, done):
+        checking_states.append(
+            (flow.download_status_label.text(), flow.download_button.isEnabled())
+        )
+        done(fn(), None)
+
+    monkeypatch.setattr(jobs, "download_status", remote_status)
+    flow._run = run_now
+    shown = {}
+
+    def decline(_parent, title, text, *_args):
+        shown.update(title=title, text=text)
+        return QtWidgets.QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", decline)
+    monkeypatch.setattr(
+        jobs, "start_download",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("download must not start")),
+    )
+    flow.download_button.click()
+
+    assert remote_calls == [model]
+    assert checking_states == [("Checking size on huggingface.co...", False)]
+    assert shown["title"] == "Download base model?"
+    assert model in shown["text"] and "14.0 GB" in shown["text"]
+    assert flow.download_job is None
+
+
+def test_download_size_failure_does_not_confirm_or_start(
+        tmp_path, flow_factory, monkeypatch):
+    from PySide6 import QtWidgets
+
+    make, _app = flow_factory
+    flow = make(_install(tmp_path))
+    model = flow.chosen_model()
+    flow._on_local_download_status(model, {
+        "model": model, "cached": False, "total_bytes": None,
+        "missing_bytes": None, "gated": False, "error": None,
+    }, None)
+    monkeypatch.setattr(jobs, "download_status", lambda *_args: {
+        "model": model, "cached": False, "total_bytes": None,
+        "missing_bytes": None, "gated": True,
+        "error": "This model is gated or unauthorized.",
+    })
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not confirm")),
+    )
+    monkeypatch.setattr(
+        jobs,
+        "start_download",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not start")),
+    )
+    flow._run = lambda fn, done: done(fn(), None)
+
+    flow.download_button.click()
+
+    assert flow.download_job is None
+    assert flow.download_button.isEnabled()
+    assert "gated or unauthorized" in flow.download_status_label.text()
+
+
+def test_download_job_finishes_rechecks_status_and_shutdown_stops_live_job(
+        tmp_path, flow_factory, monkeypatch):
+    make, _app = flow_factory
+    flow = make(_install(tmp_path))
+    model = flow.chosen_model()
+    log = tmp_path / "download.log"
+    log.write_text("DOWNLOAD 100/100\nDOWNLOAD DONE\n", encoding="utf-8")
+
+    class FinishedProcess:
+        pid = 19
+
+        def poll(self):
+            return 0
+
+    flow.download_job = jobs.Job("download", "run", log, FinishedProcess(), meta={"model": model})
+    flow._download_model = model
+    checked = []
+    flow._request_local_download_status = (
+        lambda selected, force=False: checked.append((selected, force))
+    )
+    assert flow._poll_download() is False
+    assert flow.download_job is None and checked == [(model, True)]
+    assert flow.download_progress.value() == 1000
+
+    class LiveProcess:
+        pid = 20
+
+        def poll(self):
+            return None
+
+    live = jobs.Job("download", "live", log, LiveProcess(), meta={"model": model})
+    flow.download_job = live
+    stopped = []
+    monkeypatch.setattr(jobs, "stop", lambda job: stopped.append(job))
+    flow.shutdown()
+    assert stopped == [live]
+
+
+def test_failed_download_keeps_failure_visible_without_status_overwrite(
+        tmp_path, flow_factory):
+    make, _app = flow_factory
+    flow = make(_install(tmp_path))
+    model = flow.chosen_model()
+    log = tmp_path / "download.log"
+    log.write_text("DOWNLOAD 10/100\nDOWNLOAD ERROR: connection lost\n", encoding="utf-8")
+
+    class FailedProcess:
+        def poll(self):
+            return 1
+
+    flow.download_job = jobs.Job(
+        "download", "run", log, FailedProcess(), meta={"model": model}
+    )
+    checked = []
+    flow._request_local_download_status = lambda *_args, **_kwargs: checked.append(True)
+
+    assert flow._poll_download() is False
+    assert checked == []
+    assert flow.download_status_label.text() == "connection lost (exit code 1)"
+    assert flow.download_button.isEnabled()
 
 
 def test_document_qa_gate_tracks_running_model_without_auto_checking(tmp_path, flow_factory):

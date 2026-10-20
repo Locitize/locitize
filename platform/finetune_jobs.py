@@ -7,7 +7,7 @@ finetune.studio_interpreter() as a child process: the GPU check, building a
 dataset from documents or a word table, distillation, training, and the
 before/after comparison. Nothing here imports torch.
 
-Long work (training, distillation) is started with Popen and returns at once;
+Long work (training, distillation, model downloads) is started with Popen and returns at once;
 the page polls the run's log file. Short work (the GPU check, building a dataset,
 a comparison) blocks, so the page calls it from a background thread.
 
@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import subprocess
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +66,7 @@ RUN_META = "run_meta.json"
 HISTORY_LOG_READ_BYTES = 2 * 1024 * 1024
 HISTORY_LOG_TAIL_BYTES = 16 * 1024
 HISTORY_META_BYTES = 256 * 1024
+DOWNLOAD_STATUS_TIMEOUT = 60
 
 
 class FineTuneUnavailable(RuntimeError):
@@ -73,7 +75,7 @@ class FineTuneUnavailable(RuntimeError):
 
 @dataclass
 class Job:
-    """One running trainer child (training or distillation)."""
+    """One running trainer child (training, distillation, or download)."""
 
     kind: str
     name: str
@@ -128,12 +130,18 @@ def child_env() -> dict[str, str]:
     return env
 
 
-def _run(settings, script: str, args: list[str], timeout: float) -> subprocess.CompletedProcess:
+def _run(
+    settings, script: str, args: list[str], timeout: float,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     python, trainer = environment(settings)
+    env = child_env()
+    if env_overrides:
+        env.update(env_overrides)
     return subprocess.run(
         [str(python), str(trainer / script), *[str(a) for a in args]],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=timeout, cwd=str(trainer), env=child_env(), creationflags=_NO_WINDOW,
+        timeout=timeout, cwd=str(trainer), env=env, creationflags=_NO_WINDOW,
     )
 
 
@@ -167,6 +175,79 @@ def preflight(settings, model: str, batch_size: int = 2) -> dict:
             "The fine-tune environment did not answer. Reinstall fine-tuning under "
             "Settings > Features."]}
     return data
+
+
+def _download_status_result(model: str, proc: subprocess.CompletedProcess) -> dict:
+    fallback = {
+        "model": model, "cached": False, "total_bytes": None,
+        "missing_bytes": None, "gated": False, "error": None,
+        "cache_state": "missing",
+    }
+    data = _last_json_line(proc.stdout)
+    if not isinstance(data, dict) or not data:
+        detail = (proc.stderr or "").strip().splitlines()
+        message = detail[-1] if detail else "The fine-tune environment did not answer."
+        return {**fallback, "error": message}
+    result = {**fallback}
+    for key in result:
+        if key in data:
+            result[key] = data[key]
+    result["model"] = str(result.get("model") or model)
+    result["cached"] = bool(result.get("cached"))
+    result["gated"] = bool(result.get("gated"))
+    state = str(data.get("cache_state") or "").lower()
+    result["cache_state"] = state if state in ("cached", "partial", "missing") else (
+        "cached" if result["cached"] else "missing"
+    )
+    for key in ("total_bytes", "missing_bytes"):
+        value = result.get(key)
+        result[key] = value if isinstance(value, int) and value >= 0 else None
+    result["error"] = str(result["error"]) if result.get("error") else None
+    return result
+
+
+def _download_status_fallback(model: str, error: str) -> dict:
+    return {
+        "model": model, "cached": False, "total_bytes": None,
+        "missing_bytes": None, "gated": False, "error": error,
+        "cache_state": "missing",
+    }
+
+
+def local_download_status(settings, model: str) -> dict:
+    """Inspect only the local HF cache in an explicitly offline child."""
+    try:
+        proc = _run(
+            settings, "download_model.py", ["--local-status", model],
+            DOWNLOAD_STATUS_TIMEOUT, env_overrides={"HF_HUB_OFFLINE": "1"},
+        )
+    except FineTuneUnavailable as exc:
+        return _download_status_fallback(model, str(exc))
+    except subprocess.TimeoutExpired:
+        return _download_status_fallback(model, "The local model cache check timed out.")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _download_status_fallback(model, f"The fine-tune environment did not run: {exc}")
+    return _download_status_result(model, proc)
+
+
+def download_status(settings, model: str) -> dict:
+    """User-initiated remote status lookup, including the remaining byte count."""
+    try:
+        import egress_log
+
+        target = "https://huggingface.co/api/models/" + urllib.parse.quote(model.strip("/"), safe="/")
+        with egress_log.reason("finetune-model-size"):
+            egress_log.record(target)
+            proc = _run(settings, "download_model.py", ["--status", model], DOWNLOAD_STATUS_TIMEOUT)
+    except FineTuneUnavailable as exc:
+        return _download_status_fallback(model, str(exc))
+    except subprocess.TimeoutExpired:
+        return _download_status_fallback(
+            model, "The model download check timed out. Check your internet connection."
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _download_status_fallback(model, f"The fine-tune environment did not run: {exc}")
+    return _download_status_result(model, proc)
 
 
 def explain_failure(settings, log_path: Path) -> str:
@@ -279,6 +360,15 @@ def start_distill(settings, *, teacher: str, system: str, prompts: list[str], ma
     return Job("distill", name, folder / "distill.log", process, out_path=out)
 
 
+def start_download(settings, model: str) -> Job:
+    """Start a base-model download into the default Hugging Face cache."""
+    name = run_name_for(model.rsplit("/", 1)[-1] or "model-download")
+    folder = outputs_dir(settings) / "_downloads" / name
+    log_path = folder / "download.log"
+    process = _spawn(settings, "download_model.py", ["--download", model], log_path)
+    return Job("download", name, log_path, process, meta={"model": model})
+
+
 def stop(job: Job) -> None:
     """Stop a child and anything it started (the GGUF converter runs as a grandchild)."""
     if job is None or not job.running():
@@ -349,6 +439,23 @@ def progress(log_text: str) -> dict:
             "done": done, "failed": failed}
 
 
+def download_progress(log_text: str) -> dict:
+    """Parse download_model.py byte counters and terminal status from a bounded log."""
+    counters = re.findall(r"(?m)^DOWNLOAD\s+(\d+)/(\d+)\s*$", log_text or "")
+    current, total = (int(counters[-1][0]), int(counters[-1][1])) if counters else (0, 0)
+    done = bool(re.search(r"(?m)^DOWNLOAD DONE\s*$", log_text or ""))
+    errors = re.findall(r"(?m)^DOWNLOAD ERROR:\s*(.+)$", log_text or "")
+    failed = bool(errors or "Traceback (most recent call last)" in (log_text or "")) and not done
+    return {
+        "current": min(current, total) if total else current,
+        "total": total,
+        "fraction": (min(current, total) / total) if total else None,
+        "done": done,
+        "failed": failed,
+        "error": errors[-1].strip() if errors else "",
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Finished runs
 # --------------------------------------------------------------------------- #
@@ -397,7 +504,8 @@ def scan_training_runs(settings, live_job: Job | None = None, limit: int = 50) -
     if root is None or not Path(root).is_dir():
         return []
     try:
-        folders = [p for p in Path(root).iterdir() if p.is_dir() and p.name != "_distill"]
+        folders = [p for p in Path(root).iterdir()
+                   if p.is_dir() and p.name not in ("_distill", "_downloads")]
     except OSError:
         return []
 
