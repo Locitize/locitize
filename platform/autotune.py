@@ -356,19 +356,23 @@ def reference_context(native_context: int, current_context: int) -> int:
 
 
 def first_candidate(native_context: int, current_context: int) -> int:
-    """Pick the opening probe value: the more informative of native vs current.
+    """Pick the opening probe value: the model's own trained window.
 
-    Starting at the model's own trained window is the single most valuable first
-    data point - it answers "does this machine even fit what the model was built
-    for" in one trial. When the model is already configured HIGHER than that
-    (because a previous tune or a hand-edit raised it), that configured value is
-    the better opening bid: re-discovering ground already known to work would
-    waste a third of the trial budget.
+    It is the single most valuable first data point - it answers "does this
+    machine even fit what the model was built for" in one trial - and, now that
+    the search never goes past it, also the highest value worth trying. It is
+    used exactly, not grid-rounded, so an off-grid window (say 38000) is tried
+    as itself instead of being rounded down and never tried at all.
+    `current_context` no longer moves it; it is kept for callers.
     """
-    return min(
-        probe_cap(native_context),
-        _round_to_grid(max(native_context, current_context, MIN_CONTEXT)),
-    )
+    return probe_cap(native_context)
+
+
+def _next_candidate(value: int, cap: int) -> int:
+    """Grid-round a search step, but keep the exact cap when the step reaches it."""
+    if value >= cap:
+        return cap
+    return min(_round_to_grid(value), cap)
 
 
 def probe_ceiling(
@@ -509,7 +513,7 @@ def probe_ceiling(
             if high - low <= max(CONTEXT_GRID, int(low * CEILING_TOLERANCE)):
                 break
 
-        nxt = min(_round_to_grid(nxt), cap)
+        nxt = _next_candidate(nxt, cap)
         # A candidate that is not strictly inside the remaining unknown band
         # cannot teach us anything, so stop rather than burn a real start on it.
         if low is not None and nxt <= low:
@@ -893,16 +897,29 @@ def autotune_model_context(
     result.native_context = native
     result.architecture = header.architecture
     emit(f"native context: {native} (architecture {header.architecture})")
+    if native < MIN_CONTEXT:
+        # The search works in steps no smaller than MIN_CONTEXT and the reading
+        # trial needs a few thousand tokens, so a window this small has nothing
+        # to tune: it is the answer.
+        result.detail = (
+            f"this model was trained for {native} tokens, below the {MIN_CONTEXT} "
+            f"auto-tune works with. Set context_size to {native} by hand; its "
+            f"settings were left unchanged."
+        )
+        return result
 
     # ---- Step 2: probe under the flags the final config will use ----------- #
     # Rope flags left by an older tune or a hand edit are dropped too: the probe
     # stays inside the trained window, so the final config carries none, and
-    # measuring with stale ones would measure a config that never runs.
+    # measuring with stale ones would measure a config that never runs. The
+    # staged context is pulled inside the window with them, so a crash mid-tune
+    # never leaves a stretched context saved without its rope flags.
     probe_args = merge_server_args(previous_args, KV_CACHE_ARGS, drop_flags=ROPE_FLAGS)
-    if probe_args != previous_args:
+    staged_context = min(current_context, native)
+    if probe_args != previous_args or staged_context != current_context:
         emit("adding quantized KV cache (q8_0) so the probe measures the real config ...")
         try:
-            write_tuning(model_id, current_context, probe_args)
+            write_tuning(model_id, staged_context, probe_args)
         except Exception as exc:  # noqa: BLE001 - boundary: report, never raise up
             result.detail = f"could not update this model's server_args: {exc}"
             return result
@@ -932,13 +949,13 @@ def autotune_model_context(
             f"baseline {baseline.tokens_per_second:.1f} tok/s; a larger context "
             f"must keep {floor_tokps:.1f} tok/s ({int(THROUGHPUT_FLOOR * 100)}%)"
         )
-        if baseline.prompt_tokens_per_second is not None:
-            prompt_floor_tokps = baseline.prompt_tokens_per_second * THROUGHPUT_FLOOR
-            emit(
-                f"baseline reading {baseline.prompt_tokens_per_second:.1f} tok/s; a "
-                f"larger context must keep {prompt_floor_tokps:.1f} tok/s"
-            )
-    else:
+    if baseline.ok and baseline.prompt_tokens_per_second is not None:
+        prompt_floor_tokps = baseline.prompt_tokens_per_second * THROUGHPUT_FLOOR
+        emit(
+            f"baseline reading {baseline.prompt_tokens_per_second:.1f} tok/s; a "
+            f"larger context must keep {prompt_floor_tokps:.1f} tok/s"
+        )
+    if floor_tokps is None and prompt_floor_tokps is None:
         emit(
             "baseline carried no throughput measurement; falling back to the "
             "load-only search (results may include a context that loads slowly)"

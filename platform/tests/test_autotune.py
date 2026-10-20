@@ -985,3 +985,65 @@ def test_the_reference_context_is_never_above_the_current_or_trained_window():
     assert autotune.reference_context(262144, 491520) == 32768
     assert autotune.reference_context(262144, 8192) == 8192
     assert autotune.reference_context(16384, 65536) == 16384
+
+
+
+def test_an_off_grid_trained_window_is_tried_as_itself():
+    machine = FakeMachine(ceiling=10_000_000)
+    result = probe_ceiling(machine, native_context=38000, current_context=8192)
+    assert machine.tried[0] == 38000
+    assert result.ceiling == 38000
+
+
+def test_staging_pulls_a_stretched_context_inside_the_window(tmp_path):
+    """The probe-time write drops the rope flags, so it must not leave the old
+    491520 saved without them if the tune stops before the final write."""
+    gguf = _fixture_gguf(tmp_path, "qwen35", 262144)
+    writer = FakeWriter()
+    autotune_model_context(
+        model_id="alpha",
+        location=str(gguf),
+        current_context=491520,
+        current_server_args=[
+            "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
+            "--rope-scaling", "yarn", "--rope-scale", "2", "--yarn-orig-ctx", "262144",
+        ],
+        write_tuning=writer,
+        trial_fn=FakeMachine(ceiling=10_000_000),
+    )
+    assert writer.calls[0][1] == 262144
+    assert "--rope-scaling" not in writer.calls[0][2]
+
+
+def test_a_reading_baseline_works_without_a_writing_one(tmp_path):
+    gguf = _fixture_gguf(tmp_path, "qwen35", 262144)
+    machine = SpeedMachine(
+        read_at=lambda ctx: 485.0 if ctx <= 65536 else 112.0,
+        write_at=lambda ctx: None,
+    )
+    result = autotune_model_context(
+        model_id="alpha",
+        location=str(gguf),
+        current_context=32768,
+        current_server_args=[],
+        write_tuning=FakeWriter(),
+        trial_fn=machine,
+    )
+    assert result.ok and result.chosen_context <= 65536
+
+
+def test_a_window_below_the_minimum_is_left_alone(tmp_path):
+    gguf = _fixture_gguf(tmp_path, "llama", 4096)
+    writer = FakeWriter()
+    machine = FakeMachine(ceiling=10_000_000)
+    result = autotune_model_context(
+        model_id="alpha",
+        location=str(gguf),
+        current_context=4096,
+        current_server_args=[],
+        write_tuning=writer,
+        trial_fn=machine,
+    )
+    assert not result.ok
+    assert "trained for 4096 tokens" in result.detail
+    assert writer.calls == [] and machine.tried == []
