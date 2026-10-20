@@ -149,6 +149,18 @@ class PortsConfig:
     # for the vision and scheduler services). Bound to 127.0.0.1 only.
     router: int = 8093
 
+    def service_ports(self) -> frozenset[int]:
+        """Every port reserved for a named service.
+
+        The auto allocator never hands one of these to a different service: a
+        stray whisper-server once landed on 8080, llama-server's own port, and
+        the benchmark then refused to run because "a model" held it.
+        """
+        return frozenset({
+            self.llama_cpp, self.whisper, self.kokoro, self.vision,
+            self.scheduler, self.openwebui, self.router,
+        })
+
 
 @dataclass
 class ThresholdsConfig:

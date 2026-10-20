@@ -874,6 +874,8 @@ def _whisper_factory(created: dict, occupied: set[int] | None = None):
             kill_runner=lambda pid: None,
             port_allocator=alloc,
             poll_interval_s=0.01,
+            # A busy port here is a foreign listener; never read the real machine's.
+            listener_cmdline=lambda port: "",
         )
         created[spec.name] = (mp, proc)
         return mp
@@ -1096,3 +1098,46 @@ def test_closing_the_app_stops_services_in_parallel_with_a_short_grace():
     assert graces == [0, 0, 0]
     assert max(running_at_once) == 3
     assert elapsed < 0.8  # parallel: about one stop, not three
+
+
+def test_port_allocator_never_hands_out_another_services_port():
+    """2026-10-20: a whisper-server pushed off 8091 landed on 8080, llama-server's
+    port, and the benchmark then refused to run. Reserved ports are skipped."""
+    occupied = {8091}
+    alloc = PortAllocator(
+        8080, 8099, "auto",
+        is_free=lambda p: p not in occupied,
+        reserved={8080, 8091, 8092, 8093},
+    )
+    assert alloc.ensure_free(8091) == 8081
+    # A service still gets its own reserved port when that port is free.
+    assert alloc.ensure_free(8080) == 8080
+
+
+def test_ports_config_lists_every_service_port():
+    from config import PortsConfig
+
+    ports = PortsConfig()
+    assert ports.service_ports() == {8080, 8091, 8092, 8093, 8094, 8095, 8096}
+
+
+def test_a_running_copy_without_a_health_route_is_adopted():
+    """whisper-server has no /health route; a TCP-ready copy of the same binary on
+    the port is reused rather than duplicated onto another port."""
+    alloc = PortAllocator(8080, 8099, "auto", is_free=lambda p: p != 8091)
+    mp = ManagedProcess(
+        _kokoro_like_spec(
+            name="whisper_server",
+            command=[r"app\whisper-server.exe", "--port", "8091"],
+            port=8091,
+            health_path=None,
+            reuse_marker=r"app\whisper-server.exe",
+        ),
+        launcher=_never_launch,
+        readiness=lambda spec, handle: spec.port == 8091,
+        port_allocator=alloc,
+        listener_cmdline=lambda port: r"app/whisper-server.exe --model m --port 8091",
+    )
+    assert mp.start() is ServiceStatus.RUNNING
+    assert mp.resolved_port == 8091
+    assert mp.pid is None

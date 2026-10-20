@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Iterable, Protocol, runtime_checkable
 
 from logger import get_logger
 
@@ -188,7 +188,8 @@ class ServiceSpec:
     # (8092, 8082, 8084, 8086, 8087), each holding VRAM, because every launcher /
     # CLI start found 8092 busy and the auto allocator moved the new copy to the
     # next free port in the range - once onto 8080, llama-server's own port.
-    # Requires health_path, so a half-dead listener is never adopted. None keeps
+    # The readiness probe must answer (health_path, or a TCP connect when the
+    # service has no health route), so a dead listener is never adopted. None keeps
     # the old behaviour (llama-server must never adopt: a stray on its port is a
     # different model, which the stray guard handles).
     reuse_marker: str | None = None
@@ -323,10 +324,14 @@ class PortAllocator:
         range_end: int,
         allocation: str = "auto",
         is_free: Callable[[int], bool] | None = None,
+        reserved: Iterable[int] = (),
     ) -> None:
         self._start = range_start
         self._end = range_end
         self._allocation = allocation
+        # Ports that belong to other services. The auto fallback skips them, so a
+        # service pushed off its own port never lands on another one's.
+        self._reserved = frozenset(reserved)
         # Injectable free-check for tests; defaults to a real loopback bind.
         self._is_free = is_free or self._default_is_free
 
@@ -345,7 +350,8 @@ class PortAllocator:
         """Return a usable port for the requested one.
 
         strict policy: the exact port must be free or raise. auto policy:
-        increment within the reserved range until a free port is found.
+        increment within the reserved range until a free port is found, never
+        taking a port reserved for another service.
         """
         if self._is_free(port):
             return port
@@ -355,7 +361,7 @@ class PortAllocator:
             )
         # auto: scan the reserved range for the next free port.
         for candidate in range(self._start, self._end + 1):
-            if candidate == port:
+            if candidate == port or candidate in self._reserved:
                 continue
             if self._is_free(candidate):
                 return candidate
@@ -528,13 +534,14 @@ class ManagedProcess:
     def _adopt_existing(self) -> bool:
         """True when the requested port already serves a healthy copy of this service.
 
-        All must hold: the spec opts in (reuse_marker + port + health_path), the
-        port is occupied, the listener's command line names the marker, and the
-        health probe answers. Anything unprovable falls through to a normal start,
+        All must hold: the spec opts in (reuse_marker + port), the port is
+        occupied, the listener's command line names the marker, and the readiness
+        probe answers (the health route, or a TCP connect for a service without
+        one, such as whisper-server). Anything unprovable falls through to a normal start,
         so a foreign listener still gets the old reassignment behaviour.
         """
         spec = self._spec
-        if not spec.reuse_marker or spec.port is None or not spec.health_path:
+        if not spec.reuse_marker or spec.port is None:
             return False
         if self._allocator is not None and self._allocator.is_free(spec.port):
             return False
