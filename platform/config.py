@@ -1742,6 +1742,9 @@ def _edit_registry(
 
     new_text = transform(lines, path)
 
+    # Held from staging the fingerprint until the save has landed (or rolled
+    # back), so the watcher never classifies the file halfway through.
+    _REGISTRY_KNOWN_LOCK.acquire()
     token = _expect_own_registry_write(path, raw, new_text.encode("utf-8"))
     written = False
     try:
@@ -1753,6 +1756,7 @@ def _edit_registry(
     finally:
         if not written:
             _forget_own_registry_write(path, token)
+        _REGISTRY_KNOWN_LOCK.release()
 
 
 # What this process last knew models.yaml to hold, per resolved path: the
@@ -1762,7 +1766,7 @@ def _edit_registry(
 # changed by someone else flags that, so the outside edit is still reported.
 _REGISTRY_KNOWN: dict[str, str] = {}
 _REGISTRY_OUTSIDE: set[str] = set()
-_REGISTRY_KNOWN_LOCK = threading.Lock()
+_REGISTRY_KNOWN_LOCK = threading.RLock()
 
 
 def _registry_key(path: Path) -> str:
@@ -1775,9 +1779,15 @@ def _digest(data: bytes) -> str:
 
 def _expect_own_registry_write(path: Path, before: bytes, after: bytes) -> tuple[str, str | None]:
     key = _registry_key(path)
+    try:
+        # An outside edit landing between our read and now is overwritten by
+        # this save; it is still reported rather than silently absorbed.
+        on_disk = path.read_bytes()
+    except OSError:
+        on_disk = before
     with _REGISTRY_KNOWN_LOCK:
         previous = _REGISTRY_KNOWN.get(key)
-        if previous is not None and previous != _digest(before):
+        if on_disk != before or (previous is not None and previous != _digest(before)):
             _REGISTRY_OUTSIDE.add(key)
         _REGISTRY_KNOWN[key] = _digest(after)
     return key, previous
@@ -1794,11 +1804,11 @@ def _forget_own_registry_write(path: Path, token: tuple[str, str | None]) -> Non
 
 def note_registry_baseline(path: Path | str) -> None:
     """Record models.yaml as it is now, as already known to this app."""
-    try:
-        data = Path(path).read_bytes()
-    except OSError:
-        return
     with _REGISTRY_KNOWN_LOCK:
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            return
         _REGISTRY_KNOWN[_registry_key(Path(path))] = _digest(data)
         _REGISTRY_OUTSIDE.discard(_registry_key(Path(path)))
 
@@ -1811,12 +1821,12 @@ def registry_is_own_write(path: Path | str) -> bool:
     known one, so each outside change is reported once.
     """
     target = Path(path)
-    try:
-        current = _digest(target.read_bytes())
-        key = _registry_key(target)
-    except OSError:
-        return False
     with _REGISTRY_KNOWN_LOCK:
+        try:
+            current = _digest(target.read_bytes())
+            key = _registry_key(target)
+        except OSError:
+            return False
         outside = key in _REGISTRY_OUTSIDE
         _REGISTRY_OUTSIDE.discard(key)
         own = _REGISTRY_KNOWN.get(key) == current

@@ -89,3 +89,21 @@ def test_a_failed_save_does_not_claim_the_file(tmp_path, monkeypatch):
     except config.RegistryWriteError:
         pass
     assert config.registry_is_own_write(path)  # still the untouched baseline
+
+
+def test_two_quick_own_saves_stay_quiet(tmp_path):
+    # Auto-tune saves twice per model (context, then tuning); neither is news.
+    path = tmp_path / "models.yaml"
+    path.write_text(_MODELS_WITH_COMMENTS, encoding="utf-8")
+    watcher = _watcher(tmp_path)
+    check = gui_controller.GuiController._check_registry_mtime
+
+    check(watcher)
+    config.write_model_fields(tmp_path, "qwen3-14b", gpu_layers=10, context_size=8192)
+    config.write_model_fields(tmp_path, "qwen3-14b", gpu_layers=12, context_size=4096)
+    _bump_mtime(path)
+    check(watcher)
+    config.write_model_fields(tmp_path, "qwen3-14b", gpu_layers=14, context_size=2048)
+    _bump_mtime(path)
+    check(watcher)
+    assert watcher.result_q.empty()
