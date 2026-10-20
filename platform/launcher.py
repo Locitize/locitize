@@ -410,11 +410,13 @@ class Launcher:
         from services import PortAllocator, SingleServiceController, make_process_factory
         from whisper import build_whisper_server_spec
 
+        from config import reserved_service_ports
+
         allocator = PortAllocator(
             settings.ports.range_start,
             settings.ports.range_end,
             settings.ports.allocation,
-            reserved=settings.ports.service_ports(),
+            reserved=reserved_service_ports(settings),
         )
         factory = self._deps.get("process_factory") or make_process_factory(allocator)
         spec_builder = self._deps.get("whisper_spec_builder") or (
@@ -2138,11 +2140,13 @@ class Launcher:
 
         registry = ModelRegistry(models, settings)
         manager = ServiceManager()
+        from config import reserved_service_ports
+
         allocator = PortAllocator(
             settings.ports.range_start,
             settings.ports.range_end,
             settings.ports.allocation,
-            reserved=settings.ports.service_ports(),
+            reserved=reserved_service_ports(settings),
         )
         # Tests inject a fake process factory / spec builder so the whole
         # start/switch/stop/cleanup path is exercised without a real binary.
@@ -2764,11 +2768,13 @@ class Launcher:
 
         if manager is None:
             manager = ServiceManager()
+        from config import reserved_service_ports
+
         allocator = PortAllocator(
             settings.ports.range_start,
             settings.ports.range_end,
             settings.ports.allocation,
-            reserved=settings.ports.service_ports(),
+            reserved=reserved_service_ports(settings),
         )
         factory = self._deps.get("process_factory") or make_process_factory(allocator)
         controller = SingleServiceController(manager, spec_builder, factory)

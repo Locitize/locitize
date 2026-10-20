@@ -493,11 +493,10 @@ def build_whisper_server_spec(settings: Settings, log_path: str | None = None) -
         env={},
         port=port,
         health_path=None,  # no /health route -> TCP port-connect readiness
-        # A whisper-server from this install already on the port (left by an
-        # earlier session) is reused, never duplicated onto another port. The
-        # marker is the binary's full path, so another app's whisper-server on
-        # the same port is not mistaken for ours.
-        reuse_marker=binary,
+        # A whisper-server from this install left on the port by an earlier
+        # session is stopped and replaced, never duplicated onto another port
+        # (see ServiceSpec.replace_marker).
+        replace_marker=binary,
         log_path=log_path,
         ready_timeout_s=settings.services.ready_timeout_s,
         stop_timeout_s=settings.services.stop_timeout_s,

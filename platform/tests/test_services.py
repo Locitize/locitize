@@ -1114,30 +1114,96 @@ def test_port_allocator_never_hands_out_another_services_port():
     assert alloc.ensure_free(8080) == 8080
 
 
-def test_ports_config_lists_every_service_port():
-    from config import PortsConfig
+def test_reserved_service_ports_cover_every_service_and_the_proxy():
+    from config import PortsConfig, Settings, reserved_service_ports
 
-    ports = PortsConfig()
-    assert ports.service_ports() == {8080, 8091, 8092, 8093, 8094, 8095, 8096}
+    assert PortsConfig().service_ports() == {8080, 8091, 8092, 8093, 8094, 8095, 8096}
+    assert reserved_service_ports(Settings()) == {
+        8080, 8085, 8091, 8092, 8093, 8094, 8095, 8096,
+    }
 
 
-def test_a_running_copy_without_a_health_route_is_adopted():
-    """whisper-server has no /health route; a TCP-ready copy of the same binary on
-    the port is reused rather than duplicated onto another port."""
-    alloc = PortAllocator(8080, 8099, "auto", is_free=lambda p: p != 8091)
+def _whisper_like_spec() -> ServiceSpec:
+    return ServiceSpec(
+        name="whisper_server",
+        command=[r"app\whisper-server.exe", "--port", "8091"],
+        port=8091,
+        replace_marker=r"app\whisper-server.exe",
+        ready_timeout_s=1.0,
+        stop_timeout_s=0.5,
+    )
+
+
+def test_a_leftover_copy_on_its_own_port_is_replaced_not_duplicated():
+    """2026-10-20: orphaned whisper-server copies stacked onto 8081 and 8080. A
+    leftover copy of the same binary on the port is stopped and a fresh one
+    starts on the service's own port."""
+    busy = {8091}
+    killed: list[int] = []
+    launched: list = []
+
+    def kill(pid):
+        killed.append(pid)
+        busy.discard(8091)
+
+    def launcher(**kwargs):
+        launched.append(list(kwargs["args"]))
+        return FakeProcess(poll_sequence=[None])
+
     mp = ManagedProcess(
-        _kokoro_like_spec(
-            name="whisper_server",
-            command=[r"app\whisper-server.exe", "--port", "8091"],
-            port=8091,
-            health_path=None,
-            reuse_marker=r"app\whisper-server.exe",
-        ),
-        launcher=_never_launch,
-        readiness=lambda spec, handle: spec.port == 8091,
-        port_allocator=alloc,
-        listener_cmdline=lambda port: r"app/whisper-server.exe --model m --port 8091",
+        _whisper_like_spec(),
+        launcher=launcher,
+        readiness=lambda spec, handle: True,
+        kill_runner=kill,
+        port_allocator=PortAllocator(8080, 8099, "auto", is_free=lambda p: p not in busy),
+        listener_cmdline=lambda port: r"app/whisper-server.exe --model old --port 8091",
+        listener_pid=lambda port: 4242,
+        poll_interval_s=0.01,
     )
     assert mp.start() is ServiceStatus.RUNNING
+    assert killed == [4242]
     assert mp.resolved_port == 8091
-    assert mp.pid is None
+    assert launched[0][launched[0].index("--port") + 1] == "8091"
+
+
+def test_another_programs_copy_is_never_stopped():
+    """Another app's whisper-server (a different binary path) is left alone; the
+    start falls back to reassignment, which still skips reserved ports."""
+    killed: list[int] = []
+    launched: list = []
+
+    def launcher(**kwargs):
+        launched.append(list(kwargs["args"]))
+        return FakeProcess(poll_sequence=[None])
+
+    mp = ManagedProcess(
+        _whisper_like_spec(),
+        launcher=launcher,
+        readiness=lambda spec, handle: True,
+        kill_runner=killed.append,
+        port_allocator=PortAllocator(
+            8080, 8099, "auto", is_free=lambda p: p != 8091, reserved={8080, 8091},
+        ),
+        listener_cmdline=lambda port: r"other/engine/whisper-server.exe --port 8091",
+        listener_pid=lambda port: 777,
+        poll_interval_s=0.01,
+    )
+    assert mp.start() is ServiceStatus.RUNNING
+    assert killed == []
+    assert mp.resolved_port == 8081
+
+
+def test_a_spec_without_replace_marker_never_stops_a_listener():
+    killed: list[int] = []
+    mp = ManagedProcess(
+        _kokoro_like_spec(reuse_marker=None),
+        launcher=lambda **kwargs: FakeProcess(poll_sequence=[None]),
+        readiness=lambda spec, handle: True,
+        kill_runner=killed.append,
+        port_allocator=PortAllocator(8080, 8099, "auto", is_free=lambda p: p != 8092),
+        listener_cmdline=lambda port: "kokoro_server.py --port 8092",
+        listener_pid=lambda port: 99,
+        poll_interval_s=0.01,
+    )
+    assert mp.start() is ServiceStatus.RUNNING
+    assert killed == []

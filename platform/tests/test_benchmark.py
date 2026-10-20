@@ -771,3 +771,25 @@ def test_benchmark_sweep_variant_row_does_not_clobber_score(tmp_path: Path, monk
     variant = next(s for s in scenarios if s.gpu_layers != sweep_model.gpu_layers)
     assert runner._is_current_config(current) is True
     assert runner._is_current_config(variant) is False
+
+
+def test_benchmark_conflict_names_what_holds_the_model_port():
+    """2026-10-20: a stray whisper-server on 8080 was reported as "a model", and
+    the owner went looking for a model that was not running."""
+    registry = ModelRegistry(ModelRegistryData(models=[_model()]), Settings())
+
+    def refusal(described):
+        runner = BenchmarkRunner(
+            _RecordingController(), registry, Settings(),
+            port_is_free=lambda port: False,
+            listener_cmdline=lambda port: described,
+        )
+        with pytest.raises(BenchmarkConflictError) as excinfo:
+            runner.run(["m"], runs=1)
+        return str(excinfo.value)
+
+    whisper = refusal(r'"bin\whisper.cpp\whisper-server.exe" --port 8080')
+    assert "whisper-server.exe" in whisper
+    assert "a model" not in whisper
+    assert "a model is running" in refusal(r"bin\llama.cpp\llama-server.exe -m x.gguf")
+    assert "another program" in refusal("")

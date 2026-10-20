@@ -150,16 +150,22 @@ class PortsConfig:
     router: int = 8093
 
     def service_ports(self) -> frozenset[int]:
-        """Every port reserved for a named service.
+        """Every port in this section reserved for a named service.
 
-        The auto allocator never hands one of these to a different service: a
-        stray whisper-server once landed on 8080, llama-server's own port, and
-        the benchmark then refused to run because "a model" held it.
+        reserved_service_ports() adds the proxy's port; the auto allocator never
+        hands any of them to a different service. A stray whisper-server once
+        landed on 8080, llama-server's own port, and the benchmark then refused
+        to run because "a model" held it.
         """
         return frozenset({
             self.llama_cpp, self.whisper, self.kokoro, self.vision,
             self.scheduler, self.openwebui, self.router,
         })
+
+
+def reserved_service_ports(settings: "Settings") -> frozenset[int]:
+    """Every loopback port a named service owns, the reverse proxy's included."""
+    return settings.ports.service_ports() | {settings.proxy.port}
 
 
 @dataclass
@@ -1437,6 +1443,19 @@ def _validate(
                     "WARNING",
                     SETTINGS_FILE,
                     f"port {attr}={port} is outside the reserved range",
+                )
+            )
+    # Two services given the same port would fight over it on every start.
+    owners: dict[int, list[str]] = {}
+    for attr in ("llama_cpp", "whisper", "kokoro", "vision", "scheduler", "openwebui", "router"):
+        owners.setdefault(getattr(ports, attr), []).append(attr)
+    for port, names in sorted(owners.items()):
+        if len(names) > 1:
+            issues.append(
+                ConfigIssue(
+                    "WARNING",
+                    SETTINGS_FILE,
+                    f"port {port} is assigned to more than one service ({', '.join(names)})",
                 )
             )
 

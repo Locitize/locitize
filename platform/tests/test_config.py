@@ -1051,3 +1051,13 @@ def test_parse_reasoning_choice_does_not_police_the_level():
     assert parse_reasoning_choice("some-future-level", "m")[0] == {
         "effort": "some-future-level"
     }
+
+
+def test_two_services_on_one_port_are_reported(tmp_path):
+    _write(tmp_path, "settings.yaml", "version: 1\nports:\n  whisper: 8080\n")
+    _write(tmp_path, "models.yaml", VALID_MODELS)
+    _settings, _models, issues = Config.load(tmp_path)
+    assert any(
+        "8080 is assigned to more than one service (llama_cpp, whisper)" in issue.message
+        for issue in issues
+    )

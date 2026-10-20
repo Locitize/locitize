@@ -850,6 +850,7 @@ class BenchmarkRunner:
         *,
         http_post: Callable[[str, dict[str, Any], float], dict[str, Any]] | None = None,
         port_is_free: Callable[[int], bool] | None = None,
+        listener_cmdline: Callable[[int], str] | None = None,
         gpu_provider: Any = None,
         sys_provider: Any = None,
         results_dir: Path | str | None = None,
@@ -863,6 +864,7 @@ class BenchmarkRunner:
         self._settings = settings
         self._http_post = http_post or _default_http_post
         self._port_is_free = port_is_free or _default_port_is_free
+        self._listener_cmdline = listener_cmdline or _default_listener_cmdline
         self._gpu = gpu_provider
         self._sys = sys_provider
         self._results_dir = (
@@ -889,11 +891,7 @@ class BenchmarkRunner:
         """
         port = self._settings.ports.llama_cpp
         if not self._port_is_free(port):
-            raise BenchmarkConflictError(
-                f"a model appears to be running on port {port}; stop it or close "
-                f"locitize before benchmarking (the benchmark will not co-load a second "
-                f"model on the 16GB card)."
-            )
+            raise BenchmarkConflictError(_port_conflict_message(port, self._listener_cmdline(port)))
         self._assert_headroom()
 
     # Guard thresholds (M15.3). A benchmark run on a machine already out of
@@ -1316,6 +1314,34 @@ def _default_http_post(url: str, payload: dict[str, Any], timeout: float) -> dic
     )
     with urllib.request.urlopen(request, timeout=timeout) as handle:  # noqa: S310 - loopback only
         return json.loads(handle.read().decode("utf-8"))
+
+
+def _default_listener_cmdline(port: int) -> str:
+    """Command line of the program on `port`, or "" when it cannot be read."""
+    from services import _default_listener_cmdline as describe
+
+    return describe(port)
+
+
+def _port_conflict_message(port: int, described: str) -> str:
+    """Say what holds the model port, naming the program when it is known.
+
+    Only a llama-server is called a model: a stray whisper-server once held 8080
+    and the old message sent the owner looking for a model that was not running.
+    """
+    first = described.strip().split(" ")[0] if described.strip() else ""
+    program = Path(first.strip('"')).name if first else ""
+    if program.lower().startswith("llama-server"):
+        return (
+            f"a model is running on port {port}; stop it or close locitize before "
+            f"benchmarking (the benchmark will not co-load a second model on the "
+            f"16GB card)."
+        )
+    holder = program or "another program"
+    return (
+        f"port {port}, which the benchmark needs for the model, is in use by "
+        f"{holder}; close it, or restart locitize, before benchmarking."
+    )
 
 
 def _default_port_is_free(port: int) -> bool:

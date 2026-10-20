@@ -570,9 +570,11 @@ def test_whisper_server_threads_follow_the_machine(monkeypatch):
     assert threads_for(None) == 4  # cpu_count unknown -> whisper's default
 
 
-def test_whisper_server_spec_reuses_its_own_binary_only():
+def test_whisper_server_spec_replaces_only_its_own_leftover_copy():
     """2026-10-20: leftover whisper-server copies stacked onto 8081 and 8080
-    because each start found 8091 busy. The spec opts into reuse, keyed on its
-    own binary path so another app's whisper-server is never adopted."""
+    because each start found 8091 busy. The spec opts into replacing a leftover
+    copy, keyed on its own binary path so another app's whisper-server is never
+    stopped, and never adopts one whose flags it cannot prove."""
     spec = build_whisper_server_spec(_server_settings())
-    assert spec.reuse_marker == spec.command[0]
+    assert spec.replace_marker == spec.command[0]
+    assert spec.reuse_marker is None
