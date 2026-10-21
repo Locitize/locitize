@@ -23,6 +23,24 @@ def test_file_names_lists_every_hard_link_name_with_the_given_path_first(tmp_pat
     assert os.path.samefile(names[1], second)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are a Windows feature")
+def test_file_names_lists_a_file_reached_through_a_junction_once(tmp_path):
+    import subprocess
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "model.gguf").write_bytes(b"GGUF")
+    alias = tmp_path / "alias"
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(alias), str(real)],
+        check=True, capture_output=True,
+    )
+
+    names = recycle.file_names(alias / "model.gguf")
+
+    assert names == [str(alias / "model.gguf")]
+
+
 def test_file_names_answers_with_the_given_path_when_the_api_is_unavailable(tmp_path, monkeypatch):
     monkeypatch.setattr(recycle.sys, "platform", "linux")
     assert recycle.file_names(tmp_path / "model.gguf") == [str(tmp_path / "model.gguf")]

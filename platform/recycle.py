@@ -40,7 +40,12 @@ _FOF_WANTNUKEWARNING = 0x4000
 
 
 def _key(path: str) -> str:
-    return os.path.normcase(os.path.abspath(path))
+    # realpath, not abspath: the owner's shared Models folder is reached through
+    # a junction, so the given path and FindFirstFileNameW's volume-relative
+    # name were the same file under two spellings. Listing both made
+    # SHFileOperationW move the first and then fail on the second with
+    # code 0x2 (seen 2026-10-20 deleting a Models-folder file).
+    return os.path.normcase(os.path.realpath(path))
 
 
 def file_names(path: str | Path) -> list[str]:
@@ -124,9 +129,12 @@ def send_to_recycle_bin(paths: list[str]) -> None:
         return
     if sys.platform != "win32":
         raise OSError("the Recycle Bin is only available on Windows")
+    unique: dict[str, str] = {}
     for path in paths:
         if not os.path.isfile(path):
             raise OSError(f"{path} is not a file")
+        unique.setdefault(_key(path), path)
+    paths = list(unique.values())
     operation = _SHFILEOPSTRUCTW()
     operation.wFunc = _FO_DELETE
     # A list of full paths, each NUL-terminated, ending with an extra NUL.
