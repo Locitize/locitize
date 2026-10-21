@@ -2027,6 +2027,10 @@ class GuiController:
         return self._autotune_running or self._autotune_batch
 
     def autotune_model_id(self) -> str | None:
+        """The id of the model an auto-tune is trying right now, else None."""
+        return self._autotune_model_id if self._autotune_running else None
+
+    def autotune_model_id(self) -> str | None:
         """Which model the in-progress auto-tune is for, or None when idle."""
         return self._autotune_model_id if self._autotune_running else None
 

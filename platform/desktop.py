@@ -684,6 +684,24 @@ def _model_turned_off(model):
     return model.get("status", "installed") != "installed"
 
 
+def _model_is_answering(sample):
+    """True while the running server is working on a request.
+
+    Reads llama.cpp's requests_processing gauge, else any /slots entry marked
+    is_processing (the owner's build exposes that field). No sample, or one
+    with neither, reads as idle.
+    """
+    if sample is None:
+        return False
+    processing = getattr(sample, "requests_processing", None)
+    if processing is not None:
+        return processing > 0
+    return any(
+        isinstance(slot, dict) and slot.get("is_processing")
+        for slot in (getattr(sample, "slots", None) or [])
+    )
+
+
 def _model_tunable(model):
     """True when Auto-tune can run this row: on the list, switched on, file on disk."""
     return (
@@ -3100,10 +3118,34 @@ class MainWindow(QtWidgets.QMainWindow):
         """Use color as a secondary status cue while preserving explicit text."""
         if status == "Running":
             item.setForeground(QtGui.QColor("#6ee7a8"))
-        elif status == "Starting":
+        elif status == "Loaded on GPU":
+            item.setForeground(QtGui.QColor("#7cc4ff"))
+        elif status in ("Starting", "Auto-tuning"):
             item.setForeground(QtGui.QColor("#ffd166"))
         elif status in ("Turned off on your list", "No file yet", "Model file is missing"):
             item.setForeground(QtGui.QColor("#8b9098"))
+
+    def _refresh_status_column(self):
+        """Re-render only the Status cells whose text changed.
+
+        Called on every metrics poll and auto-tune progress line, so it must
+        stay cheap and leave the rest of the table (and the selection) alone.
+        """
+        table = getattr(self, "_model_table", None)
+        if table is None:
+            return
+        by_id = {m["id"]: m for m in self._models}
+        for row in range(table.rowCount()):
+            first = table.item(row, 0)
+            cell = table.item(row, 9)
+            model = by_id.get(first.data(QtCore.Qt.ItemDataRole.UserRole)) if first else None
+            if model is None or cell is None:
+                continue
+            status = self._status_for(model)
+            if cell.text() != status:
+                cell.setText(status)
+                cell.setData(QtCore.Qt.ItemDataRole.ForegroundRole, None)
+                self._style_status_item(cell, status)
 
     def _restore_model_selection(self):
         """Re-select the same model after a sort or outcome-driven refresh.
@@ -3158,8 +3200,13 @@ class MainWindow(QtWidgets.QMainWindow):
             return "No file yet"
         if not _model_file_present(model):
             return "Model file is missing"
+        # Owner request 2026-10-20: say what the model is doing, not only that
+        # it is up. Auto-tuning while a tune tries it; Running while it is
+        # answering a request; Loaded on GPU while it sits idle in memory.
+        if self._gc.autotune_model_id() == model["id"]:
+            return "Auto-tuning"
         if self._ui.running_model_id == model["id"]:
-            return "Running"
+            return "Running" if _model_is_answering(self._ui.latest_metrics) else "Loaded on GPU"
         if self._ui.in_flight and self._selected_id == model["id"]:
             return "Starting"
         return "Stopped"
@@ -3817,6 +3864,7 @@ class MainWindow(QtWidgets.QMainWindow):
         than a spinner that is indistinguishable from a hung window.
         """
         line = result.payload.get("line", "")
+        self._refresh_status_column()
         if not line:
             return
         self._autotune_status.setVisible(True)
@@ -3839,6 +3887,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._autotune_canceling = False
         # Re-derive rather than force-enable: the selection or running state may
         # have changed while the tune ran, and this one rule owns the answer.
+        self._refresh_status_column()
         # _refresh_buttons covers the model-exclusive controls too, so it also
         # restores Stop to its ordinary "stop the running model" enablement.
         self._refresh_buttons()
@@ -5128,6 +5177,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if sample is None:
             return
         self._ui.latest_metrics = sample
+        self._refresh_status_column()
         if (
             not getattr(sample, "metrics_available", False)
             and getattr(sample, "slots", None) is None

@@ -1423,3 +1423,32 @@ def test_autotune_all_runs_until_its_own_final_result(qapp, monkeypatch):
     assert "canceled" in window._autotune_status.text()
     window.deleteLater()
     app.processEvents()
+
+
+def test_status_column_says_auto_tuning_running_or_loaded_on_gpu(qapp):
+    """Owner request 2026-10-20: the Status column tells an auto-tune, a model
+    answering a request, and a model sitting idle on the GPU apart."""
+    app, desktop, qt_gui = qapp
+    fake = FakeGuiController()
+    window = desktop.MainWindow(fake, health="OK")
+    model = next(m for m in window._models if m["id"] == "local-chat")
+
+    def status_cell():
+        for row in range(window._model_table.rowCount()):
+            if window._model_table.item(row, 0).data(256) == "local-chat":
+                return window._model_table.item(row, 9).text()
+
+    fake.autotune_running_model = "local-chat"
+    assert window._status_for(model) == "Auto-tuning"
+    fake.autotune_running_model = None
+
+    window._ui.running_model_id = "local-chat"
+    window._render_metrics(gui_controller.MetricsSample(requests_processing=0))
+    assert status_cell() == "Loaded on GPU"
+    window._render_metrics(gui_controller.MetricsSample(requests_processing=1))
+    assert status_cell() == "Running"
+    window._render_metrics(
+        gui_controller.MetricsSample(slots=[{"id": 0, "is_processing": False}])
+    )
+    assert status_cell() == "Loaded on GPU"
+    window.close()
