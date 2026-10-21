@@ -315,6 +315,18 @@ def test_build_start_spec_applies_ctx_and_gpu_overrides():
     assert spec.command[spec.command.index("--n-gpu-layers") + 1] == "10"
 
 
+def test_owner_load_mode_is_appended_after_the_default_and_wins(monkeypatch):
+    monkeypatch.setattr("backends.llama_supports_load_mode", lambda _binary: True)
+    registry = _registry_with_llama_path()
+    command = registry.build_start_spec(
+        "qwen3-14b", server_args=["--load-mode", "mmap"]
+    ).command
+    positions = [index for index, value in enumerate(command) if value == "--load-mode"]
+    assert len(positions) == 2
+    assert command[positions[0] + 1] == "none"
+    assert command[positions[1] + 1] == "mmap"
+
+
 def test_build_start_spec_guards_missing_location():
     """A model with no location cannot build a start spec (honest guard)."""
     settings = Settings()

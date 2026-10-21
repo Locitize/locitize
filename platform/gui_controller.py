@@ -642,12 +642,20 @@ def format_fit(vram_need_mb: float | None, gpu_total_mb: float | None) -> str:
     return "Yes" if vram_need_mb <= gpu_total_mb else "Partly"
 
 
-def describe_fit(vram_need_mb: float | None, gpu_total_mb: float | None) -> str:
+def describe_fit(
+    vram_need_mb: float | None, gpu_total_mb: float | None, moe: bool = False
+) -> str:
     """One sentence for the Start page under the model picker."""
     fit = format_fit(vram_need_mb, gpu_total_mb)
     if fit == "Yes":
         return "Fits your GPU, so it should answer quickly."
     if fit == "Partly":
+        if moe:
+            return (
+                "Bigger than your GPU's memory, so part of it runs on the processor. "
+                "It only uses a small part of itself for each word, so it still "
+                "answers quickly."
+            )
         return (
             "Bigger than your GPU's memory, so part of it runs on the processor. "
             "It works, but answers will be slower."
@@ -1095,6 +1103,10 @@ class GuiController:
         # None entry records "location unset or file unstattable" so we never
         # re-stat a missing file every refresh.
         self._size_cache: dict[str, int | None] = {}
+        # Header reads are keyed by path + file signature. Refresh may stat the
+        # files, but an unchanged multi-GB GGUF is never parsed again in this
+        # process; replacing one in place naturally creates a new cache key.
+        self._moe_cache: dict[tuple[str, int, int], bool] = {}
         self._relink_missing_files()
 
         self._stop_event = threading.Event()
@@ -1323,6 +1335,7 @@ class GuiController:
                     # footprint both are computed from, and is also the numeric sort key.
                     "vram_estimate_mb": model.vram_estimate_mb,
                     "vram_need_mb": vram_need_mb,
+                    "moe": self._model_is_moe(model.location),
                     "gpu_portion_display": format_gpu_portion_display(vram_need_mb, gpu_total_mb),
                     "cpu_portion_display": format_cpu_portion_display(vram_need_mb, gpu_total_mb),
                     # benchmark_score remains the deterministic quality percentage
@@ -1372,6 +1385,31 @@ class GuiController:
                 size = None
         self._size_cache[model_id] = size
         return size
+
+    def _model_is_moe(self, location: str) -> bool:
+        """True for a readable GGUF whose architecture has multiple experts."""
+        if not location:
+            return False
+        try:
+            stat = os.stat(location)
+            key = (
+                os.path.normcase(os.path.abspath(location)),
+                stat.st_mtime_ns,
+                stat.st_size,
+            )
+        except OSError:
+            return False
+        if key in self._moe_cache:
+            return self._moe_cache[key]
+        try:
+            from gguf_meta import read_gguf_header
+
+            expert_count = read_gguf_header(location).expert_count
+            is_moe = expert_count is not None and expert_count > 1
+        except Exception:  # noqa: BLE001 - unreadable metadata means dense wording
+            is_moe = False
+        self._moe_cache[key] = is_moe
+        return is_moe
 
     # ---- lifecycle of the background threads ------------------------------ #
 
@@ -2257,6 +2295,7 @@ class GuiController:
                     "size_display": format_size_gb(item.size_bytes),
                     "vram_estimate_mb": 0,
                     "vram_need_mb": vram_need_mb,
+                    "moe": self._model_is_moe(item.path),
                     "gpu_portion_display": format_gpu_portion_display(
                         vram_need_mb, gpu_total_mb
                     ),
@@ -2321,6 +2360,7 @@ class GuiController:
                     "size_display": format_size_gb(size),
                     "vram_estimate_mb": 0,
                     "vram_need_mb": need,
+                    "moe": self._model_is_moe(str(path)),
                     "gpu_portion_display": format_gpu_portion_display(need, gpu_total_mb),
                     "cpu_portion_display": format_cpu_portion_display(need, gpu_total_mb),
                     "benchmark_score": None,

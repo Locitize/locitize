@@ -105,6 +105,44 @@ def test_reads_architecture_and_context_length(tmp_path):
     assert read_native_context_length(path) == 40960
 
 
+def test_reads_expert_count_after_context_without_touching_tokenizer(tmp_path):
+    tokenizer_without_vocabulary = (
+        _gguf_string("tokenizer.ggml.tokens")
+        + struct.pack("<I", T_ARRAY)
+        + struct.pack("<IQ", T_STRING, 50_000_000)
+    )
+    path = _write(
+        tmp_path,
+        _build_gguf(
+            [
+                _kv_string("general.architecture", "qwen3moe"),
+                _kv_uint32("qwen3moe.context_length", 262144),
+                _kv_uint32("qwen3moe.expert_count", 128),
+                tokenizer_without_vocabulary,
+            ],
+            trailer=b"",
+        ),
+    )
+    header = read_gguf_header(path)
+    assert header.expert_count == 128
+
+
+def test_missing_expert_count_is_none_and_tokenizer_is_not_read(tmp_path):
+    tokenizer_without_vocabulary = _gguf_string("tokenizer.ggml.tokens")
+    path = _write(
+        tmp_path,
+        _build_gguf(
+            [
+                _kv_string("general.architecture", "llama"),
+                _kv_uint32("llama.context_length", 8192),
+                tokenizer_without_vocabulary,
+            ],
+            trailer=b"",
+        ),
+    )
+    assert read_gguf_header(path).expert_count is None
+
+
 def test_context_length_is_matched_to_the_architecture_not_the_first_match(tmp_path):
     """A '<other>.context_length' key must not be mistaken for this model's.
 
@@ -140,6 +178,24 @@ def test_skips_large_arrays_without_reading_them_as_values(tmp_path):
     )
     header = read_gguf_header(path)
     assert (header.architecture, header.context_length) == ("qwen2", 131072)
+
+
+def test_tokenizer_keys_after_architecture_do_not_hide_later_context(tmp_path):
+    """Tokenizer metadata may precede the architecture's context dimension."""
+    path = _write(
+        tmp_path,
+        _build_gguf(
+            [
+                _kv_string("general.architecture", "qwen2"),
+                _kv_string_array("tokenizer.ggml.tokens", ["one", "two"]),
+                _kv_float_array("tokenizer.ggml.scores", [0.5, 0.25]),
+                _kv_uint32("qwen2.context_length", 131072),
+            ]
+        ),
+    )
+    header = read_gguf_header(path)
+    assert header.context_length == 131072
+    assert header.expert_count is None
 
 
 def test_stops_early_once_both_keys_are_known(tmp_path):

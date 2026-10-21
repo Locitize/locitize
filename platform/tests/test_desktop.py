@@ -280,6 +280,56 @@ def test_fit_uses_health_usable_vram_not_physical_total(qapp):
     )
     assert "fits your GPU" not in label
     assert "partly on your GPU" in label
+    table_row = next(
+        row for row in range(window._model_table.rowCount())
+        if window._model_table.item(row, 0).data(
+            desktop.QtCore.Qt.ItemDataRole.UserRole
+        ) == "local-chat"
+    )
+    assert window._model_table.item(table_row, 4).text() == "Partly (slower)"
+    assert "too big for your GPU alone (slower)" in window._advanced_summary_text(
+        fake.list_models()[0]
+    )
+    window._selected_id = "local-chat"
+    window._update_start_fit()
+    assert window._start_fit_label.text() == (
+        "Bigger than your GPU's memory, so part of it runs on the processor. "
+        "It works, but answers will be slower."
+    )
+
+    window.closeEvent(qt_gui.QCloseEvent())
+    window.deleteLater()
+
+
+def test_moe_partial_fit_wording_stays_fast_across_model_surfaces(qapp):
+    app, desktop, qt_gui = qapp
+    fake = FakeGuiController()
+    rows = fake.list_models()
+    rows[0]["moe"] = True
+    rows[1]["moe"] = False
+    fake.list_models = lambda: rows
+    report = SimpleNamespace(
+        results=[SimpleNamespace(name="vram", data={"effective_free_mb": 8000})]
+    )
+    window = desktop.MainWindow(fake, health="OK", health_report=report)
+
+    label = window._start_model_combo.itemText(
+        window._start_model_combo.findData("local-chat")
+    )
+    assert "partly on your GPU (still fast)" in label
+    table_row = next(
+        row for row in range(window._model_table.rowCount())
+        if window._model_table.item(row, 0).data(
+            desktop.QtCore.Qt.ItemDataRole.UserRole
+        ) == "local-chat"
+    )
+    assert window._model_table.item(table_row, 4).text() == "Partly (still fast)"
+    assert "too big for your GPU alone, but still fast" in window._advanced_summary_text(
+        rows[0]
+    )
+    window._selected_id = "local-chat"
+    window._update_start_fit()
+    assert "it still answers quickly" in window._start_fit_label.text()
 
     window.closeEvent(qt_gui.QCloseEvent())
     window.deleteLater()

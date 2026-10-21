@@ -323,7 +323,7 @@ def test_hub_ui_exceeds_asks_again_but_never_blocks(qapp, monkeypatch):
     window, fake = build(qapp)
     seen = []
     monkeypatch.setattr(
-        window, "_confirm", lambda title, text: (seen.append(title), True)[1]
+        window, "_confirm", lambda title, text: (seen.append((title, text)), True)[1]
     )
     window._hub_repo_rows = [{"repo_id": "o/r"}]
     window._hub_repo_table.setRowCount(1)
@@ -337,9 +337,41 @@ def test_hub_ui_exceeds_asks_again_but_never_blocks(qapp, monkeypatch):
     window._hub_file_table.setRowCount(1)
     window._hub_file_table.setCurrentCell(0, 0)
     window._hub_download_btn.click()
-    assert "Larger than your VRAM" in seen
+    dense_text = next(text for title, text in seen if title == "Larger than your VRAM")
+    assert dense_text.endswith("Download anyway (will be slow)?")
     payload = next(c for c in fake.calls if c[0] == "request_hub_download")[1]
     assert payload["confirmed_exceeds"] is True
+
+
+def test_hub_ui_moe_exceeds_confirmation_does_not_call_it_slow(qapp, monkeypatch):
+    window, fake = build(qapp)
+    seen = []
+    monkeypatch.setattr(
+        window, "_confirm", lambda title, text: (seen.append((title, text)), True)[1]
+    )
+    window._hub_repo_rows = [{"repo_id": "owner/Qwen3-35B-A3B"}]
+    window._hub_repo_table.setRowCount(1)
+    window._hub_repo_table.setCurrentCell(0, 0)
+    window._hub_file_rows = [
+        {
+            "filename": "model-A3B.gguf",
+            "size_bytes": 1,
+            "sha256": "e" * 64,
+            "verification": "api",
+            "fit": {
+                "band": "exceeds",
+                "moe": True,
+                "explanation": "30 GB vs 16 GB",
+                "disclaimer": "This is an estimate, not a guarantee.",
+            },
+        }
+    ]
+    window._hub_file_table.setRowCount(1)
+    window._hub_file_table.setCurrentCell(0, 0)
+    window._hub_download_btn.click()
+    exceeds_text = next(text for title, text in seen if title == "Larger than your VRAM")
+    assert "will be slow" not in exceeds_text
+    assert exceeds_text.endswith("Download anyway?")
 
 
 def test_hub_ui_progress_and_cancel(qapp):

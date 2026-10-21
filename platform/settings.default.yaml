@@ -66,6 +66,8 @@ services:
   llama_cpp_metrics: true            # append --metrics to the llama.cpp argv so the
                                      # GUI monitor can read /metrics; set false if a
                                      # build rejects the flag (monitor degrades)
+  llama_cpp_load_whole: true         # use --load-mode none when this llama-server
+                                     # supports it; set false to keep mmap loading
 
 gui:
   monitor_interval_s: 1.5    # live-monitor poll cadence in seconds (range 1.0-2.0)

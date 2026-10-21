@@ -1538,6 +1538,33 @@ def test_modelhub_quant_is_read_from_the_filename():
 
 
 @pytest.mark.parametrize(
+    "filename,repo_id",
+    [
+        ("Qwen3-35B-A3B-Q5_K_M.gguf", "owner/repo"),
+        ("model_A4B_Q4.gguf", "owner/repo"),
+        ("model-A2.7B-Q8.gguf", "owner/repo"),
+        ("weights.gguf", "openai/gpt-oss-20b"),
+        ("weights.gguf", "mistralai/Mixtral-8x7B-v0.1"),
+    ],
+)
+def test_modelhub_detects_explicit_moe_names(filename, repo_id):
+    assert modelhub.is_moe_model_name(filename, repo_id) is True
+
+
+@pytest.mark.parametrize(
+    "filename,repo_id",
+    [
+        ("Llama-3-18B-Q4_K_M.gguf", "owner/dense"),
+        ("model-A3Bextra.gguf", "owner/dense"),
+        ("model-BA3B.gguf", "owner/dense"),
+        ("model.gguf", "owner/dense"),
+    ],
+)
+def test_modelhub_does_not_guess_moe_from_dense_or_partial_names(filename, repo_id):
+    assert modelhub.is_moe_model_name(filename, repo_id) is False
+
+
+@pytest.mark.parametrize(
     "size_gb,vram_mb,band",
     [
         (2.5, 16384, "fits"),
@@ -1562,6 +1589,18 @@ def test_modelhub_fit_unknown_makes_no_claim():
     assert fit["budget_mb"] is None
     assert fit["explanation"] == modelhub.FIT_UNKNOWN_TEXT
     assert "fit" not in fit["wording"].lower().replace("estimate the fit", "")
+
+
+def test_modelhub_exceeds_wording_is_moe_aware_and_dense_is_unchanged():
+    size = 30 * 1024 * 1024 * 1024
+    gpu = [FakeGpu("RTX", 16384)]
+    dense = modelhub.estimate_fit(size, gpu)
+    assert dense["wording"] == (
+        "Larger than your VRAM. It will still run, partly on CPU, and will be slow."
+    )
+    moe = modelhub.estimate_fit(size, gpu, moe=True)
+    assert moe["wording"] == modelhub.MOE_EXCEEDS_WORDING
+    assert moe["moe"] is True
 
 
 def test_modelhub_fit_uses_the_injected_provider_only(tmp_path):

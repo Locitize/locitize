@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 from config import Model, Settings
 from services import ServiceStatus
@@ -576,6 +577,64 @@ def test_gui_command_list_models_includes_gpu_and_cpu_portion_display():
     assert rows[0]["vram_need_mb"] == 0  # and no on-disk file (location doesn't exist)
     assert rows[0]["gpu_portion_display"] == "-"
     assert rows[0]["cpu_portion_display"] == "-"
+
+
+def test_model_rows_detect_moe_once_per_unchanged_file(tmp_path, monkeypatch):
+    import gguf_meta
+
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"GGUF fixture")
+    calls = []
+
+    def fake_header(path):
+        calls.append(path)
+        return SimpleNamespace(expert_count=64)
+
+    monkeypatch.setattr(gguf_meta, "read_gguf_header", fake_header)
+    settings = Settings()
+    empty_store = tmp_path / "empty-store"
+    empty_store.mkdir()
+    settings.paths.model_store = str(empty_store)
+    gc = GuiController(
+        settings, FakeRegistry([_model(location=str(model_path))]),
+        FakeModelController(), FakeWhisper(), FakeManager(),
+        fetch=lambda port, path: None,
+    )
+    assert gc.list_models_merged()[0]["moe"] is True
+    assert gc.list_models_merged()[0]["moe"] is True
+    assert calls == [str(model_path)]
+
+
+def test_unreadable_model_header_uses_dense_wording(tmp_path, monkeypatch):
+    import gguf_meta
+
+    model_path = tmp_path / "broken.gguf"
+    model_path.write_bytes(b"not gguf")
+    monkeypatch.setattr(
+        gguf_meta,
+        "read_gguf_header",
+        lambda path: (_ for _ in ()).throw(gguf_meta.GgufError("broken")),
+    )
+    gc = GuiController(
+        Settings(), FakeRegistry([_model(location=str(model_path))]),
+        FakeModelController(), FakeWhisper(), FakeManager(),
+        fetch=lambda port, path: None,
+    )
+    assert gc.list_models_merged()[0]["moe"] is False
+
+
+def test_describe_fit_keeps_dense_text_and_has_moe_text():
+    dense = gui_controller.describe_fit(20_000, 16_000)
+    assert dense == (
+        "Bigger than your GPU's memory, so part of it runs on the processor. "
+        "It works, but answers will be slower."
+    )
+    moe = gui_controller.describe_fit(20_000, 16_000, moe=True)
+    assert moe == (
+        "Bigger than your GPU's memory, so part of it runs on the processor. "
+        "It only uses a small part of itself for each word, so it still answers "
+        "quickly."
+    )
 
 
 def test_gui_command_compute_vram_need_mb_prefers_the_real_file_size():

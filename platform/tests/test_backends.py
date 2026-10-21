@@ -8,6 +8,9 @@ list instead of guessing another engine's flags.
 
 from __future__ import annotations
 
+import subprocess
+from types import SimpleNamespace
+
 import pytest
 
 import backends
@@ -34,6 +37,7 @@ class _Paths:
 
 class _Services:
     llama_cpp_metrics = True
+    llama_cpp_load_whole = True
     llama_cpp_health_path = "/health"
 
 
@@ -91,6 +95,7 @@ def test_llama_core_command_honours_settings_and_mmproj():
     engine = LlamaCppBackend()
     settings = _Settings()
     settings.services = type("S", (), {"llama_cpp_metrics": False,
+                                       "llama_cpp_load_whole": False,
                                        "llama_cpp_health_path": ""})()
     model = _Model()
     model.mmproj = _MMPROJ
@@ -100,6 +105,72 @@ def test_llama_core_command_honours_settings_and_mmproj():
     assert "--alias" not in cmd  # no name -> no alias
     assert cmd[cmd.index("--mmproj") + 1] == model.mmproj
     assert engine.health_path(settings) is None  # empty -> bare TCP readiness
+
+
+def test_load_mode_is_added_only_when_enabled_and_supported(monkeypatch):
+    engine = LlamaCppBackend()
+    monkeypatch.setattr(backends, "llama_supports_load_mode", lambda _binary: True)
+    cmd = engine.core_command(_BINARY, _Model(), _Settings(), 8080, 8192, -1)
+    assert cmd[cmd.index("--load-mode") + 1] == "none"
+
+    monkeypatch.setattr(backends, "llama_supports_load_mode", lambda _binary: False)
+    unsupported = engine.core_command(_BINARY, _Model(), _Settings(), 8080, 8192, -1)
+    assert "--load-mode" not in unsupported
+
+    settings = _Settings()
+    settings.services = type(
+        "S",
+        (),
+        {
+            "llama_cpp_metrics": True,
+            "llama_cpp_load_whole": False,
+            "llama_cpp_health_path": "/health",
+        },
+    )()
+    monkeypatch.setattr(
+        backends,
+        "llama_supports_load_mode",
+        lambda _binary: (_ for _ in ()).throw(AssertionError("probe must not run")),
+    )
+    disabled = engine.core_command(_BINARY, _Model(), settings, 8080, 8192, -1)
+    assert "--load-mode" not in disabled
+
+
+def test_load_mode_probe_is_cached_by_binary_signature(tmp_path, monkeypatch):
+    binary = tmp_path / "llama-server.exe"
+    binary.write_bytes(b"one build")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(stdout="  --load-mode MODE\n", stderr="")
+
+    backends._LOAD_MODE_SUPPORT_CACHE.clear()
+    monkeypatch.setattr(backends.subprocess, "run", fake_run)
+    assert backends.llama_supports_load_mode(str(binary)) is True
+    assert backends.llama_supports_load_mode(str(binary)) is True
+    assert len(calls) == 1
+    assert calls[0][1]["creationflags"] == backends._NO_WINDOW
+
+    binary.write_bytes(b"a replaced build")
+    assert backends.llama_supports_load_mode(str(binary)) is True
+    assert len(calls) == 2
+
+
+def test_load_mode_probe_failure_or_timeout_is_unsupported(tmp_path, monkeypatch):
+    for name, error in (
+        ("failed.exe", OSError("cannot run")),
+        ("slow.exe", subprocess.TimeoutExpired(["llama-server", "--help"], 5.0)),
+    ):
+        binary = tmp_path / name
+        binary.write_bytes(b"binary")
+        backends._LOAD_MODE_SUPPORT_CACHE.clear()
+        monkeypatch.setattr(
+            backends.subprocess,
+            "run",
+            lambda *args, _error=error, **kwargs: (_ for _ in ()).throw(_error),
+        )
+        assert backends.llama_supports_load_mode(str(binary)) is False
 
 
 def test_register_adds_a_second_engine():

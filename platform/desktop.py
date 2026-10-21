@@ -2625,6 +2625,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 label += "  -  fits your GPU"
             elif fit == "Partly":
                 label += "  -  partly on your GPU"
+                if model.get("moe"):
+                    label += " (still fast)"
             combo.addItem(label, model["id"])
         index = combo.findData(self._selected_id)
         if index < 0 and combo.count():
@@ -2642,7 +2644,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._start_fit_label.setText("")
             return
         self._start_fit_label.setText(
-            gui_controller.describe_fit(model.get("vram_need_mb"), self._gpu_usable_mb())
+            gui_controller.describe_fit(
+                model.get("vram_need_mb"), self._gpu_usable_mb(), bool(model.get("moe"))
+            )
         )
 
     def _on_start_combo_changed(self, _index):
@@ -3044,7 +3048,10 @@ class MainWindow(QtWidgets.QMainWindow):
         for row_index, model in enumerate(rows):
             status = self._status_for(model)
             fit = gui_controller.format_fit(model.get("vram_need_mb"), gpu_usable)
-            fit_text = {"Yes": "Yes", "Partly": "Partly (slower)"}.get(fit, "-")
+            fit_text = {
+                "Yes": "Yes",
+                "Partly": "Partly (still fast)" if model.get("moe") else "Partly (slower)",
+            }.get(fit, "-")
             values = (
                 model["name"],
                 model.get("capabilities_display", "Chat"),
@@ -3229,7 +3236,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if fit == "Yes":
             parts.append("fits your GPU")
         elif fit == "Partly":
-            parts.append("too big for your GPU alone (slower)")
+            parts.append(
+                "too big for your GPU alone, but still fast"
+                if model.get("moe")
+                else "too big for your GPU alone (slower)"
+            )
         if model.get("source") == "discovered":
             parts.append("fine-tuned, not on your list yet")
         elif model.get("source") == "store-discovered":
@@ -4350,7 +4361,11 @@ class MainWindow(QtWidgets.QMainWindow):
             if not self._confirm(
                 "Larger than your VRAM",
                 f"{fit.get('explanation', '')}\n\n{fit.get('disclaimer', '')}\n\n"
-                "Download anyway (will be slow)?",
+                + (
+                    "Download anyway?"
+                    if fit.get("moe")
+                    else "Download anyway (will be slow)?"
+                ),
             ):
                 return
         # The id of the job now being REQUESTED, derived through modelhub's

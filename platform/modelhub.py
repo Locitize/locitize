@@ -216,6 +216,27 @@ FIT_WORDING = {
     "unknown": FIT_UNKNOWN_TEXT,
 }
 
+MOE_EXCEEDS_WORDING = (
+    "Larger than your VRAM. Part of it will run on the processor, but it only "
+    "uses a few billion of its parameters per word, so it should still be quick."
+)
+
+_ACTIVE_PARAMETERS_RE = re.compile(
+    r"(?<![A-Za-z0-9])A\d+(?:\.\d+)?B(?![A-Za-z0-9])", re.IGNORECASE
+)
+
+
+def is_moe_model_name(filename: str, repo_id: str = "") -> bool:
+    """Conservatively recognize Hub names that explicitly identify MoE models."""
+    text = f"{repo_id}/{filename}"
+    lowered = text.lower()
+    return bool(
+        _ACTIVE_PARAMETERS_RE.search(text)
+        or re.search(r"(?<![a-z0-9])gpt-oss(?![a-z0-9])", lowered)
+        or re.search(r"(?<![a-z0-9])mixtral(?![a-z0-9])", lowered)
+    )
+
+
 # Registry defaults for a downloaded row, matching the values M13's Register uses.
 DEFAULT_CONTEXT_SIZE = 8192
 DEFAULT_GPU_LAYERS = 999
@@ -945,7 +966,9 @@ def merge_catalog_and_search(
 # --------------------------------------------------------------------------- #
 
 
-def estimate_fit(size_bytes: int, gpus: Sequence[Any] | None) -> dict[str, Any]:
+def estimate_fit(
+    size_bytes: int, gpus: Sequence[Any] | None, moe: bool = False
+) -> dict[str, Any]:
     """Estimate whether a GGUF of `size_bytes` fits, and show the arithmetic.
 
     `gpus` is exactly what health.GpuInfoProvider.gpus() returns - a list of
@@ -974,6 +997,7 @@ def estimate_fit(size_bytes: int, gpus: Sequence[Any] | None) -> dict[str, Any]:
             "explanation": FIT_UNKNOWN_TEXT,
             "disclaimer": FIT_DISCLAIMER,
             "multi_gpu_caveat": "",
+            "moe": bool(moe),
         }
     # Largest SINGLE card, never the sum: llama.cpp splits a model across cards
     # only when told to, so summing VRAM would over-promise on a default setup.
@@ -991,7 +1015,9 @@ def estimate_fit(size_bytes: int, gpus: Sequence[Any] | None) -> dict[str, Any]:
     )
     return {
         "band": band,
-        "wording": FIT_WORDING[band],
+        "wording": (
+            MOE_EXCEEDS_WORDING if band == "exceeds" and moe else FIT_WORDING[band]
+        ),
         "weights_mb": round(weights_mb, 1),
         "working_mb": round(working_mb, 1),
         "est_mb": round(est_mb, 1),
@@ -1001,6 +1027,7 @@ def estimate_fit(size_bytes: int, gpus: Sequence[Any] | None) -> dict[str, Any]:
         "explanation": explanation,
         "disclaimer": FIT_DISCLAIMER,
         "multi_gpu_caveat": MULTI_GPU_CAVEAT if len(gpus) > 1 else "",
+        "moe": bool(moe),
     }
 
 
@@ -1428,12 +1455,12 @@ class Downloader:
         path = self.config.catalog_path or None
         return load_catalog(path)
 
-    def fit_for(self, size_bytes: int) -> dict[str, Any]:
+    def fit_for(self, size_bytes: int, moe: bool = False) -> dict[str, Any]:
         """VRAM guidance for a file size, from the injected GPU provider only."""
         gpus = None
         if self._gpu_provider is not None:
             gpus = self._gpu_provider.gpus()
-        return estimate_fit(size_bytes, gpus)
+        return estimate_fit(size_bytes, gpus, moe=moe)
 
     def check_disk(self, size_bytes: int, target_dir: Path | str) -> dict[str, Any]:
         """Confirm there is room for the file plus headroom, before the first byte.
@@ -1583,7 +1610,8 @@ class Downloader:
                     "reason": str(exc), "kind": exc.kind}
         items = collapse_shard_sets(parse_tree_paths(payload))
         for item in items:
-            item["fit"] = self.fit_for(item["size_bytes"])
+            item["moe"] = is_moe_model_name(item["filename"], repo_id)
+            item["fit"] = self.fit_for(item["size_bytes"], moe=item["moe"])
             item["verification_label"] = VERIFICATION_LABELS[item["verification"]]
         return {"ok": True, "repo_id": repo_id, "items": items, "reason": ""}
 

@@ -22,14 +22,23 @@ A model row selects its engine with an optional `backend:` field in models.yaml
 (absent -> "llama-cpp", so every existing registry is unchanged). An unknown
 name refuses with the list of registered engines rather than guessing.
 
-Pure: no subprocess, no I/O. ASCII only.
+The only I/O here is a once-per-binary `--help` capability probe for optional
+flags. Command construction stays deterministic after that cached answer.
+ASCII only.
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
+import threading
 from typing import Any, Protocol, runtime_checkable
 
 DEFAULT_BACKEND = "llama-cpp"
+
+# Windows subprocess flag: the desktop runs under pythonw, so even a short
+# capability probe must not flash a console window. Zero is portable elsewhere.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # The offload request that means "everything": the registry's 999 (more layers
 # than any model has; config.default_gpu_layers) and llama.cpp's own -1. Both
@@ -69,6 +78,53 @@ DEFAULT_BACKEND = "llama-cpp"
 # row's own --fit-target or --fit off wins (llama.cpp takes the last value).
 ALL_LAYERS = 999
 FIT_LAYERS = -1
+
+
+_LOAD_MODE_SUPPORT_CACHE: dict[tuple[str, int, int], bool] = {}
+_LOAD_MODE_SUPPORT_LOCK = threading.Lock()
+
+
+def llama_supports_load_mode(binary: str) -> bool:
+    """Probe one llama-server build for --load-mode, once per binary version.
+
+    The file signature makes an in-place binary upgrade a new probe while
+    keeping every model launch in one process after the first one free of a
+    subprocess. An unreadable binary, failed help command, or slow/hung build
+    is treated as unsupported because an unknown flag prevents the server from
+    starting at all.
+    """
+    try:
+        stat = os.stat(binary)
+        key = (
+            os.path.normcase(os.path.abspath(binary)),
+            stat.st_mtime_ns,
+            stat.st_size,
+        )
+    except OSError:
+        return False
+
+    with _LOAD_MODE_SUPPORT_LOCK:
+        cached = _LOAD_MODE_SUPPORT_CACHE.get(key)
+        if cached is not None:
+            return cached
+        try:
+            result = subprocess.run(
+                [binary, "--help"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5.0,
+                check=False,
+                creationflags=_NO_WINDOW,
+            )
+            supported = "--load-mode" in (
+                (result.stdout or "") + (result.stderr or "")
+            )
+        except (OSError, subprocess.SubprocessError):
+            supported = False
+        _LOAD_MODE_SUPPORT_CACHE[key] = supported
+        return supported
 
 
 def offload_value(gpu_layers: int) -> int:
@@ -153,6 +209,28 @@ class LlamaCppBackend:
         ]
         if offload_value(gpu_layers) == FIT_LAYERS and fit_target is not None:
             command.extend(["--fit-target", str(int(fit_target))])
+        # Measured 2026-10-20 on the owner's RTX 5070 Ti 16 GB, llama.cpp
+        # build 11399, Qwen3.8-35B-A3B-Q5_K_M (25.3 GB), ctx 262144, q8_0 KV,
+        # parallel 1, first request, cache_prompt false: mmap read 3108 tokens
+        # at 296 tok/s and 8957 at 787 tok/s, writing 44-58 tok/s. With
+        # --load-mode none, reads were 1788-1810 and 2306-2311 tok/s, writes
+        # 62-66 tok/s, and load times stayed comparable at 17-18s and 19s.
+        # The owner's real chats on this server had averaged about 180 tok/s
+        # reading, and llama.cpp itself logged that CPU tensor overrides with
+        # mmap should use --load-mode none for better performance. -ub 2048 -b
+        # 2048 alone read 474/1484 tok/s and wrote 38-61; none plus -ub 2048
+        # read 2708/3847 but wrote 56-58, so both were rejected under the
+        # owner's never-lower-writing-speed rule. The whole-GPU
+        # gpt-oss-20b-F16 at ctx 32768 showed no harm: default load 8s, read
+        # 4331/6100, write 148/144; none load 4s, read 4591/6096, write
+        # 148/145. Old builds reject this flag, so it is capability-gated.
+        # It precedes owner server_args (appended by ModelRegistry), allowing a
+        # row's explicit --load-mode value to remain the last value and win.
+        if (
+            getattr(settings.services, "llama_cpp_load_whole", True)
+            and llama_supports_load_mode(binary)
+        ):
+            command.extend(["--load-mode", "none"])
         # Report the human registry name through the API instead of the gguf
         # path, so chat model pickers stay readable (owner request 2026-08-14).
         # Injected before owner server_args so an explicit --alias there wins.

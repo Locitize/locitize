@@ -193,6 +193,10 @@ class ServicesConfig:
     # and the monitor degrades honestly (Architecture G5) instead of the model
     # failing to start.
     llama_cpp_metrics: bool = True
+    # Load model tensors into memory instead of leaving CPU-hosted tensors on a
+    # memory map. backends.py capability-checks the installed llama-server first,
+    # so an older build that does not know --load-mode keeps starting normally.
+    llama_cpp_load_whole: bool = True
 
 
 @dataclass

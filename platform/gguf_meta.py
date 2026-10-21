@@ -129,6 +129,7 @@ class GgufHeader:
     # so it is a None rather than an exception - the caller decides what to do.
     context_length: int | None
     block_count: int | None = None
+    expert_count: int | None = None
 
 
 def read_gguf_header(path: str | Path, *, include_layer_count: bool = False) -> GgufHeader:
@@ -223,18 +224,29 @@ def _parse_header(handle: BinaryIO, file_path: Path, *, include_layer_count: boo
     # a silent-wrong-answer bug on a file written in another order.
     context_candidates: dict[str, int] = {}
     block_candidates: dict[str, int] = {}
+    expert_candidates: dict[str, int] = {}
 
     for index in range(kv_count):
-        if include_layer_count and context_length is not None and (index >= 256 or handle.tell() > 1024 * 1024):
+        if context_length is not None and (index >= 256 or handle.tell() > 1024 * 1024):
             break
-        key = _read_string(handle, file_path)
+        try:
+            key = _read_string(handle, file_path)
+        except GgufError:
+            # Preserve the existing early-stop contract for a file whose useful
+            # dimension metadata is complete but whose declared tail is absent.
+            if context_length is not None:
+                break
+            raise
+        # Expert count is normally emitted with the other dimension keys. Once
+        # the native context is known, a tokenizer key marks the vocabulary bulk
+        # we can stop before. Some valid writers put tokenizer keys before the
+        # context key, so those must still be skipped and scanning must continue.
+        if context_length is not None and key.startswith("tokenizer."):
+            break
         value_type = _unpack(
             "<I", _read_exact(handle, 4, file_path, f"the type of '{key}'")
         )
 
-        if include_layer_count and context_length is not None and value_type == 9:
-            # Optional layer facts never require traversing tokenizer arrays.
-            break
         if key == KEY_ARCHITECTURE:
             architecture = str(_read_value(handle, value_type, file_path))
         elif include_layer_count and key.endswith(".block_count"):
@@ -245,6 +257,10 @@ def _parse_header(handle: BinaryIO, file_path: Path, *, include_layer_count: boo
             value = _read_value(handle, value_type, file_path)
             if isinstance(value, int) and not isinstance(value, bool):
                 context_candidates[key] = value
+        elif key.endswith(".expert_count"):
+            value = _read_value(handle, value_type, file_path)
+            if isinstance(value, int) and not isinstance(value, bool):
+                expert_candidates[key] = value
         else:
             _skip_value(handle, value_type, file_path)
 
@@ -253,7 +269,13 @@ def _parse_header(handle: BinaryIO, file_path: Path, *, include_layer_count: boo
         # millisecond range on a 15GB file.
         if architecture and f"{architecture}{CONTEXT_LENGTH_SUFFIX}" in context_candidates:
             context_length = context_candidates[f"{architecture}{CONTEXT_LENGTH_SUFFIX}"]
-            if not include_layer_count or f"{architecture}.block_count" in block_candidates:
+            if (
+                f"{architecture}.expert_count" in expert_candidates
+                and (
+                    not include_layer_count
+                    or f"{architecture}.block_count" in block_candidates
+                )
+            ):
                 break
 
     if context_length is None and architecture:
@@ -274,6 +296,7 @@ def _parse_header(handle: BinaryIO, file_path: Path, *, include_layer_count: boo
         architecture=architecture,
         context_length=context_length,
         block_count=block_candidates.get(f"{architecture}.block_count"),
+        expert_count=expert_candidates.get(f"{architecture}.expert_count"),
     )
 
 
