@@ -15,9 +15,13 @@ payloads, exercising:
 
 from __future__ import annotations
 
+import os
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from config import Model, Settings
 from services import ServiceStatus
@@ -1654,6 +1658,136 @@ models:
     assert registry.get("model-a") is not None
 
 
+_HARDLINKS = pytest.mark.skipif(
+    sys.platform != "win32", reason="hard-link names are read through the Windows API"
+)
+
+
+def _one_model_yaml(path):
+    import json as _json
+
+    return f"""version: 1
+models:
+  - id: model-a
+    name: "Model A"
+    location: {_json.dumps(str(path))}
+    context_size: 8192
+    gpu_layers: -1
+    status: installed
+"""
+
+
+@_HARDLINKS
+def test_delete_model_recycles_every_hard_link_name_of_the_file(tmp_path, _no_real_recycle_bin):
+    """Owner report 2026-10-20: deleted models kept coming back because the
+    same file also sat in the Models folder (and LM Studio, the HF cache) as
+    other hard-link names. Every name goes to the Recycle Bin together."""
+    weights = tmp_path / "data" / "model-a.gguf"
+    store_name = tmp_path / "Models" / "model-a.gguf"
+    other_app = tmp_path / "lmstudio" / "model-a.gguf"
+    for path in (weights, store_name, other_app):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    weights.write_bytes(b"weights")
+    os.link(weights, store_name)
+    os.link(weights, other_app)
+    gc, registry = _real_gui_controller(tmp_path, _one_model_yaml(weights))
+
+    gc.delete_model("model-a")
+    _dispatch_next(gc)
+    result = gc.result_q.get_nowait()
+
+    assert result.kind == "delete_model" and result.ok
+    assert len(result.payload["deleted_files"]) == 3
+    assert len(_no_real_recycle_bin) == 1 and len(_no_real_recycle_bin[0]) == 3
+    assert not weights.exists() and not store_name.exists() and not other_app.exists()
+    assert registry.get("model-a") is None
+
+
+@_HARDLINKS
+def test_delete_model_keeps_a_file_another_row_reaches_by_a_different_name(tmp_path):
+    weights_a = tmp_path / "a" / "model.gguf"
+    weights_b = tmp_path / "b" / "model.gguf"
+    weights_a.parent.mkdir()
+    weights_b.parent.mkdir()
+    weights_a.write_bytes(b"weights")
+    os.link(weights_a, weights_b)
+    import json as _json
+
+    gc, registry = _real_gui_controller(
+        tmp_path,
+        _one_model_yaml(weights_a)
+        + f"""
+  - id: model-b
+    name: "Model B"
+    location: {_json.dumps(str(weights_b))}
+    context_size: 8192
+    gpu_layers: -1
+    status: installed
+""",
+    )
+
+    gc.delete_model("model-a")
+    _dispatch_next(gc)
+    result = gc.result_q.get_nowait()
+
+    assert result.ok
+    assert result.payload["skipped_shared_files"] == [str(weights_a)]
+    assert weights_a.exists() and weights_b.exists()
+    assert registry.get("model-a") is None and registry.get("model-b") is not None
+
+
+def test_delete_model_leaves_the_row_when_the_recycle_bin_refuses(tmp_path, monkeypatch):
+    import recycle
+
+    weights = tmp_path / "model-a.gguf"
+    weights.write_bytes(b"weights")
+    gc, registry = _real_gui_controller(tmp_path, _one_model_yaml(weights))
+
+    def refuse(paths):
+        raise OSError("the move was cancelled")
+
+    monkeypatch.setattr(recycle, "send_to_recycle_bin", refuse)
+    gc.delete_model("model-a")
+    _dispatch_next(gc)
+    result = gc.result_q.get_nowait()
+
+    assert result.kind == "delete_model" and not result.ok
+    assert "Recycle Bin" in result.error and "cancelled" in result.error
+    assert weights.exists()
+    assert registry.get("model-a") is not None
+
+
+def test_delete_model_reports_a_missing_file_and_still_removes_the_row(tmp_path):
+    gone = tmp_path / "gone.gguf"
+    gc, registry = _real_gui_controller(tmp_path, _one_model_yaml(gone))
+
+    gc.delete_model("model-a")
+    _dispatch_next(gc)
+    result = gc.result_q.get_nowait()
+
+    assert result.ok
+    assert result.payload["missing_files"] == [str(gone)]
+    assert result.payload["deleted_files"] == []
+    assert registry.get("model-a") is None
+
+
+@_HARDLINKS
+def test_delete_file_names_lists_every_folder_for_the_confirm_dialog(tmp_path):
+    weights = tmp_path / "a" / "model.gguf"
+    copy = tmp_path / "b" / "model.gguf"
+    weights.parent.mkdir()
+    copy.parent.mkdir()
+    weights.write_bytes(b"weights")
+    os.link(weights, copy)
+
+    names = gui_controller.delete_file_names(
+        {"location": str(weights), "mmproj": str(tmp_path / "missing.gguf")}
+    )
+
+    assert names[0] == str(weights)
+    assert len(names) == 2
+
+
 # --------------------------------------------------------------------------- #
 # request_launch_harness / _do_launch_harness (owner request 2026-08-21:
 # Claude Code / Codex / OpenCode from the Code page)
@@ -2457,6 +2591,26 @@ def test_delete_removes_an_unlisted_gguf_found_in_the_models_folder(tmp_path):
     assert result.kind == "delete_model" and result.ok
     assert result.payload["deleted_files"] == [str(found)]
     assert not found.exists()
+
+
+@_HARDLINKS
+def test_store_delete_recycles_every_hard_link_name(tmp_path):
+    store = tmp_path / "Models"
+    store.mkdir()
+    found = store / "unlisted.gguf"
+    found.write_bytes(b"GGUF")
+    elsewhere = tmp_path / "hf-cache" / "unlisted.gguf"
+    elsewhere.parent.mkdir()
+    os.link(found, elsewhere)
+    gc, _registry = _real_gui_controller(tmp_path, "version: 1\nmodels: []\n")
+    gc._settings.paths.model_store = str(store)
+
+    gc.delete_model("store:" + str(found))
+    _dispatch_next(gc)
+    result = gc.result_q.get_nowait()
+
+    assert result.ok and len(result.payload["deleted_files"]) == 2
+    assert not found.exists() and not elsewhere.exists()
 
 
 def test_store_delete_never_reaches_outside_the_models_folder(tmp_path):

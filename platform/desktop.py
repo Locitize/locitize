@@ -4220,18 +4220,30 @@ class MainWindow(QtWidgets.QMainWindow):
         model = self._selected_model()
         if model is None or not self._delete_btn.isEnabled():
             return
+        # Owner report 2026-10-20: one model file can sit in several folders
+        # at once (the Models folder, LM Studio, the Hugging Face cache), and
+        # deleting only one of them never freed the space and let the model
+        # come back. Every folder is listed so the owner sees what goes.
         paths = [p for p in (model.get("location"), model.get("mmproj")) if p]
-        file_list = "\n".join(f"  - {p}" for p in paths) or "  (no file on disk recorded)"
+        names = gui_controller.delete_file_names(model)
+        file_list = "\n".join(f"  - {p}" for p in names) or "  (no file on disk recorded)"
         if model.get("source") == "store-discovered":
-            what = "It is not on your list. This deletes this file from disk"
+            what = "It is not on your list. This moves it to the Recycle Bin from"
         else:
-            what = "This removes it from your list AND deletes these files from disk"
+            what = "This removes it from your list and moves it to the Recycle Bin from"
+        shared_note = ""
+        if len(names) > len(paths):
+            shared_note = (
+                "The same file is in more than one folder, so other apps that "
+                "use it (such as LM Studio) lose it too.\n\n"
+            )
         confirmed = QtWidgets.QMessageBox.warning(
             self,
             "Delete model",
-            f'Permanently delete "{model["name"]}"?\n\n'
+            f'Delete "{model["name"]}"?\n\n'
             f"{what}:\n{file_list}\n\n"
-            f"This cannot be undone.",
+            f"{shared_note}"
+            f"Emptying the Recycle Bin frees the space.",
             QtWidgets.QMessageBox.StandardButton.Yes
             | QtWidgets.QMessageBox.StandardButton.Cancel,
             QtWidgets.QMessageBox.StandardButton.Cancel,
@@ -5197,7 +5209,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._selected_id = None
         self._refresh_model_rows()
         self._select_initial_model()
-        summary = f"Deleted ({len(deleted)} file(s) removed"
+        summary = f"Deleted ({len(deleted)} file(s) moved to the Recycle Bin"
         if skipped:
             summary += f", {len(skipped)} kept - still used by another model"
         summary += ")"

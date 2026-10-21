@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+import recycle
+
 # A gibibyte would read low against the disk vendor's decimal GB (a 10.26e9-byte
 # .gguf shows 9.6 "GiB" but 10.3 "GB"); the owner reads sizes in the same decimal
 # GB the model card and disk report, so the Size column divides by 1e9 (G2 batch,
@@ -46,6 +48,31 @@ _BYTES_PER_GB = 1_000_000_000
 
 # Row id prefix for a GGUF found in the Models folder but not on the list.
 STORE_ID_PREFIX = "store:"
+
+
+def _shares_file(path: str, others: list[str]) -> bool:
+    """Whether any of `others` is the same file as `path`, by any hard-link name."""
+    for other in others:
+        try:
+            if os.path.samefile(path, other):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def delete_file_names(model: dict[str, Any]) -> list[str]:
+    """Every name a Delete of this model row moves to the Recycle Bin.
+
+    Used by the confirm dialog so the owner sees each folder before saying
+    yes. The lookup is a couple of file-system calls per file, fine on the UI
+    thread. A file that is not on disk is left out.
+    """
+    names: list[str] = []
+    for path in (model.get("location"), model.get("mmproj")):
+        if path and Path(path).is_file():
+            names.extend(recycle.file_names(path))
+    return names
 
 
 # --------------------------------------------------------------------------- #
@@ -1996,9 +2023,10 @@ class GuiController:
         return True
 
     def delete_model(self, model_id: str) -> None:
-        """Enqueue a Delete: removes the models.yaml row AND the file(s) it
-        points at (owner request 2026-08-21). The UI is responsible for the
-        confirmation dialog naming what will be deleted BEFORE calling this -
+        """Enqueue a Delete: moves every name of the file(s) the row points at
+        to the Recycle Bin, then removes the models.yaml row (owner requests
+        2026-08-21 and 2026-10-20). The UI is responsible for the confirmation
+        dialog naming what will go BEFORE calling this -
         this method only validates state, the same two refusals every other
         model-lifecycle write already enforces:
           - a discovered row (no models.yaml block to remove);
@@ -2410,15 +2438,18 @@ class GuiController:
                         return
                 except OSError:
                     continue
-        missing = []
-        try:
-            target.unlink()
-        except FileNotFoundError:
+        missing, names = [], []
+        if target.exists():
+            names = recycle.file_names(raw_path)
+        else:
             missing.append(raw_path)
+        try:
+            recycle.send_to_recycle_bin(names)
         except OSError as exc:
             refuse(
-                f"could not delete {raw_path}: {exc.strerror or exc}. Close any "
-                f"program using it, then try again."
+                f"could not move {raw_path} to the Recycle Bin: "
+                f"{exc.strerror or exc}. Close any program using it, then try "
+                f"again."
             )
             return
         self.result_q.put(
@@ -2426,7 +2457,7 @@ class GuiController:
                 "delete_model", True,
                 {
                     "model_id": model_id,
-                    "deleted_files": [] if missing else [raw_path],
+                    "deleted_files": names,
                     "skipped_shared_files": [],
                     "missing_files": missing,
                 },
@@ -4761,38 +4792,43 @@ class GuiController:
             )
             return
 
-        other_paths = {
-            str(_Path(p).resolve())
+        other_paths = [
+            p
             for m in self._registry.all()
             if m.id != model_id
             for p in (m.location, m.mmproj)
             if p
-        }
+        ]
 
-        deleted, skipped_shared, missing = [], [], []
+        # Owner report 2026-10-20: one file has several hard-link names (the
+        # Models folder, LM Studio, the HF cache...). Every name goes to the
+        # Recycle Bin together, or the data stays on disk and the Models
+        # folder name comes straight back as a discovered row.
+        deleted, skipped_shared, missing, targets = [], [], [], []
         for raw_path in (p for p in (model.location, model.mmproj) if p):
-            path = _Path(raw_path)
-            if str(path.resolve()) in other_paths:
+            if not _Path(raw_path).exists():
+                missing.append(raw_path)
+                continue
+            if _shares_file(raw_path, other_paths):
                 skipped_shared.append(raw_path)
                 continue
-            try:
-                path.unlink()
-                deleted.append(raw_path)
-            except FileNotFoundError:
-                missing.append(raw_path)
-            except OSError as exc:
-                self.result_q.put(
-                    Result(
-                        "delete_model", False, {"model_id": model_id},
-                        error=(
-                            f"could not delete {raw_path}: "
-                            f"{exc.strerror or exc}. Close any program using "
-                            f"it, then try again. The model list entry was "
-                            f"left in place."
-                        ),
-                    )
+            targets.extend(recycle.file_names(raw_path))
+        try:
+            recycle.send_to_recycle_bin(targets)
+        except OSError as exc:
+            self.result_q.put(
+                Result(
+                    "delete_model", False, {"model_id": model_id},
+                    error=(
+                        f"could not move {model.name} to the Recycle Bin: "
+                        f"{exc.strerror or exc}. Close any program using it, "
+                        f"then try again. The model list entry was left in "
+                        f"place."
+                    ),
                 )
-                return
+            )
+            return
+        deleted.extend(targets)
 
         try:
             remove_model_entry(self._settings.data_dir, model_id)

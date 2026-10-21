@@ -30,3 +30,36 @@ if _PLATFORM_DIR not in sys.path:
 # still lands in the temp dir. logger.resolve_log_dir reads this variable first.
 if not os.environ.get("LOCITIZE_LOG_DIR"):
     os.environ["LOCITIZE_LOG_DIR"] = tempfile.mkdtemp(prefix="locitize-test-logs-")
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_real_recycle_bin(monkeypatch):
+    """Keep every test out of the owner's real Recycle Bin.
+
+    recycle.send_to_recycle_bin is swapped for a stand-in that applies the
+    same refusals (files only, nothing half-done) and then removes the files,
+    so a test can check what is gone. The calls are recorded on the fixture
+    value. tests/test_recycle.py reaches the real function through
+    `recycle._real_send_to_recycle_bin` where it needs to.
+    """
+    import recycle
+
+    calls: list[list[str]] = []
+
+    def fake(paths):
+        paths = list(paths)
+        if not paths:
+            return
+        for path in paths:
+            if not os.path.isfile(path):
+                raise OSError(f"{path} is not a file")
+        calls.append(paths)
+        for path in paths:
+            os.remove(path)
+
+    monkeypatch.setattr(recycle, "_real_send_to_recycle_bin", recycle.send_to_recycle_bin, raising=False)
+    monkeypatch.setattr(recycle, "send_to_recycle_bin", fake)
+    return calls
