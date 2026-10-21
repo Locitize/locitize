@@ -1021,14 +1021,21 @@ def build_laya_steer_completion(
 # the first system message for the same reason the notes above are (templates
 # render only the first one). The name is the registry's, not the model's guess,
 # so it stays correct for every row without per-model prompt editing.
-_IDENTITY_SENTINEL = "LOCITIZE model identity:"
+#
+# Owner report 2026-10-20: the note said "through LOCITIZE", and a model copied
+# the capitals and described a "LOCITIZE version" it said was distilled and
+# quantized. So the note spells the name as the app does and says locitize only
+# runs the model; it made none of it.
+_IDENTITY_SENTINEL = "locitize model identity:"
 
 
 def build_identity_note(model_name: str) -> str:
     """The one-line system note naming the model that is about to answer."""
     return (
         f"{_IDENTITY_SENTINEL} you are {model_name}, running locally on this "
-        "computer through LOCITIZE. When asked which model or assistant you "
+        "computer in the locitize app. locitize only runs you; it did not "
+        "make, train, distill or change you, so never describe yourself as a "
+        "locitize version or model. When asked which model or assistant you "
         "are, answer with that name."
     )
 

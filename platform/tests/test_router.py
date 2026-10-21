@@ -1431,6 +1431,15 @@ def test_the_identity_note_is_appended_to_an_existing_system_message():
     assert messages[0]["content"].endswith(build_identity_note("Qwen3.6-35B-A3B"))
 
 
+def test_the_identity_note_names_locitize_only_as_the_app_that_runs_it():
+    """Owner report 2026-10-20: "through LOCITIZE" led a model to write about a
+    "LOCITIZE version" of itself that locitize never made."""
+    note = build_identity_note("Qwen3.8-35B-A3B-Q5_K_M")
+    assert "LOCITIZE" not in note
+    assert "locitize app" in note
+    assert "did not make" in note
+
+
 def test_naming_the_model_is_idempotent():
     once = apply_model_identity(_body([{"role": "user", "content": "hi"}]), "M")
     twice = apply_model_identity(once, "M")
