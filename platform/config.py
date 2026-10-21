@@ -2182,6 +2182,46 @@ def write_model_mmproj(base_dir: Path | str, model_id: str, mmproj: str) -> None
     _edit_registry(base_dir, edit)
 
 
+def write_model_status(base_dir: Path | str, model_id: str, status: str) -> None:
+    """Rewrite ONLY a model's status line in models.yaml.
+
+    Owner request 2026-10-20: two models first-run setup imported as
+    "disabled" ("Turned off on your list") had no way back on from the app.
+    Same targeted, atomic, comment-preserving edit as write_model_mmproj.
+    """
+    if status not in VALID_MODEL_STATUS:
+        raise ValueError(
+            f"status must be one of {', '.join(VALID_MODEL_STATUS)} (got {status!r})"
+        )
+
+    def edit(lines: list[str], path: Path) -> str:
+        start, end = _locate_model_block(lines, model_id)
+        if start is None:
+            raise ValueError(
+                f"model id '{model_id}' not found in {MODELS_FILE}; "
+                f"cannot write status"
+            )
+        idx = _find_key_line(lines, start, end, "status")
+        if idx is None:
+            raise ValueError(
+                f"could not locate 'status:' line for model '{model_id}' in "
+                f"{MODELS_FILE}; refusing to guess"
+            )
+        lines[idx] = _replace_value_line(lines[idx], status, quote=False)
+        new_text = "".join(lines)
+        parsed = yaml.safe_load(new_text)
+        rows = (parsed or {}).get("models") or []
+        row = next((r for r in rows if isinstance(r, dict) and r.get("id") == model_id), None)
+        if row is None or str(row.get("status", "")) != status:
+            raise ValueError(
+                f"post-write verification failed for status on '{model_id}'; "
+                f"file left unchanged"
+            )
+        return new_text
+
+    _edit_registry(base_dir, edit)
+
+
 def write_model_reasoning(
     base_dir: Path | str, model_id: str, reasoning: dict[str, Any] | None
 ) -> None:

@@ -1907,6 +1907,33 @@ class GuiController:
             )
         )
 
+    def set_model_enabled(self, model_id: str, enabled: bool) -> None:
+        """Enqueue turning a listed model on ("installed") or off ("disabled").
+
+        Owner request 2026-10-20: rows first-run setup imported as turned off
+        had no way back on. Refuses a discovered row (no models.yaml block) and
+        turning off the model that is running right now.
+        """
+        if self._is_discovered(model_id):
+            self.result_q.put(
+                Result(
+                    "set_enabled", False, {"model_id": model_id},
+                    error=DISCOVERED_EDIT_REFUSAL,
+                )
+            )
+            return
+        if not enabled and self._controller.running_model_id == model_id:
+            self.result_q.put(
+                Result(
+                    "set_enabled", False, {"model_id": model_id},
+                    error="stop this model before turning it off",
+                )
+            )
+            return
+        self.command_q.put(
+            Command("set_enabled", {"model_id": model_id, "enabled": bool(enabled)})
+        )
+
     def request_autotune_context(self, model_id: str) -> None:
         """Enqueue an "Auto-tune context" run for ONE model (owner request 2026-08-22).
 
@@ -3242,6 +3269,8 @@ class GuiController:
             self._do_save_identity(command.payload)
         elif command.kind == "save_capabilities":
             self._do_save_capabilities(command.payload)
+        elif command.kind == "set_enabled":
+            self._do_set_enabled(command.payload)
         elif command.kind == "delete_model":
             self._do_delete_model(command.payload)
         elif command.kind == "autotune":
@@ -4519,6 +4548,34 @@ class GuiController:
                 True,
                 {"model_id": model_id, "capabilities": capabilities},
             )
+        )
+
+    def _do_set_enabled(self, payload: dict[str, Any]) -> None:
+        """Write the status line, then reload, same as _do_save_capabilities."""
+        from config import Config, RegistryWriteError, write_model_status
+
+        model_id = payload["model_id"]
+        status = "installed" if payload["enabled"] else "disabled"
+        try:
+            write_model_status(self._settings.data_dir, model_id, status)
+        except (ValueError, RegistryWriteError) as exc:
+            self.result_q.put(
+                Result("set_enabled", False, {"model_id": model_id}, error=str(exc))
+            )
+            return
+        _settings, models, issues = Config.load(self._settings.data_dir)
+        errors = [i for i in issues if getattr(i, "severity", "") == "ERROR"]
+        if errors:
+            self.result_q.put(
+                Result(
+                    "set_enabled", False, {"model_id": model_id},
+                    error="; ".join(str(i) for i in errors[:3]),
+                )
+            )
+            return
+        self._registry.reload(models)
+        self.result_q.put(
+            Result("set_enabled", True, {"model_id": model_id, "status": status})
         )
 
     def _do_autotune_context(self, model_id: str) -> str:

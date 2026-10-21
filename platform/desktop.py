@@ -4192,18 +4192,29 @@ class MainWindow(QtWidgets.QMainWindow):
         self._gc.request_add_model_file(path)
 
     def _on_model_table_menu(self, pos):
-        """Right-click on a model row: Use it, or Delete it (asks first)."""
+        """Right-click on a model row: Use it, turn it on or off, or Delete it
+        (asks first)."""
         row = self._model_table.rowAt(pos.y())
         if row < 0:
             return
         self._model_table.selectRow(row)
+        model = self._selected_model()
         menu = QtWidgets.QMenu(self._model_table)
         use = menu.addAction("Use this model")
+        toggle = None
+        if model and model.get("source") == "registry" and model.get("status") in (
+            "installed", "disabled"
+        ):
+            toggle = menu.addAction(
+                "Turn on" if model.get("status") == "disabled" else "Turn off"
+            )
         delete = menu.addAction("Delete...")
         delete.setEnabled(self._delete_btn.isEnabled())
         chosen = menu.exec(self._model_table.viewport().mapToGlobal(pos))
         if chosen is use:
             self._go_to("Start")
+        elif toggle is not None and chosen is toggle:
+            self._gc.set_model_enabled(model["id"], model.get("status") == "disabled")
         elif chosen is delete:
             self._on_delete_model()
 
@@ -4913,6 +4924,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._apply_identity_result(result)
         elif kind == "save_capabilities":
             self._apply_capabilities_result(result)
+        elif kind == "set_enabled":
+            self._apply_set_enabled_result(result)
         elif kind == "delete_model":
             self._apply_delete_model_result(result)
         elif kind == "autotune_progress":
@@ -5191,6 +5204,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._capabilities_error.clear()
         self._refresh_model_rows()
         self._on_capabilities_change()
+
+    def _apply_set_enabled_result(self, result):
+        """Re-read the list after a model was turned on or off, so its status
+        and whether it can be started both come from the saved list."""
+        if not result.ok:
+            self._model_status.setText(result.error or "could not change the model")
+            return
+        name = next(
+            (m["name"] for m in self._models if m["id"] == result.payload.get("model_id")),
+            "Model",
+        )
+        self._on_refresh_models()
+        on = result.payload.get("status") == "installed"
+        self._model_status.setText(f"{name} turned {'on' if on else 'off'}")
 
     def _apply_delete_model_result(self, result):
         """Remove the model from every UI surface after a confirmed Delete."""

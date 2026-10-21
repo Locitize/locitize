@@ -2659,3 +2659,33 @@ models:
     assert result.kind == "delete_model" and not result.ok
     assert "model-a" in result.error
     assert weights.exists() and registry.get("model-a") is not None
+
+
+def test_set_model_enabled_turns_a_switched_off_model_back_on_and_off(tmp_path):
+    """Owner request 2026-10-20: models setup imported as turned off had no
+    way back on from the app. Only the status line changes."""
+    weights = tmp_path / "model-a.gguf"
+    weights.write_bytes(b"weights")
+    gc, registry = _real_gui_controller(
+        tmp_path, _one_model_yaml(weights).replace("status: installed", "status: disabled")
+    )
+
+    gc.set_model_enabled("model-a", True)
+    _dispatch_next(gc)
+    result = gc.result_q.get_nowait()
+
+    assert result.kind == "set_enabled" and result.ok
+    assert result.payload["status"] == "installed"
+    assert registry.get("model-a").status == "installed"
+
+    gc.set_model_enabled("model-a", False)
+    _dispatch_next(gc)
+    assert gc.result_q.get_nowait().ok
+    assert registry.get("model-a").status == "disabled"
+
+
+def test_write_model_status_refuses_an_unknown_status(tmp_path):
+    from config import write_model_status
+
+    with pytest.raises(ValueError):
+        write_model_status(tmp_path, "model-a", "on")
