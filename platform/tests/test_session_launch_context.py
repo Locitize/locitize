@@ -69,6 +69,22 @@ def test_codex_local_launch_turns_off_cloud_only_extras(tmp_path):
     assert config.read_bytes() == before
 
 
+@pytest.mark.parametrize("context_size, keeps_memory", [
+    (None, False), (16384, False), (65535, False), (65536, True), (262144, True)])
+def test_codex_memory_notes_follow_the_tuned_context(tmp_path, context_size, keeps_memory):
+    # Owner decision 2026-10-20: memory notes and skills come back at 65,536
+    # tokens; apps, plug-ins and personal MCP servers stay off at any size.
+    config = _codex_config(tmp_path, '[mcp_servers.cloudflare]\nurl = "https://x"\n')
+    argv, _ = build_local_launch("codex", str(tmp_path), "registered", 8080,
+                                 context_size=context_size, codex_config_path=config)
+    values = overrides(argv)
+    for key in ("features.memories", "skills.include_instructions"):
+        assert (key not in values) is keeps_memory
+    assert values["features.apps"] is False
+    assert values["features.plugins"] is False
+    assert values["mcp_servers.cloudflare.enabled"] is False
+
+
 def test_codex_gets_web_search_through_the_router_only(tmp_path):
     config = _codex_config(tmp_path, "")
     argv, _ = build_local_launch("codex", str(tmp_path), "registered", 8080,

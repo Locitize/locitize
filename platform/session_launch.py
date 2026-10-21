@@ -23,14 +23,33 @@ WEB_TOOL_SCRIPT = Path(__file__).resolve().with_name("web_search_mcp.py")
 # tokens with the web search tool included. The owner's config.toml is not
 # touched: these are -c overrides for the launched process only.
 CODEX_LEAN_OVERRIDES = {
-    "features.memories": False,
-    "skills.include_instructions": False,
+    # Apps and plug-ins connect to online services built for OpenAI's models,
+    # and through the router every one of their tools would reach the local
+    # model, so they stay off at any context size.
     "features.apps": False,
     "features.plugins": False,
     "features.multi_agent": False,
     # Codex's own web search runs on OpenAI's servers; locitize_web replaces it.
     "web_search": "disabled",
 }
+
+# Owner decision 2026-10-20: the memory notes and skills list (measured the
+# same day: 7,501 -> 14,932 first-request tokens) come back when the model has
+# room for them, so Codex keeps the owner's preferences and past decisions
+# across a summary. The size is the model's auto-tuned context_size, read
+# fresh at every launch.
+CODEX_MEMORY_CONTEXT = 65536
+CODEX_MEMORY_OVERRIDES = {
+    "features.memories": False,
+    "skills.include_instructions": False,
+}
+
+
+def codex_keeps_memory(context_size) -> bool:
+    """True when a model's context is big enough for Codex's memory notes and
+    skills list. An unknown size is treated as small."""
+    return (isinstance(context_size, int) and not isinstance(context_size, bool)
+            and context_size >= CODEX_MEMORY_CONTEXT)
 
 # Below this a coding tool summarizes its work every few steps: Codex alone
 # starts at about 7,500 tokens.
@@ -143,6 +162,8 @@ def build_local_launch(provider, project, model_id, port, resume_id="", context_
             overrides["model_context_window"] = context_size
             overrides["model_auto_compact_token_limit"] = max(1, context_size * 4 // 5)
         overrides.update(CODEX_LEAN_OVERRIDES)
+        if not codex_keeps_memory(context_size):
+            overrides.update(CODEX_MEMORY_OVERRIDES)
         for name in user_codex_mcp_servers(codex_config_path):
             overrides[f"mcp_servers.{name}.enabled"] = False
         if codex_port:
