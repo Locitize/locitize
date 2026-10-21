@@ -2797,6 +2797,22 @@ class GuiController:
             )
         )
 
+    def _local_launch_extras(self) -> dict:
+        """Keyword arguments every local coding-terminal launch shares.
+
+        The router port goes to Codex only when the router is on and answering:
+        it is the hop that lets Codex's MCP tools (web search) reach a local
+        model. data_root lets the web search tool write the privacy ledger.
+        """
+        from session_launch import port_answers
+
+        extras = {"data_root": self._settings.data_dir}
+        router_on = bool(getattr(getattr(self._settings, "router", None), "enabled", False))
+        router_port = getattr(getattr(self._settings, "ports", None), "router", None)
+        if router_on and port_answers(router_port):
+            extras["codex_port"] = router_port
+        return extras
+
     def request_session_launch(self, payload: dict) -> None:
         """Serialize model readiness and a local coding launch on the ops worker."""
         self.command_q.put(Command("session_launch", dict(payload)))
@@ -2804,7 +2820,7 @@ class GuiController:
     def _do_session_launch(self, payload: dict) -> None:
         import sqlite3
         import harness_launch
-        from session_launch import build_local_launch
+        from session_launch import build_local_launch, context_warning
         from session_store import SessionStore
 
         model_id = payload.get("model_id", "")
@@ -2823,12 +2839,16 @@ class GuiController:
                 raise ValueError("The selected model did not become ready. See Models for details.")
             registered = self._registry.get(model_id)
             argv, env = build_local_launch(choice, project, model_id, self._active_port,
-                                           payload.get("resume_id", ""), registered.context_size)
+                                           payload.get("resume_id", ""), registered.context_size,
+                                           **self._local_launch_extras())
             harness_launch.spawn_in_terminal(argv, project, env, f"{choice} - locitize ({model_id})")
             self._controller._session_reserved_model = model_id
             self._local_session_launches = getattr(self, "_local_session_launches", 0) + 1
             sid = payload.get("resume_id")
             result_payload = dict(payload)
+            small = context_warning(registered.context_size)
+            if small:
+                result_payload["warning"] = small
             if payload.get("remember"):
                 current = getattr(
                     getattr(self._settings, "chat_harness", None),
@@ -2842,10 +2862,12 @@ class GuiController:
                         write_chat_harness_dir(self._settings.data_dir, project)
                         self._settings.chat_harness.last_project_dir = project
                     except (ValueError, OSError) as exc:
-                        result_payload["warning"] = (
+                        remembered = (
                             "Terminal opened, but the project folder could not be "
                             f"remembered: {exc}"
                         )
+                        result_payload["warning"] = " ".join(
+                            filter(None, [result_payload.get("warning"), remembered]))
             if sid:
                 try:
                     SessionStore(self._settings.data_dir).update(choice, sid, model_id=model_id, project=project)
@@ -3807,13 +3829,16 @@ class GuiController:
         note = ""
 
         try:
-            from session_launch import build_local_launch
+            from session_launch import build_local_launch, context_warning
             registered = self._registry.get(model_id)
+            context_size = registered.context_size if registered else None
             argv, env = build_local_launch(
                 choice, project_dir, model_id, port,
-                context_size=registered.context_size if registered else None,
+                context_size=context_size,
+                **self._local_launch_extras(),
             )
             note = "Local model routing applies to this terminal only."
+            small = context_warning(context_size)
 
             harness_launch.spawn_in_terminal(
                 argv, project_dir, env, title=f"{choice} - locitize ({model_id})"
@@ -3826,7 +3851,7 @@ class GuiController:
             )
             return
 
-        warning = ""
+        warning = small
         if remember and project_dir != self._settings.chat_harness.last_project_dir:
             from config import write_chat_harness_dir
 
@@ -3834,10 +3859,10 @@ class GuiController:
                 write_chat_harness_dir(self._settings.data_dir, project_dir)
                 self._settings.chat_harness.last_project_dir = project_dir
             except (ValueError, OSError) as exc:
-                warning = (
+                warning = " ".join(filter(None, [small, (
                     "Terminal opened, but the project folder could not be "
                     f"remembered: {exc}"
-                )
+                )]))
 
         self.result_q.put(
             Result(
