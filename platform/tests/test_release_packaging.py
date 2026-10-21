@@ -101,3 +101,21 @@ def test_setup_data_root_follows_the_real_data_dir_when_packaged(tmp_path, monke
     (code.parent / "runtime").mkdir()
     (code.parent / "runtime" / "python.exe").touch()
     assert default_data_root(code) == data  # packaged: never inside the install tree
+
+
+def test_shortcut_carries_the_desktop_taskbar_identity(tmp_path, monkeypatch):
+    """Owner report 2026-10-20: the taskbar showed a blank icon because no
+    shortcut carried the id the running desktop claims."""
+    import setup_env
+    import desktop
+
+    (tmp_path / "locitize.vbs").touch()
+    monkeypatch.setattr(setup_env, "BASE_DIR", tmp_path)
+    calls = []
+    monkeypatch.setattr(setup_env, "_run", lambda argv, **kw: (calls.append(argv) or (0, "")))
+    assert setup_env.create_desktop_shortcut().ok
+    script = calls[0][-1]
+    assert f"[LocitizeLnkId]::Set($lnk, '{setup_env.APP_USER_MODEL_ID}')" in script
+    assert script.index("$s.Save()") < script.index("LocitizeLnkId")
+    source = Path(desktop.__file__).read_text(encoding="utf-8")
+    assert f'"{setup_env.APP_USER_MODEL_ID}"' in source

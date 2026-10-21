@@ -1326,6 +1326,49 @@ def enable_openwebui_via_venv(
     return StepResult("openwebui_enable", True, out.strip() or "Open WebUI enabled")
 
 
+# The taskbar identity the desktop claims for itself (desktop.run sets the same
+# id). Windows draws a running app's taskbar button from the shortcut that
+# carries its id; with no such shortcut it fell back to a blank window icon
+# (owner report 2026-10-20), even though the window's own icon was the logo.
+APP_USER_MODEL_ID = "Locitize.LOCITIZE.Desktop"
+
+# Writes System.AppUserModel.ID onto a saved .lnk. Windows PowerShell has no
+# cmdlet for shortcut properties, so this goes through the shell's own
+# IPropertyStore on the link object (PKEY_AppUserModel_ID, VT_LPWSTR).
+_LNK_AUMID_CSHARP = r"""
+using System;
+using System.Runtime.InteropServices;
+public static class LocitizeLnkId {
+  [StructLayout(LayoutKind.Sequential, Pack = 4)]
+  public struct PropertyKey { public Guid fmtid; public uint pid; }
+  [StructLayout(LayoutKind.Explicit)]
+  public struct PropVariant { [FieldOffset(0)] public ushort vt; [FieldOffset(8)] public IntPtr p; }
+  [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IPropertyStore {
+    void GetCount(out uint c); void GetAt(uint i, out PropertyKey k);
+    void GetValue(ref PropertyKey k, out PropVariant v); void SetValue(ref PropertyKey k, ref PropVariant v);
+    void Commit();
+  }
+  [ComImport, Guid("0000010b-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IPersistFile {
+    void GetClassID(out Guid g); [PreserveSig] int IsDirty();
+    void Load([MarshalAs(UnmanagedType.LPWStr)] string f, uint mode);
+    void Save([MarshalAs(UnmanagedType.LPWStr)] string f, bool remember);
+    void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string f);
+    void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string f);
+  }
+  public static void Set(string path, string id) {
+    object link = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046")));
+    ((IPersistFile)link).Load(path, 2);
+    var key = new PropertyKey { fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), pid = 5 };
+    var v = new PropVariant { vt = 31, p = Marshal.StringToCoTaskMemUni(id) };
+    try { ((IPropertyStore)link).SetValue(ref key, ref v); ((IPropertyStore)link).Commit(); ((IPersistFile)link).Save(path, true); }
+    finally { Marshal.FreeCoTaskMem(v.p); }
+  }
+}
+"""
+
+
 def create_desktop_shortcut() -> StepResult:
     """Create (or refresh) a Desktop shortcut to locitize.vbs (M17.12).
 
@@ -1373,7 +1416,11 @@ def create_desktop_shortcut() -> StepResult:
         "$s.WorkingDirectory = '" + dir_ps + "'; "
         + icon_line +
         "$s.Description = 'Launch locitize'; "
-        "$s.Save()"
+        "$s.Save(); "
+        # Best-effort: a shortcut without the id still launches, it only shows
+        # a blank taskbar icon, so a failure here never fails the step.
+        "try { Add-Type -TypeDefinition @'\n" + _LNK_AUMID_CSHARP + "\n'@; "
+        "[LocitizeLnkId]::Set($lnk, '" + APP_USER_MODEL_ID + "') } catch { }"
     )
     rc, out = _run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
