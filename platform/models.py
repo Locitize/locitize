@@ -118,6 +118,8 @@ class ModelRegistry:
         # Big-model placement (placement.py): injectable so specs build without a
         # model file, a binary or a GPU in tests.
         self._placement_fn = placement.plan_for_launch
+        self._clear_fn = placement.clear_machine
+        self._release_fn = placement.release_machine
         # Index by id for O(1) lookup; ids are validated unique at load time.
         self._by_id = {m.id: m for m in data.models}
 
@@ -286,8 +288,25 @@ class ModelRegistry:
         # describe the card an instant before the load.
         fit_target = None
         budget = None
+        yielded: list[str] = []
         if backends.offload_value(resolved_gpu) == backends.FIT_LAYERS:
             budget = self._fit_budget_fn(binary)
+            # Clearing the machine (placement.py): a mixture-of-experts model that cannot
+            # fit the card even when it is empty is worth asking the GPU neighbours to
+            # step aside for, and waiting for their RAM to come back, before the card is
+            # measured and the model placed. Anything smaller is placed as it comes.
+            neighbours = list(getattr(s.services, "gpu_neighbours", None) or [])
+            if (
+                neighbours
+                and budget is not None
+                and engine.name == backends.DEFAULT_BACKEND
+                and placement.placement_mode(model.placement) != placement.PLACEMENT_FIT
+                and placement.needs_the_whole_card(model.location, budget.adapter_total_mib)
+            ):
+                launcher_log = get_logger("launcher")
+                yielded = self._clear_fn(neighbours, log=lambda text: launcher_log.info("%s: %s", model.id, text))
+                if yielded:
+                    budget = self._fit_budget_fn(binary) or budget
             if budget is not None:
                 fit_target = budget.target_mib
                 get_logger("launcher").info("%s: %s", model.id, budget.describe())
@@ -370,6 +389,9 @@ class ModelRegistry:
             # file would land, and "the install tree" is the wrong answer (W1).
             cwd=resolve_service_cwd(s),
             env=plan.env() if plan is not None else {},
+            on_stop=(lambda: self._release_fn(
+                yielded, log=lambda text: get_logger("launcher").info("%s: %s", model.id, text)))
+            if yielded else None,
             port=port,
             health_path=engine.health_path(s),
             ready_timeout_s=ready_timeout,

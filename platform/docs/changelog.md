@@ -8,6 +8,10 @@
   (sizes per block, experts, Mamba blocks of hybrids), plans against the card's real free
   memory and the machine's RAM, and only changes the argv for such a model. `placement: fit`
   on a models.yaml row keeps the engine's fit mode.
+- Clearing the machine: `services.gpu_neighbours` lists other GPU servers that step aside on
+  request before a model that needs the whole card starts (and come back when it stops);
+  locitize waits for their RAM to return before sizing the model, since the streamed model's
+  expert cache is sized from free RAM at launch.
 
 ## 1.0.3 - one-download Windows package
 

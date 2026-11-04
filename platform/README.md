@@ -169,6 +169,13 @@ Flags:
   with `placement: fit`. Measured on an RTX 5070 Ti with 32 GB RAM: gpt-oss-120b ready in
   27 s, 14 to 16 tok/s generation; the engine's fit mode alone put it in shared memory at
   about 5 tok/s.
+  Such a model streams from the drive through a RAM cache that the server sizes from the
+  free RAM at launch, so what else is loaded on the machine decides its speed. Before one
+  starts, locitize can clear the machine: `services.gpu_neighbours` in settings.yaml lists
+  other servers on this card (a phone line's speech server, a model hub) that step aside on
+  request (`POST <url>/gpu {"yield": true}`, `GET <url>/gpu` for their state); locitize asks
+  each one, waits for the RAM to come back, measures the card again and plans; when the
+  model stops they are told to return. A neighbour on a call keeps the GPU.
 - `--json` - Output structured JSON. Besides the outcome it carries `tokens_per_second`
   (one timed generation) and `gpu_placement` (`dedicated_mb`, `shared_mb`, `spilled` -
   the process's measured GPU memory; `shared_mb` is what Windows paged through system

@@ -497,6 +497,129 @@ def plan_for_launch(binary: str, location: str, context: int, server_args: list[
     return placed if placed.changes_argv else None
 
 
+# --------------------------------------------------------------------------- #
+# Clearing the machine: GPU neighbours
+# --------------------------------------------------------------------------- #
+#
+# Other servers on the same card (a phone line's speech server keeping a voice and a
+# model loaded, a model hub holding idle models) are "GPU neighbours": settings
+# services.gpu_neighbours lists their base URLs. Each speaks the same small protocol:
+#
+#     GET  <url>/gpu                   -> {"yield": bool, "in_call": bool}
+#     POST <url>/gpu {"yield": true, "by": "locitize"}   -> {"done": bool, "in_call": bool}
+#     POST <url>/gpu {"yield": false, "by": "locitize"}
+#
+# Before a model that needs the whole card starts, locitize asks each neighbour to give
+# the GPU up, then waits for the machine's RAM to settle (the streamed-model build sizes
+# its expert cache from free RAM at launch, so launching into a half-released machine
+# costs tokens per second for the life of the process), re-measures and plans. When the
+# model stops, the neighbours that yielded are told to come back. A neighbour on a call
+# keeps the GPU and the plan simply has less to work with.
+
+RAM_SETTLE_SECONDS = 20.0     # at most this long for freed RAM to come back
+RAM_SETTLE_STEADY = 3.0       # ... or until free RAM has not grown for this long
+RAM_SETTLE_STEP_MB = 256      # growth smaller than this counts as settled
+
+
+def _post_json(url: str, body: dict, timeout: float) -> dict | None:
+    import json
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.load(resp)
+    except Exception:
+        return None
+
+
+def _get_json(url: str, timeout: float) -> dict | None:
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=timeout) as resp:
+            return json.load(resp)
+    except Exception:
+        return None
+
+
+def ram_available_mb() -> int:
+    try:
+        import psutil
+        return int(psutil.virtual_memory().available / MB)
+    except Exception:
+        return 0
+
+
+def clear_machine(neighbours: list[str], *, post=_post_json, get=_get_json, ram=ram_available_mb,
+                  sleep=None, clock=None, log=None) -> list[str]:
+    """Ask every neighbour to give the GPU up, then wait for RAM to settle. Returns the
+    neighbours that yielded (release_machine takes the same list). Never raises."""
+    import time as _time
+    sleep = sleep or _time.sleep
+    clock = clock or _time.monotonic
+    yielded: list[str] = []
+    for base in [str(n).rstrip("/") for n in neighbours if str(n).strip()]:
+        state = get(f"{base}/gpu", 3.0)
+        if state is None:
+            if log:
+                log(f"GPU neighbour {base} is not answering; going on without it")
+            continue
+        if state.get("in_call"):
+            if log:
+                log(f"GPU neighbour {base} is on a call and keeps the GPU")
+            continue
+        if state.get("yield"):
+            yielded.append(base)      # already ours (a previous start); release it later too
+            continue
+        answer = post(f"{base}/gpu", {"yield": True, "by": "locitize"}, 25.0) or {}
+        if answer.get("done"):
+            yielded.append(base)
+            if log:
+                log(f"GPU neighbour {base} gave the GPU up")
+        elif log:
+            log(f"GPU neighbour {base} kept the GPU ({'on a call' if answer.get('in_call') else 'refused'})")
+    if yielded:
+        _wait_for_ram(ram, sleep, clock, log)
+    return yielded
+
+
+def _wait_for_ram(ram, sleep, clock, log) -> None:
+    """Wait until free RAM stops growing (the neighbours' pages have come back)."""
+    start = last_growth = clock()
+    best = ram()
+    while clock() - start < RAM_SETTLE_SECONDS:
+        sleep(0.5)
+        now = ram()
+        if now - best >= RAM_SETTLE_STEP_MB:
+            best, last_growth = now, clock()
+        elif clock() - last_growth >= RAM_SETTLE_STEADY:
+            break
+    if log:
+        log(f"RAM settled at {best} MB free")
+
+
+def release_machine(neighbours: list[str], *, post=_post_json, log=None) -> None:
+    """Tell the neighbours that yielded to take the GPU back. Never raises."""
+    for base in neighbours:
+        answer = post(f"{base}/gpu", {"yield": False, "by": "locitize"}, 25.0)
+        if log:
+            log(f"GPU neighbour {base} {'has the GPU back' if answer and answer.get('done') else 'could not be told to come back'}")
+
+
+def needs_the_whole_card(location: str, vram_total_mb: int | None, *, layout_fn=read_layout) -> bool:
+    """True for a mixture-of-experts model that cannot fit the card even when empty: the
+    one case worth clearing the machine for. Never raises."""
+    if not vram_total_mb or not location:
+        return False
+    try:
+        if not os.path.isfile(location):
+            return False
+        layout = layout_fn(location)
+    except Exception:
+        return False
+    return layout.is_moe and layout.file_mb + GPU_OVERHEAD_MB > vram_total_mb - VRAM_MARGIN_MB
+
+
 def placement_mode(value: str | None) -> str:
     """Normalize a row's `placement:` ("" and "auto" plan; "fit" never does)."""
     mode = str(value or "").strip().lower()

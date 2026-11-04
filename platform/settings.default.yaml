@@ -68,6 +68,11 @@ services:
                                      # build rejects the flag (monitor degrades)
   llama_cpp_load_whole: true         # use --load-mode none when this llama-server
                                      # supports it; set false to keep mmap loading
+  gpu_neighbours: []                 # other servers on this card that step aside on
+                                     # request (POST <url>/gpu {"yield": true}) before a
+                                     # model too big for the card starts, and come back
+                                     # when it stops; e.g. a phone line's speech server
+                                     # or a model hub. Empty: nobody is asked
 
 gui:
   monitor_interval_s: 1.5    # live-monitor poll cadence in seconds (range 1.0-2.0)

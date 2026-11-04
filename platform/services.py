@@ -202,6 +202,10 @@ class ServiceSpec:
     # not prove. Matching the executable file, not a command-line substring,
     # means another program's copy of the same tool is never stopped.
     replace_executable: str | None = None
+    # Runs once, after the process is confirmed gone: the start spec uses it to give
+    # the GPU back to the neighbours it asked to step aside (placement.py). Failures
+    # are logged, never raised; a stop is a stop.
+    on_stop: Any = None
 
 
 # Injectable seams for testing --------------------------------------------- #
@@ -859,7 +863,18 @@ class ManagedProcess:
         # still (believed) alive the child may keep writing to it.
         if self._status is ServiceStatus.STOPPED:
             self._close_log_handle()
+            self._run_on_stop()
         return self._status
+
+    def _run_on_stop(self) -> None:
+        hook = getattr(self._spec, "on_stop", None)
+        if hook is None:
+            return
+        self._spec.on_stop = None   # once
+        try:
+            hook()
+        except Exception as exc:  # the stop already happened; the hook must not undo it
+            self._log.warning("on_stop hook for %s failed: %s", self._spec.name, exc)
 
     def _terminate_and_confirm(self, handle: ProcessHandle) -> bool:
         """Force-kill the PID we launched and confirm it exited; True iff dead.

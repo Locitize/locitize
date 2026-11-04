@@ -197,6 +197,12 @@ class ServicesConfig:
     # memory map. backends.py capability-checks the installed llama-server first,
     # so an older build that does not know --load-mode keeps starting normally.
     llama_cpp_load_whole: bool = True
+    # GPU neighbours (placement.py): base URLs of other servers on this card that give
+    # the GPU up on request (POST <url>/gpu {"yield": true}) and take it back later.
+    # Before a mixture-of-experts model that cannot fit the card starts, locitize asks
+    # each one to step aside and waits for the RAM to come back; when the model stops
+    # they are told to return. Empty: nobody is asked.
+    gpu_neighbours: list[str] = field(default_factory=list)
 
 
 @dataclass

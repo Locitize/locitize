@@ -414,6 +414,154 @@ def test_start_spec_without_a_budget_reading_does_not_plan(tmp_path: Path):
     assert FLAG_CPU_MOE not in registry.build_start_spec("big").command
 
 
+# --------------------------------------------------------------------------- #
+# Clearing the machine: GPU neighbours
+# --------------------------------------------------------------------------- #
+
+
+class _Neighbours:
+    """Fake neighbours keyed by base URL: state dicts the protocol reads and flips."""
+
+    def __init__(self, **states):
+        self.states = states
+        self.posts: list[tuple[str, dict]] = []
+
+    def get(self, url, timeout):
+        base = url.rsplit("/gpu", 1)[0]
+        state = self.states.get(base)
+        return None if state is None else dict(state)
+
+    def post(self, url, body, timeout):
+        base = url.rsplit("/gpu", 1)[0]
+        self.posts.append((base, body))
+        state = self.states.get(base)
+        if state is None:
+            return None
+        if body["yield"] and state["in_call"]:
+            return {"done": False, "in_call": True}
+        state["yield"] = body["yield"]
+        return {"done": True, "in_call": False}
+
+
+def _ram_steps(values):
+    it = iter(values)
+    last = [values[0]]
+
+    def ram():
+        try:
+            last[0] = next(it)
+        except StopIteration:
+            pass
+        return last[0]
+    return ram
+
+
+def test_clear_machine_asks_each_neighbour_and_waits_for_ram(monkeypatch: pytest.MonkeyPatch):
+    fake = _Neighbours(**{"http://speech:47825": {"yield": False, "in_call": False},
+                          "http://hub:8787/api/compute": {"yield": False, "in_call": False}})
+    slept, logs, now = [], [], [0.0]
+    ram = _ram_steps([2000, 6000, 12000, 15000, 15100, 15150, 15160, 15160, 15160, 15160, 15160])
+    monkeypatch.setattr(placement, "RAM_SETTLE_STEADY", 1.0)
+
+    def sleep(seconds):
+        slept.append(seconds)
+        now[0] += seconds
+    yielded = placement.clear_machine(["http://speech:47825/", "http://hub:8787/api/compute", ""], post=fake.post,
+                                      get=fake.get, ram=ram, sleep=sleep, clock=lambda: now[0], log=logs.append)
+    assert yielded == ["http://speech:47825", "http://hub:8787/api/compute"]
+    assert [b for _, b in fake.posts] == [{"yield": True, "by": "locitize"}] * 2
+    assert all(s["yield"] for s in fake.states.values())
+    assert 3 <= len(slept) <= 40 and any(t.startswith("RAM settled at") for t in logs)
+
+
+def test_clear_machine_leaves_a_busy_or_absent_neighbour_alone():
+    fake = _Neighbours(**{"http://speech:47825": {"yield": False, "in_call": True},
+                          "http://already": {"yield": True, "in_call": False}})
+    logs = []
+    yielded = placement.clear_machine(["http://speech:47825", "http://gone:1", "http://already"], post=fake.post,
+                                      get=fake.get, ram=lambda: 1000, sleep=lambda s: None, log=logs.append)
+    assert yielded == ["http://already"], "one on a call keeps the GPU; one that already yielded is ours to release"
+    assert fake.posts == [] and any("on a call" in t for t in logs) and any("not answering" in t for t in logs)
+
+
+def test_release_machine_tells_the_neighbours_to_come_back():
+    fake = _Neighbours(**{"http://speech:47825": {"yield": True, "in_call": False}})
+    logs = []
+    placement.release_machine(["http://speech:47825", "http://gone:1"], post=fake.post, log=logs.append)
+    assert fake.states["http://speech:47825"]["yield"] is False
+    assert [b for _, b in fake.posts] == [{"yield": False, "by": "locitize"}] * 2
+    assert any("has the GPU back" in t for t in logs) and any("could not be told" in t for t in logs)
+
+
+def test_needs_the_whole_card_is_true_only_for_a_moe_bigger_than_an_empty_card(tmp_path: Path):
+    big = _big_moe(tmp_path)
+    assert placement.needs_the_whole_card(str(big), 16303)
+    assert not placement.needs_the_whole_card(str(big), 80000)
+    assert not placement.needs_the_whole_card(str(big), None)
+    assert not placement.needs_the_whole_card(str(tmp_path / "missing.gguf"), 16303)
+    dense = write_gguf(tmp_path / "dense.gguf", "qwen3", {"block_count": 2, "attention.head_count": 4,
+                       "embedding_length": 512}, _dense_tensors(2, 400_000_000))
+    assert not placement.needs_the_whole_card(str(dense), 1000), "a dense model is the engine's fit mode's job"
+
+
+class _TotalBudget(_Budget):
+    adapter_total_mib = 16303
+
+
+def test_start_spec_clears_the_machine_for_a_model_that_needs_the_whole_card(tmp_path: Path):
+    _big_moe(tmp_path)
+    registry = _registry(tmp_path)
+    registry._settings.services.gpu_neighbours = ["http://speech:47825"]
+    readings = iter([_TotalBudget(), type("Bigger", (_TotalBudget,), {"real_free_mib": 15800})()])
+    registry._fit_budget_fn = lambda binary: next(readings)
+    cleared, released, planned = [], [], []
+    registry._clear_fn = lambda neighbours, log=None: cleared.append(list(neighbours)) or ["http://speech:47825"]
+    registry._release_fn = lambda neighbours, log=None: released.append(list(neighbours))
+    registry._placement_fn = lambda b, loc, ctx, args, free: planned.append(free) or None
+    spec = registry.build_start_spec("big")
+    assert cleared == [["http://speech:47825"]]
+    assert planned == [15800], "the card is measured again after the neighbours stepped aside"
+    assert spec.on_stop is not None and released == []
+    spec.on_stop()
+    assert released == [["http://speech:47825"]]
+
+
+def test_start_spec_does_not_clear_the_machine_when_nothing_needs_it(tmp_path: Path):
+    _big_moe(tmp_path)
+    registry = _registry(tmp_path)
+    registry._fit_budget_fn = lambda binary: _TotalBudget()
+    registry._clear_fn = lambda *a, **k: pytest.fail("no neighbours configured: nobody to ask")
+    assert registry.build_start_spec("big").on_stop is None
+    registry._settings.services.gpu_neighbours = ["http://speech:47825"]
+    opted_out = _registry(tmp_path, placement_value="fit")
+    opted_out._settings.services.gpu_neighbours = ["http://speech:47825"]
+    opted_out._fit_budget_fn = lambda binary: _TotalBudget()
+    opted_out._clear_fn = lambda *a, **k: pytest.fail("placement: fit never clears the machine")
+    assert opted_out.build_start_spec("big").on_stop is None
+    small = _registry(tmp_path, location=str(write_gguf(tmp_path / "small.gguf", "gptoss", _ARCH_META,
+                                                         _moe_tensors(blocks=4, expert_elems=3200, attn_elems=100))))
+    small._settings.services.gpu_neighbours = ["http://speech:47825"]
+    small._fit_budget_fn = lambda binary: _TotalBudget()
+    small._clear_fn = lambda *a, **k: pytest.fail("a model that fits the card asks nobody")
+    assert small.build_start_spec("big").on_stop is None
+
+
+def test_managed_process_runs_on_stop_once_after_a_confirmed_stop():
+    import services
+    from services import ServiceSpec
+
+    ran = []
+    spec = ServiceSpec(name="llama_cpp:big", command=["x"], on_stop=lambda: ran.append("released"))
+    proc = services.ManagedProcess.__new__(services.ManagedProcess)
+    proc._spec, proc._log = spec, services.get_logger("launcher") if hasattr(services, "get_logger") else __import__("logging").getLogger("t")
+    proc._run_on_stop()
+    proc._run_on_stop()
+    assert ran == ["released"] and spec.on_stop is None
+    bad = ServiceSpec(name="llama_cpp:big", command=["x"], on_stop=lambda: 1 / 0)
+    proc._spec = bad
+    proc._run_on_stop()   # logged, never raised
+
+
 def test_placement_mode_normalizes_the_row_value():
     assert placement.placement_mode("") == "auto" and placement.placement_mode(None) == "auto"
     assert placement.placement_mode(" Fit ") == "fit" and placement.placement_mode("whatever") == "auto"
