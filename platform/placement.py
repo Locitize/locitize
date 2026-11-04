@@ -522,6 +522,7 @@ def plan_for_launch(binary: str, location: str, context: int, server_args: list[
 # model stops, the neighbours that yielded are told to come back. A neighbour on a call
 # keeps the GPU and the plan simply has less to work with.
 
+ASKER = "locitize"            # how this app names itself to its neighbours ("by")
 RAM_SETTLE_SECONDS = 20.0     # at most this long for freed RAM to come back
 RAM_SETTLE_STEADY = 3.0       # ... or until free RAM has not grown for this long
 RAM_SETTLE_STEP_MB = 256      # growth smaller than this counts as settled
@@ -577,7 +578,7 @@ def clear_machine(neighbours: list[str], *, post=_post_json, get=_get_json, ram=
         if state.get("yield"):
             yielded.append(base)      # already ours (a previous start); release it later too
             continue
-        answer = post(f"{base}/gpu", {"yield": True, "by": "locitize"}, 25.0) or {}
+        answer = post(f"{base}/gpu", {"yield": True, "by": ASKER}, 25.0) or {}
         if answer.get("done"):
             yielded.append(base)
             if log:
@@ -607,7 +608,7 @@ def _wait_for_ram(ram, sleep, clock, log) -> None:
 def release_machine(neighbours: list[str], *, post=_post_json, log=None) -> None:
     """Tell the neighbours that yielded to take the GPU back. Never raises."""
     for base in neighbours:
-        answer = post(f"{base}/gpu", {"yield": False, "by": "locitize"}, 25.0)
+        answer = post(f"{base}/gpu", {"yield": False, "by": ASKER}, 25.0)
         if log:
             log(f"GPU neighbour {base} {'has the GPU back' if answer and answer.get('done') else 'could not be told to come back'}")
 

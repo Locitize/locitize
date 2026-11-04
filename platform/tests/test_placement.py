@@ -471,7 +471,7 @@ def test_clear_machine_asks_each_neighbour_and_waits_for_ram(monkeypatch: pytest
     yielded = placement.clear_machine(["http://speech:47825/", "http://hub:8787/api/compute", ""], post=fake.post,
                                       get=fake.get, ram=ram, sleep=sleep, clock=lambda: now[0], log=logs.append)
     assert yielded == ["http://speech:47825", "http://hub:8787/api/compute"]
-    assert [b for _, b in fake.posts] == [{"yield": True, "by": "locitize"}] * 2
+    assert [b for _, b in fake.posts] == [{"yield": True, "by": placement.ASKER}] * 2
     assert all(s["yield"] for s in fake.states.values())
     assert 3 <= len(slept) <= 40 and any(t.startswith("RAM settled at") for t in logs)
 
@@ -491,7 +491,7 @@ def test_release_machine_tells_the_neighbours_to_come_back():
     logs = []
     placement.release_machine(["http://speech:47825", "http://gone:1"], post=fake.post, log=logs.append)
     assert fake.states["http://speech:47825"]["yield"] is False
-    assert [b for _, b in fake.posts] == [{"yield": False, "by": "locitize"}] * 2
+    assert [b for _, b in fake.posts] == [{"yield": False, "by": placement.ASKER}] * 2
     assert any("has the GPU back" in t for t in logs) and any("could not be told" in t for t in logs)
 
 
