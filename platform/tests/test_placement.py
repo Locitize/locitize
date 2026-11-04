@@ -180,7 +180,7 @@ def _layout(expert_per_block_mb: float, blocks: int, shared_mb: float, embd_mb: 
                        kv_bytes_per_token=kv_per_token, token_embd_mb=embd_mb, expert_mb_per_block=experts)
 
 
-ALL_FLAGS = {FLAG_CPU_MOE, FLAG_MOE_CACHE, FLAG_NO_OP_OFFLOAD}
+ALL_FLAGS = {FLAG_CPU_MOE, FLAG_MOE_CACHE, FLAG_NO_OP_OFFLOAD, placement.FLAG_LOAD_MODE}
 
 
 def test_plan_leaves_a_model_that_fits_alone():
@@ -207,6 +207,7 @@ def test_plan_moves_the_first_blocks_experts_to_ram_until_the_rest_fits():
     args = placed.args(ALL_FLAGS, thread_args=["-t", "16", "-tb", "20"])
     assert args[:2] == [FLAG_CPU_MOE, str(placed.cpu_moe_blocks)]
     assert FLAG_NO_OP_OFFLOAD not in args and args[-8:] == ["-b", "2048", "-ub", "1024", "-t", "16", "-tb", "20"]
+    assert "--load-mode" not in args, "experts that fit RAM may be loaded whole; the row or the build decides"
     assert placed.env() == {}
     assert "in RAM" in placed.describe()
 
@@ -220,6 +221,7 @@ def test_plan_streams_from_the_drive_when_the_experts_exceed_ram():
     assert placed.moe_cache_mib == 0, "a hot-expert cache over drive-backed experts is slower than none"
     args = placed.args(ALL_FLAGS, thread_args=[])
     assert FLAG_NO_OP_OFFLOAD in args and args[:2] == [FLAG_CPU_MOE, str(placed.cpu_moe_blocks)]
+    assert args[args.index("--load-mode") + 1] == "mmap", "streaming needs the memory map whatever the default"
     assert placed.env() == {"GGML_EXPERT_STREAM": "1"}
     assert "streamed from the drive" in placed.describe()
     # The smaller stream overhead buys the GPU at least as many expert blocks as the RAM plan.

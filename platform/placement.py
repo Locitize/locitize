@@ -129,7 +129,8 @@ MIN_CACHE_MB = 768
 FLAG_CPU_MOE = "--n-cpu-moe"
 FLAG_MOE_CACHE = "--moe-cache-mib"
 FLAG_NO_OP_OFFLOAD = "--no-op-offload"
-PLANNER_FLAGS = (FLAG_CPU_MOE, FLAG_MOE_CACHE, FLAG_NO_OP_OFFLOAD)
+FLAG_LOAD_MODE = "--load-mode"
+PLANNER_FLAGS = (FLAG_CPU_MOE, FLAG_MOE_CACHE, FLAG_NO_OP_OFFLOAD, FLAG_LOAD_MODE)
 
 # models.yaml `placement:` values.
 PLACEMENT_AUTO = "auto"   # also the meaning of an absent field
@@ -334,6 +335,11 @@ class Placement:
             # Copying SSD-backed experts to the GPU for every prompt batch is what made
             # prompts crawl; the CPU works on them in place, in large batches.
             out.append(FLAG_NO_OP_OFFLOAD)
+        if self.mode == "stream" and FLAG_LOAD_MODE in flags:
+            # Streaming is the memory map: a setting or build default that loads whole
+            # models into RAM (--load-mode none) would try to read all 60 GB. Later
+            # flags win in llama.cpp, so a row's own --load-mode in server_args still can.
+            out += [FLAG_LOAD_MODE, "mmap"]
         out += ["-b", str(CPU_BATCH), "-ub", str(CPU_UBATCH)]
         out += thread_args if thread_args is not None else default_thread_args()
         return out
