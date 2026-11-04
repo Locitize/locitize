@@ -159,6 +159,16 @@ Flags:
   processes, so locitize measures what they hold at each launch and passes the
   corrected margin as `--fit-target` (a row's own `--fit-target` in `server_args`
   wins). Any other number is passed through as-is.
+  A mixture-of-experts model larger than the card (gpt-oss-120b, 60 GB, on 16 GB) gets a
+  better cut than whole layers: `placement.py` reads the GGUF tensor table and keeps
+  attention, the shared weights and the KV cache on the GPU while the EXPERT weights of
+  the first N blocks go to RAM (`--n-cpu-moe N`), or stream from the drive when they do
+  not fit RAM either (single slot, large CPU prompt batches, `GGML_EXPERT_STREAM=1` for a
+  server build that reads experts directly). Automatic for such a model when the installed
+  llama-server knows `--n-cpu-moe`; everything else keeps the argv above. A row opts out
+  with `placement: fit`. Measured on an RTX 5070 Ti with 32 GB RAM: gpt-oss-120b ready in
+  27 s, 14 to 16 tok/s generation; the engine's fit mode alone put it in shared memory at
+  about 5 tok/s.
 - `--json` - Output structured JSON. Besides the outcome it carries `tokens_per_second`
   (one timed generation) and `gpu_placement` (`dedicated_mb`, `shared_mb`, `spilled` -
   the process's measured GPU memory; `shared_mb` is what Windows paged through system

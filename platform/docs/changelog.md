@@ -1,5 +1,14 @@
 # locitize Platform Changelog
 
+## Big-model placement - 2026-11-04
+
+- A mixture-of-experts model larger than the GPU is served with its expert weights in RAM
+  (`--n-cpu-moe`) or streamed from the drive, instead of whole layers on the CPU: gpt-oss-120b
+  (60 GB) runs on a 16 GB card at 14 to 16 tok/s. `placement.py` reads the GGUF tensor table
+  (sizes per block, experts, Mamba blocks of hybrids), plans against the card's real free
+  memory and the machine's RAM, and only changes the argv for such a model. `placement: fit`
+  on a models.yaml row keeps the engine's fit mode.
+
 ## 1.0.3 - one-download Windows package
 
 - build_release.py produces locitize-1.0.3-windows (zip + .sha256) with a bundled Python runtime; no Python install is needed.

@@ -18,6 +18,7 @@ from typing import Any
 import backends
 import finetune
 import gpu_ledger
+import placement
 from config import Model, ModelRegistryData, Settings
 from logger import get_logger
 from services import ServiceSpec, resolve_service_cwd, strip_managed_flags
@@ -114,6 +115,9 @@ class ModelRegistry:
         # The per-launch fit-margin reading (gpu_ledger.fit_budget); injectable
         # so specs build without a GPU or a binary in tests.
         self._fit_budget_fn = fit_budget_fn if fit_budget_fn is not None else gpu_ledger.fit_budget
+        # Big-model placement (placement.py): injectable so specs build without a
+        # model file, a binary or a GPU in tests.
+        self._placement_fn = placement.plan_for_launch
         # Index by id for O(1) lookup; ids are validated unique at load time.
         self._by_id = {m.id: m for m in data.models}
 
@@ -281,6 +285,7 @@ class ModelRegistry:
         # cannot be trusted on Windows. Two readings, ~0.4s, taken here so they
         # describe the card an instant before the load.
         fit_target = None
+        budget = None
         if backends.offload_value(resolved_gpu) == backends.FIT_LAYERS:
             budget = self._fit_budget_fn(binary)
             if budget is not None:
@@ -291,9 +296,33 @@ class ModelRegistry:
                     "%s: fit margin not measurable here; llama-server keeps its default",
                     model.id,
                 )
+        resolved_server_args = (
+            server_args if server_args is not None else model.server_args
+        )
+        # Big-model placement (placement.py): a mixture-of-experts model larger than
+        # the card keeps attention and shared weights on the GPU and its expert
+        # weights in RAM or streamed from the drive, instead of the engine's
+        # whole-layer fit. Only such a model gets a plan; everything else keeps the
+        # argv it had. Planned only for the built-in engine, whose flags these are.
+        plan = None
+        if (
+            engine.name == backends.DEFAULT_BACKEND
+            and placement.placement_mode(model.placement) != placement.PLACEMENT_FIT
+            and budget is not None
+        ):
+            plan = self._placement_fn(
+                binary, model.location, resolved_ctx, list(resolved_server_args), budget.real_free_mib
+            )
+        if plan is not None:
+            # The plan says exactly what goes where: every layer on the GPU except the
+            # experts it names, so the engine's fit request (and its target) is not sent.
+            resolved_gpu, fit_target = plan.gpu_layers, None
+            get_logger("launcher").info("%s: %s", model.id, plan.describe())
         command = engine.core_command(
             binary, model, s, port, resolved_ctx, resolved_gpu, fit_target=fit_target
         )
+        if plan is not None:
+            command.extend(plan.args(set(placement.engine_flags(binary))))
         # L-4 (managed-flag rejection): --host/--port are resolved by the platform
         # and already baked into the argv above. Strip them (with a WARNING) from
         # owner-supplied server_args before appending, so a stray --port in
@@ -305,9 +334,6 @@ class ModelRegistry:
         # shell string), so no metacharacter or command-chaining injection is
         # possible -- the worst case is the owner's own llama.cpp behaving as the
         # owner's own flags direct.
-        resolved_server_args = (
-            server_args if server_args is not None else model.server_args
-        )
         command.extend(strip_managed_flags(f"llama_cpp:{model.id}", resolved_server_args))
 
         # M5.6: append speculative-decoding flags, data-driven from the model's
@@ -343,7 +369,7 @@ class ModelRegistry:
             # which weights are loaded; it only decides where a stray relative
             # file would land, and "the install tree" is the wrong answer (W1).
             cwd=resolve_service_cwd(s),
-            env={},
+            env=plan.env() if plan is not None else {},
             port=port,
             health_path=engine.health_path(s),
             ready_timeout_s=ready_timeout,

@@ -814,6 +814,12 @@ class Model:
     # would be a fabricated distinction. Empty -> the UI shows a plain "Chat"
     # default rather than a blank cell.
     capabilities: list[str] = field(default_factory=list)
+    # Big-model placement (placement.py): "" or "auto" lets the planner move a
+    # mixture-of-experts model's expert weights to RAM, or stream them from the
+    # drive, when the model is larger than the card; "fit" keeps the engine's own
+    # fit mode only. Absent in every existing row, which plans exactly as before
+    # for any model that fits (the planner changes nothing then).
+    placement: str = ""
 
 
 def compute_vram_need_mb(vram_estimate_mb: int, size_bytes: int | None) -> float:
@@ -1230,6 +1236,7 @@ def _build_model(row: Any, index: int, issues: list[ConfigIssue]) -> Model | Non
         # Absent in every pre-M14 row, which is exactly the additive contract.
         sha256=str(row.get("sha256", "") or ""),
         capabilities=[str(c).strip() for c in (row.get("capabilities") or []) if str(c).strip()],
+        placement=str(row.get("placement", "") or "").strip().lower(),
     )
 
 
