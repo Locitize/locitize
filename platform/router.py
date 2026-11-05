@@ -621,6 +621,7 @@ def promote_reasoning_to_content(payload: dict) -> dict:
                 isinstance(reasoning, str)
                 and reasoning.strip()
                 and _message_content_blank(message)
+                and not message.get("tool_calls")   # a tool call is the answer
             ):
                 message["content"] = reasoning
                 choice["message"] = message
@@ -634,7 +635,7 @@ def promote_reasoning_to_content(payload: dict) -> dict:
             content_blank = content is None or (
                 isinstance(content, str) and not content.strip()
             )
-            if isinstance(reasoning, str) and reasoning and content_blank:
+            if isinstance(reasoning, str) and reasoning and content_blank and not delta.get("tool_calls"):
                 # Stream: promote this delta's reasoning token into content
                 # so OWUI paints tokens live instead of a blank bubble.
                 delta["content"] = reasoning
@@ -658,6 +659,8 @@ class StreamPromoter:
 
     def __init__(self) -> None:
         self.saw_content = False
+        # A turn that calls a tool has no content by design; its reasoning stays reasoning.
+        self.saw_tool_call = False
         self.reasoning: list[str] = []
         self.template: dict | None = None
 
@@ -675,7 +678,8 @@ class StreamPromoter:
                 continue
             core = line[5:].strip()
             if core == "[DONE]":
-                if not self.saw_content and self.reasoning and self.template is not None:
+                if (not self.saw_content and not self.saw_tool_call and self.reasoning
+                        and self.template is not None):
                     frame = dict(self.template)
                     frame["choices"] = [{"index": 0, "delta": {"content": "".join(self.reasoning)}, "finish_reason": None}]
                     out.append("data: " + json.dumps(frame, ensure_ascii=False) + "\n\n")
@@ -694,6 +698,8 @@ class StreamPromoter:
                     content = delta.get("content")
                     if isinstance(content, str) and content.strip():
                         self.saw_content = True
+                    if delta.get("tool_calls") or choice.get("finish_reason") == "tool_calls":
+                        self.saw_tool_call = True
                     reasoning = delta.get("reasoning_content")
                     if isinstance(reasoning, str) and reasoning:
                         self.reasoning.append(reasoning)

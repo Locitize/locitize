@@ -1658,6 +1658,30 @@ def test_streamed_reasoning_is_not_painted_into_the_reply_unless_there_is_no_rep
     assert b'"content": "thinking hard"' in tail and tail.endswith(b"data: [DONE]\n\n")
 
 
+def test_a_tool_call_turn_keeps_its_reasoning_as_reasoning():
+    """An agent's model thinks, then calls a tool: no content, on purpose. The promotion that
+    saves a reply which ended in reasoning alone must not paint that thinking as the reply
+    (the Agent Portal showed the model's reasoning before every tool call, 2026-11-05)."""
+    from router import StreamPromoter, promote_reasoning_to_content
+
+    def frame(choice: dict) -> bytes:
+        return ("data: " + json.dumps({"id": "x", "object": "chat.completion.chunk",
+                                        "choices": [{"index": 0, **choice}]}) + "\n\n").encode()
+
+    streamed = StreamPromoter()
+    streamed.feed(frame({"delta": {"reasoning_content": "I should look that up. "}}))
+    streamed.feed(frame({"delta": {"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "search", "arguments": "{}"}}]}}))
+    streamed.feed(frame({"delta": {}, "finish_reason": "tool_calls"}))
+    assert streamed.feed(b"data: [DONE]\n\n") == b"data: [DONE]\n\n", "nothing is appended on a tool-call turn"
+
+    whole = {"choices": [{"index": 0, "finish_reason": "tool_calls",
+                          "message": {"role": "assistant", "content": None, "reasoning_content": "I should look that up.",
+                                      "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "search", "arguments": "{}"}}]}}]}
+    assert promote_reasoning_to_content(whole) is whole, "the message is left exactly as the model sent it"
+    delta = {"choices": [{"index": 0, "delta": {"reasoning_content": "hmm", "tool_calls": [{"index": 0, "id": "c1"}]}}]}
+    assert promote_reasoning_to_content(delta) is delta
+
+
 def test_promote_reasoning_to_content_nonstream():
     from router import promote_reasoning_to_content
 
@@ -1701,7 +1725,8 @@ def test_promote_sse_delta_reasoning():
 
 
 def test_promote_completion_bytes_grows_when_reasoning_fills_blank_content():
-    """Promote must lengthen the JSON when content was empty."""
+    """Promote must lengthen the JSON when content was empty (a reply that ended in reasoning
+    alone; a tool-call turn is exempt, see test_a_tool_call_turn_keeps_its_reasoning_as_reasoning)."""
     from router import promote_completion_bytes
 
     upstream = {
@@ -1711,18 +1736,8 @@ def test_promote_completion_bytes_grows_when_reasoning_fills_blank_content():
                     "role": "assistant",
                     "content": "",
                     "reasoning_content": "think " * 40,
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {
-                                "name": "browse_open",
-                                "arguments": '{"url":"https://en.wikipedia.org"}',
-                            },
-                        }
-                    ],
                 },
-                "finish_reason": "tool_calls",
+                "finish_reason": "stop",
             }
         ],
         "timings": {"predicted_ms": 12.5},
