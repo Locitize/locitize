@@ -127,6 +127,10 @@ def build_models_payload(
                 "created": 0,
                 "owned_by": "locitize",
                 "name": model.name or model.id,
+                # The context the row is served with (its floor; the planner may grow it),
+                # so a client can budget its history and compact in time instead of
+                # assuming a cloud-sized window and hitting the server's limit.
+                **({"context_length": int(model.context_size)} if getattr(model, "context_size", 0) else {}),
             }
             for model in ordered
         ],

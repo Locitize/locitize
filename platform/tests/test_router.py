@@ -74,6 +74,7 @@ def test_listing_uses_the_registry_id_and_carries_the_human_name_along():
     model by, and unique by construction. The display name rides as `name`."""
     row = build_models_payload(_rows(("qwen3-14b-q5_0", "Qwen3 14B")))["data"][0]
     assert row["id"] == "qwen3-14b-q5_0"
+    assert row["context_length"] == 8192, "a client budgets against the row's context, not a cloud-sized guess"
     assert row["name"] == "Qwen3 14B"
     assert row["owned_by"] == "locitize"
 
