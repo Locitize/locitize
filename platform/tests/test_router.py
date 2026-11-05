@@ -25,13 +25,10 @@ from router import (
     build_laya_steer_completion,
     build_models_payload,
     build_upstream_target,
-    is_tool_broken_model,
     messages_have_tool_exchange,
-    pick_tool_capable_fallback,
     request_has_tools,
     requested_model_from_body,
     resolve_requested_model,
-    rewrite_body_model,
     should_pre_steer_laya,
 )
 
@@ -1490,15 +1487,6 @@ def test_the_forwarded_chat_is_named_after_the_switch_not_before():
 # --------------------------------------------------------------------------- #
 
 
-def test_tool_broken_model_is_detected_by_substring():
-    assert is_tool_broken_model("qwen3-8-27b-obliterated-q3_k_m")
-    assert is_tool_broken_model("huihui-qwen3-8-27b-abliterated-ud-iq4_xs")
-    assert is_tool_broken_model("qwen3-8-27b-heretic-q4_k_m")
-    assert not is_tool_broken_model("qwen3-30b-a3b-instruct-q4_k_m")
-    assert not is_tool_broken_model("qwen3-coder-30b-a3b-ud-iq3_xxs")
-    assert not is_tool_broken_model("")
-
-
 def test_request_has_tools_requires_a_non_empty_tools_array():
     assert request_has_tools(json.dumps({"tools": [{"type": "function"}]}).encode())
     assert not request_has_tools(json.dumps({"tools": []}).encode())
@@ -1532,29 +1520,6 @@ def test_messages_have_tool_exchange_detects_prior_tool_turns():
     assert messages_have_tool_exchange(with_tool)
 
 
-def test_pick_tool_capable_fallback_prefers_qwen3_coder():
-    rows = _rows(
-        ("qwen3-8-27b-obliterated-q3_k_m", "Obliterated"),
-        ("qwen3-30b-a3b-instruct-q4_k_m", "Instruct"),
-        ("qwen3-coder-30b-a3b-ud-iq3_xxs", "Coder"),
-        ("gpt-oss-20b-f16", "GPT-OSS"),
-    )
-    assert pick_tool_capable_fallback(rows) == "qwen3-coder-30b-a3b-ud-iq3_xxs"
-
-
-def test_pick_tool_capable_fallback_skips_broken_and_can_be_empty():
-    only_broken = _rows(("qwen3-8-27b-obliterated-q3_k_m", "Obliterated"))
-    assert pick_tool_capable_fallback(only_broken) is None
-    assert pick_tool_capable_fallback([]) is None
-
-
-def test_rewrite_body_model_updates_only_the_model_field():
-    body = json.dumps({"model": "bad", "messages": [], "n": 1}).encode()
-    out = json.loads(rewrite_body_model(body, "qwen3-coder-30b-a3b-ud-iq3_xxs"))
-    assert out["model"] == "qwen3-coder-30b-a3b-ud-iq3_xxs"
-    assert out["n"] == 1
-
-
 def test_should_pre_steer_on_tools_needed_ask_without_prior_tools():
     body = json.dumps({
         "model": "qwen3-30b-a3b-instruct-q4_k_m",
@@ -1579,15 +1544,6 @@ def test_should_not_pre_steer_a_client_without_the_laya_tool():
             "tools": [{"type": "function", "function": {"name": "list_dir"}}],
         }).encode()
         assert not should_pre_steer_laya(body, model)
-
-
-def test_should_pre_steer_on_broken_model_even_for_a_plain_hello():
-    body = json.dumps({
-        "model": "qwen3-8-27b-obliterated-q3_k_m",
-        "messages": [{"role": "user", "content": "Project folder: X\n\nTask: hello"}],
-        "tools": [{"type": "function", "function": {"name": "laya_route_tools"}}],
-    }).encode()
-    assert should_pre_steer_laya(body, "qwen3-8-27b-obliterated-q3_k_m")
 
 
 def test_should_not_pre_steer_happy_path_or_second_turn():
@@ -1916,3 +1872,15 @@ def test_joining_user_turns_keeps_images():
         "role": "user",
         "content": [{"type": "text", "text": "look"}, image, {"type": "text", "text": "well?"}],
     }]
+
+def test_an_abliterated_model_is_not_pre_steered_or_swapped_for_its_name():
+    """Measured 2026-11-05: Huihui-Qwen3.8-27B-abliterated made 16/16 correct native tool
+    calls; the router used to answer it with another model because of its name."""
+    import router
+    assert not hasattr(router, "is_tool_broken_model")
+    body = json.dumps({
+        "model": "huihui-qwen3-8-27b-abliterated-ud-iq4_xs",
+        "messages": [{"role": "user", "content": "Project folder: X\n\nTask: hello"}],
+        "tools": [{"type": "function", "function": {"name": "laya_route_tools"}}],
+    }).encode()
+    assert not should_pre_steer_laya(body, "huihui-qwen3-8-27b-abliterated-ud-iq4_xs")

@@ -778,28 +778,18 @@ def promote_sse_chunk(raw: bytes) -> bytes:
 # ---------------------------------------------------------------------------
 # Portal / tooling guard (2026-09-24)
 # ---------------------------------------------------------------------------
-# Agent Portal sends tools= on every turn. Obliterated/abliterated/heretic
-# rows still advertise "tools" in GGUF metadata but break the tool protocol
-# (raw XML, bare laya_route_* as chat). For tooling traffic the router must
-# not happily serve them: redirect to a proven tool-capable row, or refuse.
-# When the user ask clearly needs browse/list/read/desktop (or the model is
-# tool-broken), answer the FIRST turn with a synthetic laya_route_tools call
+# Agent Portal sends tools= on every turn. Every model is served the model the
+# client asked for: an earlier rule that sent obliterated/abliterated/heretic
+# names to another model was removed after the abliterated Qwen3.8-27B made
+# 16/16 correct native tool calls (2026-11-05).
+# When the user ask clearly needs browse/list/read/desktop, answer the FIRST
+# turn with a synthetic laya_route_tools call
 # so Laya System-1 steers on CPU before any chat model burns a GPU turn.
 # Subsequent turns (messages already carry tool / tool_calls) forward normally.
 # Non-tooling clients (Open WebUI plain chat) are unchanged.
 
-TOOL_BROKEN_MODEL_SUBSTR = ("obliterated", "abliterated", "heretic")
-
 # The routing tool Agent Portal advertises; the pre-steer only fires for it.
 LAYA_ROUTE_TOOL = "laya_route_tools"
-
-# Preference order for redirect targets. Matched as id/name substrings against
-# the live registry so a missing row falls through to the next.
-TOOL_CAPABLE_PREFERENCE = (
-    "qwen3-coder",
-    "muse-glimmer",
-    "gpt-oss",
-)
 
 _TOOLS_NEEDED_RE = re.compile(
     r"(?:"
@@ -816,14 +806,6 @@ _TOOLS_NEEDED_RE = re.compile(
     r")",
     re.I | re.S,
 )
-
-
-def is_tool_broken_model(model_id: str) -> bool:
-    """True when the id/name is a known-broken tool-protocol class."""
-    mid = (model_id or "").strip().lower()
-    if not mid:
-        return False
-    return any(bad in mid for bad in TOOL_BROKEN_MODEL_SUBSTR)
 
 
 def request_has_tools(body: bytes) -> bool:
@@ -871,63 +853,6 @@ def messages_have_tool_exchange(body: bytes) -> bool:
         if role == "assistant" and message.get("tool_calls"):
             return True
     return False
-
-
-def pick_tool_capable_fallback(
-    models: list[Any],
-    *,
-    running_model_id: str | None = None,
-) -> str | None:
-    """Registry id of a proven tool-capable model, or None if none available.
-
-    Preference: qwen3-coder / muse-glimmer / gpt-oss (substring match on id),
-    then the running model if it is not tool-broken, then any non-broken row.
-    Never returns a tool-broken id.
-    """
-    rows = list(models or [])
-    by_id = {getattr(m, "id", ""): m for m in rows if getattr(m, "id", None)}
-
-    def _ok(model_id: str | None) -> str | None:
-        if not model_id or model_id not in by_id:
-            return None
-        if is_tool_broken_model(model_id):
-            return None
-        name = (getattr(by_id[model_id], "name", None) or "").lower()
-        if is_tool_broken_model(name):
-            return None
-        return model_id
-
-    for needle in TOOL_CAPABLE_PREFERENCE:
-        for model in rows:
-            mid = getattr(model, "id", "") or ""
-            name = (getattr(model, "name", None) or "").lower()
-            if needle in mid.lower() or needle in name:
-                picked = _ok(mid)
-                if picked:
-                    return picked
-    picked = _ok(running_model_id)
-    if picked:
-        return picked
-    for model in rows:
-        picked = _ok(getattr(model, "id", None))
-        if picked:
-            return picked
-    return None
-
-
-def rewrite_body_model(body: bytes, model_id: str) -> bytes:
-    """Return body with `model` set to model_id; untouched on parse failure."""
-    if not body or not model_id:
-        return body
-    try:
-        parsed = json.loads(body.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return body
-    if not isinstance(parsed, dict):
-        return body
-    parsed = dict(parsed)
-    parsed["model"] = model_id
-    return json.dumps(parsed).encode("utf-8")
 
 
 # OWUI native FC injects generate_image/search_web/etc. Portal uses agent tools.
@@ -1000,8 +925,6 @@ def should_pre_steer_laya(body: bytes, requested_model: str) -> bool:
     # OWUI image/chat feature path: rewrite-to-fallback is fine; Laya steer is not.
     if request_has_owui_builtin_tools(body):
         return False
-    if is_tool_broken_model(requested_model):
-        return True
     utterance = last_user_utterance(body) or ""
     # Portal user messages look like "Project folder: ...\n\nTask: ...".
     task = _portal_task_text(utterance) or utterance
@@ -1214,53 +1137,11 @@ class _RouterHandler(BaseHTTPRequestHandler):
             # 27B switch is 16s), and the turn was spoken either way.
             spoken = router.voice_turns_enabled and router.is_voice_turn(body)
 
-            # Portal/tooling: refuse/redirect known-broken tool-protocol models
-            # before any GPU switch, and let Laya steer the first tools-needed
-            # turn so the chat model does not burn an empty/XML turn.
+            # Portal/tooling: let Laya steer the first tools-needed turn so the
+            # chat model does not burn an empty/XML turn.
             if request_has_tools(body):
                 requested = requested_model_from_body(body)
-                original_requested = requested
-                owui_builtins = request_has_owui_builtin_tools(body)
-                if is_tool_broken_model(requested) and not owui_builtins:
-                    # Agent Portal tooling: redirect off known-broken tool protocol.
-                    fallback = pick_tool_capable_fallback(
-                        router.models(),
-                        running_model_id=router.running_model_id(),
-                    )
-                    if not fallback:
-                        self._send_json(
-                            422,
-                            {
-                                "error": {
-                                    "message": (
-                                        f"model {requested!r} is not tool-capable "
-                                        "(obliterated/abliterated/heretic class); "
-                                        "no proven tool-capable fallback is loaded"
-                                    ),
-                                    "type": "model_not_tool_capable",
-                                    "remedy": (
-                                        "pick qwen3-coder, muse-glimmer, or gpt-oss "
-                                        "in the Agent Portal model picker"
-                                    ),
-                                }
-                            },
-                        )
-                        return
-                    body = rewrite_body_model(body, fallback)
-                    requested = fallback
-                elif is_tool_broken_model(requested) and owui_builtins:
-                    # OWUI chat features (generate_image etc.): do NOT Laya-steer.
-                    # If a tool-capable model is already on GPU, retarget to it.
-                    # If the GPU still holds a tool-broken row, leave the request
-                    # alone — forcing a swap 503s; OWUI should pick a tool-capable model
-                    # (or use /images/generations) rather than hang on laya_route_tools.
-                    running = router.running_model_id()
-                    if running and not is_tool_broken_model(running):
-                        body = rewrite_body_model(body, running)
-                        requested = running
-                # Gate on the ORIGINAL ask/model: a redirected broken model still
-                # earns a Laya-first turn even when the fallback id is clean.
-                if should_pre_steer_laya(body, original_requested):
+                if should_pre_steer_laya(body, requested):
                     utterance = last_user_utterance(body) or ""
                     task = _portal_task_text(utterance) or utterance
                     model_for_reply = (
