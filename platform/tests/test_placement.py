@@ -95,6 +95,32 @@ _ARCH_META = {"block_count": 4, "attention.head_count": 8, "attention.head_count
 # --------------------------------------------------------------------------- #
 
 
+def test_a_recurrent_block_with_a_qkv_projection_keeps_no_kv_cache(tmp_path: Path):
+    """Gated DeltaNet blocks carry attn_qkv beside their ssm_ tensors; only the full-attention
+    blocks keep K and V."""
+    tensors = [("token_embd.weight", [1024, 2048], 1)]
+    for b in range(8):
+        if b % 4 == 3:
+            tensors += [(f"blk.{b}.attn_q.weight", [100], 1), (f"blk.{b}.attn_k.weight", [100], 1),
+                        (f"blk.{b}.attn_v.weight", [100], 1)]
+        else:
+            tensors += [(f"blk.{b}.attn_qkv.weight", [100], 1), (f"blk.{b}.ssm_a", [16], 0)]
+        tensors.append((f"blk.{b}.ffn_down_exps.weight", [32 * 100], 39))
+    layout = read_layout(str(write_gguf(tmp_path / "gdn.gguf", "qwen4exp", {**_ARCH_META, "block_count": 8}, tensors)))
+    assert layout.kv_blocks == 2 and layout.ssm_blocks == 6
+
+
+def test_a_per_layer_token_table_stays_in_host_memory(tmp_path: Path):
+    """Qwen3.8-Flash-Next carries a ~29 GB per-layer token (n-gram) table that llama.cpp keeps on
+    the host and reads by row. Counted as shared GPU weights it would sink every plan."""
+    tensors = _moe_tensors(blocks=4, expert_elems=32 * 1000, attn_elems=2000)
+    tensors.append(("per_layer_token_embd.weight", [1024, 4096], 1))
+    layout = read_layout(str(write_gguf(tmp_path / "ple.gguf", "qwen4exp", _ARCH_META, tensors)))
+    assert layout.token_embd_mb == pytest.approx((1024 * 2048 + 1024 * 4096) * 2 / MB)
+    # What the planner puts on the card: everything outside the experts and the host tables.
+    assert layout.non_expert_mb - layout.token_embd_mb == pytest.approx((1024 * 2048 * 2 + 4 * 2000 * 2) / MB)
+
+
 def test_read_layout_sizes_tensors_by_type_and_finds_the_experts(tmp_path: Path):
     path = write_gguf(tmp_path / "moe.gguf", "gptoss", _ARCH_META,
                       _moe_tensors(blocks=4, expert_elems=32 * 1000, attn_elems=2000))

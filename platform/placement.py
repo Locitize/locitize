@@ -108,6 +108,11 @@ GGML_TYPES: dict[int, tuple[int, int]] = {
 EXPERT_TENSOR = re.compile(r"^blk\.(\d+)\.ffn_(?:gate|up|down|gate_up)_exps\b")
 BLOCK_TENSOR = re.compile(r"^blk\.(\d+)\.")
 TOKEN_EMBD = "token_embd.weight"
+# Lookup tables llama.cpp keeps in host memory (input-layer, read by row), so they cost no VRAM:
+# the token table, and the per-layer token table of models such as Qwen3.8-Flash-Next (qwen4exp),
+# whose 51B-parameter n-gram table is about 29 GB at IQ4_NL. Counted as shared GPU weights, it
+# made the planner refuse the model outright.
+HOST_TABLES = frozenset({TOKEN_EMBD, "per_layer_token_embd.weight"})
 SHARD = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 
 # CUDA context plus compute buffers llama.cpp needs beyond weights and KV cache.
@@ -160,7 +165,7 @@ class ModelLayout:
     expert_count: int
     context_length: int | None
     kv_bytes_per_token: float           # at 2 bytes per value (f16); scaled by cache type
-    token_embd_mb: float                # stays in host memory, so costs no VRAM
+    token_embd_mb: float                # host lookup tables (HOST_TABLES): no VRAM
     expert_mb_per_block: dict[int, float] = field(default_factory=dict)
     kv_blocks: int = 0                  # blocks with attention (a KV cache); 0 = every block
     ssm_blocks: int = 0                 # blocks with recurrent (Mamba) state instead
@@ -267,8 +272,8 @@ def read_layout(path: str) -> ModelLayout:
     embd = 0
     for name, size in tensors:
         total += size
-        if name == TOKEN_EMBD:
-            embd = size
+        if name in HOST_TABLES:
+            embd += size
         match = EXPERT_TENSOR.match(name)
         if match:
             block = int(match.group(1))
@@ -281,8 +286,11 @@ def read_layout(path: str) -> ModelLayout:
             elif rest.startswith("ssm_"):
                 ssm_blocks.add(int(block_match.group(1)))
     # KV cache per token at f16: every attention block keeps K and V for each KV head.
-    # A hybrid model (Nemotron-H) has Mamba blocks with a fixed recurrent state instead.
-    kv_blocks = len(attention_blocks) if attention_blocks and ssm_blocks else blocks
+    # A hybrid model (Nemotron-H) has Mamba blocks with a fixed recurrent state instead. In the
+    # Gated DeltaNet hybrids (Qwen3-Next, Qwen3.8-Flash-Next) a recurrent block also has an
+    # attn_qkv projection, so a block with ssm_ tensors keeps no KV cache whatever else it has:
+    # counting them reserved four times the cache Flash-Next needs (2026-11-05).
+    kv_blocks = len(attention_blocks - ssm_blocks) if attention_blocks and ssm_blocks else blocks
     kv_per_token = float(kv_blocks * kv_heads * (key_len + value_len) * 2)
     ssm_state_mb = 0.0
     if ssm_blocks:
