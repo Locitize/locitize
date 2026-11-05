@@ -568,3 +568,55 @@ def test_placement_mode_normalizes_the_row_value():
     assert placement.placement_mode("") == "auto" and placement.placement_mode(None) == "auto"
     assert placement.placement_mode(" Fit ") == "fit" and placement.placement_mode("whatever") == "auto"
     assert backends.ALL_LAYERS == 999
+
+
+
+# --------------------------------------------------------------------------- #
+# Context grown into the leftover VRAM
+# --------------------------------------------------------------------------- #
+
+
+def test_plan_grows_a_streamed_models_context_into_the_leftover_vram():
+    layout = _layout(expert_per_block_mb=1000, blocks=36, shared_mb=3000)
+    placed = plan(layout, vram_free_mb=15000, ram_total_mb=32000, context=8192, kv_bytes_per_value=1.0,
+                  flags=ALL_FLAGS)
+    assert placed.mode == "stream" and placed.context == placement.CONTEXT_GROW_MAX
+    assert placed.requested_context == 8192 and "grown from 8192" in placed.describe()
+    at_row = placement._place_experts(layout, 15000 - 256, layout.kv_mb(8192, 1.0), placement.STREAM_OVERHEAD_MB,
+                                      True, ALL_FLAGS, 1, 8192)
+    assert placed.cpu_moe_blocks == at_row.cpu_moe_blocks, "growing the context never costs an expert block"
+    assert placed.gpu_mb <= 15000 - 256
+
+
+def test_plan_grows_the_context_no_further_than_the_trained_window_or_a_free_card():
+    layout = _layout(expert_per_block_mb=1000, blocks=36, shared_mb=3000)
+    layout.context_length = 16384
+    placed = plan(layout, vram_free_mb=15000, ram_total_mb=32000, context=8192, kv_bytes_per_value=1.0,
+                  flags=ALL_FLAGS)
+    assert placed.context == 16384 and placed.requested_context == 8192
+    # A row already at the cap (or above it) is left exactly as it is.
+    big = plan(_layout(1000, 36, 3000), 15000, 32000, context=65536, kv_bytes_per_value=1.0, flags=ALL_FLAGS)
+    assert big.context == 65536 and big.requested_context == 0 and "grown" not in big.describe()
+    # A model that fits the card is not touched either.
+    small = plan(_layout(100, 10, 2000), 16000, 32000, context=8192, flags=ALL_FLAGS)
+    assert small.mode == "gpu" and small.context == 8192
+
+
+def test_plan_stops_growing_the_context_where_it_would_cost_an_expert_block():
+    # 1 MB of KV per token at q8_0: every 4,096-token step costs 4 GB, more than an expert block.
+    layout = _layout(expert_per_block_mb=1000, blocks=36, shared_mb=3000, kv_per_token=2 * MB)
+    placed = plan(layout, vram_free_mb=15000, ram_total_mb=32000, context=8192, kv_bytes_per_value=1.0,
+                  flags=ALL_FLAGS)
+    assert placed.mode == "stream" and placed.context == 8192 and placed.requested_context == 0
+
+
+def test_start_spec_serves_the_grown_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _big_moe(tmp_path)
+    registry = _registry(tmp_path)
+    monkeypatch.setattr(placement, "engine_flags", lambda binary: frozenset(ALL_FLAGS))
+    registry._placement_fn = lambda binary, location, context, server_args, vram_free: placement.plan_for_launch(
+        binary, location, context, server_args, vram_free, flags_fn=lambda b: frozenset(ALL_FLAGS),
+        ram_fn=lambda: 32000)
+    spec = registry.build_start_spec("big")
+    cmd = spec.command
+    assert cmd[cmd.index("--ctx-size") + 1] == str(placement.CONTEXT_GROW_MAX), "the row said 8192; the plan grew it"

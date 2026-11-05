@@ -46,7 +46,7 @@ import os
 import re
 import struct
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
@@ -124,6 +124,12 @@ RAM_RESERVE_MB = 8192
 VRAM_MARGIN_MB = 256
 # A hot-expert cache smaller than this is not worth its bookkeeping.
 MIN_CACHE_MB = 768
+# A model that cannot fit the card gets its context grown into the VRAM left after
+# placement: up to this many tokens, in these steps, never past the model's trained
+# window and never at the cost of an expert block on the GPU. A streamed model's
+# speed does not depend on its context, so the leftover is free capacity.
+CONTEXT_GROW_MAX = 32768
+CONTEXT_GROW_STEP = 4096
 
 # Flags the planner may use only when the installed llama-server knows them.
 FLAG_CPU_MOE = "--n-cpu-moe"
@@ -317,6 +323,7 @@ class Placement:
     cpu_mb: int = 0
     slots: int = 1
     context: int = 0
+    requested_context: int = 0  # the row's context when `context` was grown past it, else 0
     reason: str = ""
 
     @property
@@ -357,8 +364,9 @@ class Placement:
             return f"placement: the engine's fit mode ({self.reason})"
         where = "streamed from the drive" if self.mode == "stream" else "in RAM"
         cache = f", {self.moe_cache_mib} MiB of VRAM caching hot experts" if self.moe_cache_mib else ""
+        grown = f" (grown from {self.requested_context})" if self.requested_context else ""
         return (f"placement: experts of the first {self.cpu_moe_blocks} blocks {where} "
-                f"({self.cpu_mb} MB), {self.gpu_mb} MB on the GPU at {self.context} tokens{cache}")
+                f"({self.cpu_mb} MB), {self.gpu_mb} MB on the GPU at {self.context} tokens{grown}{cache}")
 
 
 def plan(layout: ModelLayout, vram_free_mb: int, ram_total_mb: int, context: int,
@@ -385,7 +393,31 @@ def plan(layout: ModelLayout, vram_free_mb: int, ram_total_mb: int, context: int
     if placed.mode == "experts-cpu" and placed.cpu_mb > ram_budget:
         placed = _place_experts(layout, allowance, kv, STREAM_OVERHEAD_MB, stream=True, flags=flags, slots=slots,
                                 context=context)
-    return placed
+    return _grow_context(layout, allowance, placed, slots, kv_bytes_per_value, flags)
+
+
+def _grow_context(layout: ModelLayout, allowance: float, placed: Placement, slots: int,
+                  kv_bytes_per_value: float, flags: set[str]) -> Placement:
+    """`placed` with its context grown into the leftover VRAM, a step at a time, while the
+    plan keeps its mode, every expert block it had on the GPU and (in RAM mode) a hot-expert
+    cache worth having. The row's context is kept in `requested_context`."""
+    if not placed.changes_argv or placed.context >= CONTEXT_GROW_MAX:
+        return placed
+    cap = min(CONTEXT_GROW_MAX, layout.context_length or CONTEXT_GROW_MAX)
+    stream = placed.mode == "stream"
+    overhead = STREAM_OVERHEAD_MB if stream else GPU_OVERHEAD_MB
+    best = placed
+    candidate = (placed.context // CONTEXT_GROW_STEP + 1) * CONTEXT_GROW_STEP
+    while candidate <= cap:
+        kv = layout.kv_mb(candidate, kv_bytes_per_value) + layout.recurrent_mb(slots)
+        trial = _place_experts(layout, allowance, kv, overhead, stream, flags, slots, candidate)
+        if trial.mode != placed.mode or trial.cpu_moe_blocks != placed.cpu_moe_blocks:
+            break
+        if not stream and placed.moe_cache_mib and trial.moe_cache_mib < MIN_CACHE_MB:
+            break
+        best = replace(trial, requested_context=placed.context)
+        candidate += CONTEXT_GROW_STEP
+    return best
 
 
 def _place_experts(layout: ModelLayout, allowance: float, kv: float, overhead: int, stream: bool,

@@ -12,6 +12,9 @@
   request before a model that needs the whole card starts (and come back when it stops);
   locitize waits for their RAM to return before sizing the model, since the streamed model's
   expert cache is sized from free RAM at launch.
+- The plan grows such a model's context into the leftover VRAM (4,096-token steps up to
+  32,768, within the trained window, never costing a GPU expert block), so a row that says
+  8,192 serves 32,768 on an empty 16 GB card. The launcher log says "grown from N".
 
 ## 1.0.3 - one-download Windows package
 

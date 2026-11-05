@@ -168,7 +168,10 @@ Flags:
   llama-server knows `--n-cpu-moe`; everything else keeps the argv above. A row opts out
   with `placement: fit`. Measured on an RTX 5070 Ti with 32 GB RAM: gpt-oss-120b ready in
   27 s, 14 to 16 tok/s generation; the engine's fit mode alone put it in shared memory at
-  about 5 tok/s.
+  about 5 tok/s. The plan also grows such a model's context into the VRAM left over after
+  placement, 4,096 tokens at a time up to 32,768, never past the model's trained window and
+  never at the cost of an expert block on the GPU (a streamed model's speed does not depend
+  on its context). The row's `context_size` is the floor; the launcher log shows the plan.
   Such a model streams from the drive through a RAM cache that the server sizes from the
   free RAM at launch, so what else is loaded on the machine decides its speed. Before one
   starts, locitize can clear the machine: `services.gpu_neighbours` in settings.yaml lists

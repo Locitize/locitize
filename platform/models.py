@@ -336,6 +336,8 @@ class ModelRegistry:
             # The plan says exactly what goes where: every layer on the GPU except the
             # experts it names, so the engine's fit request (and its target) is not sent.
             resolved_gpu, fit_target = plan.gpu_layers, None
+            # ... and the context it grew into the leftover VRAM, when it did.
+            resolved_ctx = plan.context or resolved_ctx
             get_logger("launcher").info("%s: %s", model.id, plan.describe())
         command = engine.core_command(
             binary, model, s, port, resolved_ctx, resolved_gpu, fit_target=fit_target
