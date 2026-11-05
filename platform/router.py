@@ -646,6 +646,59 @@ def promote_reasoning_to_content(payload: dict) -> dict:
     return out
 
 
+class StreamPromoter:
+    """Per-response state for a streamed chat: reasoning deltas pass through untouched; if the
+    stream ends with no content at all, the gathered reasoning is sent as content before
+    [DONE] (the 2026-09-24 blank-bubble case), otherwise it is left as reasoning. Feed every
+    complete SSE frame through feed(); the final frame carries [DONE]."""
+
+    def __init__(self) -> None:
+        self.saw_content = False
+        self.reasoning: list[str] = []
+        self.template: dict | None = None
+
+    def feed(self, raw: bytes) -> bytes:
+        if not raw or b"data:" not in raw:
+            return raw
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return raw
+        out: list[str] = []
+        for line in decoded.splitlines(keepends=True):
+            if not line.startswith("data:"):
+                out.append(line)
+                continue
+            core = line[5:].strip()
+            if core == "[DONE]":
+                if not self.saw_content and self.reasoning and self.template is not None:
+                    frame = dict(self.template)
+                    frame["choices"] = [{"index": 0, "delta": {"content": "".join(self.reasoning)}, "finish_reason": None}]
+                    out.append("data: " + json.dumps(frame, ensure_ascii=False) + "\n\n")
+                out.append(line)
+                continue
+            try:
+                obj = json.loads(core)
+            except ValueError:
+                out.append(line)
+                continue
+            if isinstance(obj, dict):
+                for choice in obj.get("choices") or []:
+                    delta = choice.get("delta") if isinstance(choice, dict) else None
+                    if not isinstance(delta, dict):
+                        continue
+                    content = delta.get("content")
+                    if isinstance(content, str) and content.strip():
+                        self.saw_content = True
+                    reasoning = delta.get("reasoning_content")
+                    if isinstance(reasoning, str) and reasoning:
+                        self.reasoning.append(reasoning)
+                        if self.template is None:
+                            self.template = {k: v for k, v in obj.items() if k != "choices"}
+            out.append(line)
+        return "".join(out).encode("utf-8")
+
+
 def promote_completion_bytes(raw: bytes) -> bytes:
     """Rewrite one non-stream chat-completion JSON body (identity on failure)."""
     if not raw:
@@ -1516,6 +1569,7 @@ class _RouterHandler(BaseHTTPRequestHandler):
             # (~900B, ends_ok=False) on tools+tool_choice=auto turns.
             content_type = (response.getheader("Content-Type") or "").lower()
             is_sse = "text/event-stream" in content_type
+            promoter = StreamPromoter()
             is_json = (not is_sse) and (
                 "application/json" in content_type
                 or self.path.rstrip("/").endswith("/chat/completions")
@@ -1563,7 +1617,7 @@ class _RouterHandler(BaseHTTPRequestHandler):
                     if not chunk:
                         if carry:
                             self.wfile.write(
-                                responses_tools.restore_sse(promote_sse_chunk(carry), tool_aliases) if is_sse else carry
+                                responses_tools.restore_sse(promoter.feed(carry), tool_aliases) if is_sse else carry
                             )
                             self.wfile.flush()
                         break
@@ -1574,7 +1628,7 @@ class _RouterHandler(BaseHTTPRequestHandler):
                         carry = b""
                         continue
                     if data.endswith((b"\n\n", b"\r\n\r\n")):
-                        self.wfile.write(responses_tools.restore_sse(promote_sse_chunk(data), tool_aliases))
+                        self.wfile.write(responses_tools.restore_sse(promoter.feed(data), tool_aliases))
                         self.wfile.flush()
                         carry = b""
                         continue
@@ -1582,11 +1636,11 @@ class _RouterHandler(BaseHTTPRequestHandler):
                     idx_r = data.rfind(b"\r\n\r\n")
                     if idx_r > idx_n:
                         complete, carry = data[: idx_r + 4], data[idx_r + 4 :]
-                        self.wfile.write(responses_tools.restore_sse(promote_sse_chunk(complete), tool_aliases))
+                        self.wfile.write(responses_tools.restore_sse(promoter.feed(complete), tool_aliases))
                         self.wfile.flush()
                     elif idx_n >= 0:
                         complete, carry = data[: idx_n + 2], data[idx_n + 2 :]
-                        self.wfile.write(responses_tools.restore_sse(promote_sse_chunk(complete), tool_aliases))
+                        self.wfile.write(responses_tools.restore_sse(promoter.feed(complete), tool_aliases))
                         self.wfile.flush()
                     else:
                         carry = data

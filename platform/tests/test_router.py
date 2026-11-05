@@ -1635,6 +1635,28 @@ def test_build_laya_steer_completion_is_openai_shaped_tool_call():
     assert call["function"]["name"] == "laya_route_tools"
     assert json.loads(call["function"]["arguments"])["task"] == "list the files"
 
+def test_streamed_reasoning_is_not_painted_into_the_reply_unless_there_is_no_reply():
+    """A coding client must never see the model's analysis in front of the answer (PeriCode on
+    gpt-oss showed 'User says: ... So we need to output' before the reply); a reasoning-only
+    stream still ends with the reasoning as content so Open WebUI is not left blank."""
+    from router import StreamPromoter
+
+    def frame(delta: dict) -> bytes:
+        return ("data: " + json.dumps({"id": "x", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": delta}]}) + "\n\n").encode()
+
+    with_answer = StreamPromoter()
+    first = with_answer.feed(frame({"reasoning_content": "User says hello. "}))
+    assert b'"reasoning_content": "User says hello. "' in first and b'"content"' not in first, "reasoning stays reasoning"
+    assert with_answer.feed(frame({"content": "Hello!"})) == frame({"content": "Hello!"})
+    assert with_answer.feed(b"data: [DONE]\n\n") == b"data: [DONE]\n\n", "nothing is appended when the model answered"
+
+    reasoning_only = StreamPromoter()
+    reasoning_only.feed(frame({"reasoning_content": "thinking "}))
+    reasoning_only.feed(frame({"reasoning_content": "hard"}))
+    tail = reasoning_only.feed(b"data: [DONE]\n\n")
+    assert b'"content": "thinking hard"' in tail and tail.endswith(b"data: [DONE]\n\n")
+
+
 def test_promote_reasoning_to_content_nonstream():
     from router import promote_reasoning_to_content
 
