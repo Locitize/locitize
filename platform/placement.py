@@ -136,6 +136,27 @@ MIN_CACHE_MB = 768
 CONTEXT_GROW_MAX = 32768
 CONTEXT_GROW_STEP = 4096
 
+# The WiFiBlu llama.cpp build streams experts by itself (its own reads into its own RAM
+# cache) whenever the model file is bigger than physical RAM minus this, whatever the
+# planner asks for (ggml-cpu/expert-stream.h). A plan that assumed "experts in RAM" then
+# added a VRAM hot-expert cache over streamed experts: measured 2026-11-05 on gpt-oss-120b
+# with 64 GB of RAM, 6.8 tok/s against 30 for the same model planned as a stream.
+ENGINE_SELF_STREAM_MARGIN_MB = 8192
+# Where the streaming build is: the marker is the variable that switches it on.
+STREAM_MARKER = b"GGML_EXPERT_STREAM"
+# What the streaming engine holds in RAM beside its expert cache (host and compute buffers,
+# the token table, the mapped shared weights). Measured 2026-11-05, gpt-oss-120b at 32k
+# tokens with a q8_0 KV cache: the server's private memory was 12.4 GB over a full 42.9 GB
+# cache and 12.8 GB over a 37.3 GB one.
+STREAM_ENGINE_HOST_MB = 12800
+# The smallest RAM expert cache worth asking for: below it, more reads than hits.
+STREAM_CACHE_MIN_MB = 4096
+# The build's own default cache is "free RAM at first use minus 4 GB": with the engine's
+# own buffers on top that left 0.3-0.7 GB for Windows and every other app, so the plan
+# always sets the size (GGML_EXPERT_STREAM_MB).
+ENV_STREAM = "GGML_EXPERT_STREAM"
+ENV_STREAM_MB = "GGML_EXPERT_STREAM_MB"
+
 # Flags the planner may use only when the installed llama-server knows them.
 FLAG_CPU_MOE = "--n-cpu-moe"
 FLAG_MOE_CACHE = "--moe-cache-mib"
@@ -333,6 +354,8 @@ class Placement:
     context: int = 0
     requested_context: int = 0  # the row's context when `context` was grown past it, else 0
     reason: str = ""
+    ram_cache_mb: int = 0       # stream: the engine's RAM expert cache (GGML_EXPERT_STREAM_MB), 0 = not set
+    checks: tuple[str, ...] = ()  # every machine fact the plan weighed, and what it decided from each
 
     @property
     def changes_argv(self) -> bool:
@@ -363,7 +386,12 @@ class Placement:
         """Process environment for the server. A build that streams experts with its own
         direct reads (instead of the Windows file cache) switches that on here; a stock
         build ignores the variable."""
-        return {"GGML_EXPERT_STREAM": "1"} if self.mode == "stream" else {}
+        if self.mode != "stream":
+            return {}
+        env = {ENV_STREAM: "1"}
+        if self.ram_cache_mb:
+            env[ENV_STREAM_MB] = str(self.ram_cache_mb)
+        return env
 
     def describe(self) -> str:
         if self.mode == "gpu":
@@ -372,36 +400,81 @@ class Placement:
             return f"placement: the engine's fit mode ({self.reason})"
         where = "streamed from the drive" if self.mode == "stream" else "in RAM"
         cache = f", {self.moe_cache_mib} MiB of VRAM caching hot experts" if self.moe_cache_mib else ""
+        if self.ram_cache_mb:
+            cache += f", a {self.ram_cache_mb} MB RAM expert cache"
         grown = f" (grown from {self.requested_context})" if self.requested_context else ""
         return (f"placement: experts of the first {self.cpu_moe_blocks} blocks {where} "
                 f"({self.cpu_mb} MB), {self.gpu_mb} MB on the GPU at {self.context} tokens{grown}{cache}")
 
+    def describe_checks(self) -> str:
+        """One line: what the plan looked at and what it concluded, for the log."""
+        return "placement checked: " + "; ".join(self.checks) if self.checks else ""
+
 
 def plan(layout: ModelLayout, vram_free_mb: int, ram_total_mb: int, context: int,
-         slots: int = 1, kv_bytes_per_value: float = 2.0, flags: set[str] | None = None) -> Placement:
+         slots: int = 1, kv_bytes_per_value: float = 2.0, flags: set[str] | None = None,
+         ram_free_mb: int | None = None, engine_streams: bool = False) -> Placement:
     """Fit `layout` into `vram_free_mb` of VRAM with `ram_total_mb` of RAM behind it.
 
     `context` is the total context llama-server gets (its --ctx-size), shared by
-    `slots`; `kv_bytes_per_value` is 1 for a q8_0 KV cache, 2 for f16."""
+    `slots`; `kv_bytes_per_value` is 1 for a q8_0 KV cache, 2 for f16. `ram_free_mb`
+    is the RAM free at launch (other apps hold the rest; None = all of it), and
+    `engine_streams` says the installed build has its own expert streaming, which it
+    switches on by itself for a file bigger than RAM minus ENGINE_SELF_STREAM_MARGIN_MB.
+
+    Every fact weighed is recorded in the result's `checks`, so the log says why."""
     flags = flags if flags is not None else set(PLANNER_FLAGS)
     allowance = vram_free_mb - VRAM_MARGIN_MB
+    ram_free = ram_total_mb if ram_free_mb is None else max(0, min(ram_free_mb, ram_total_mb))
+    checks = [f"VRAM {vram_free_mb} MB free", f"RAM {ram_free} MB free of {ram_total_mb} MB",
+              f"model {int(layout.file_mb)} MB"]
     # The cache a hybrid model keeps for its Mamba blocks is fixed, so it counts as part of the KV.
     kv = layout.kv_mb(context, kv_bytes_per_value) + layout.recurrent_mb(slots)
     if layout.file_mb + kv + GPU_OVERHEAD_MB <= allowance:
-        return Placement("gpu", gpu_mb=int(layout.file_mb + kv + GPU_OVERHEAD_MB), slots=slots, context=context)
+        return Placement("gpu", gpu_mb=int(layout.file_mb + kv + GPU_OVERHEAD_MB), slots=slots, context=context,
+                         checks=tuple(checks + ["fits the card whole"]))
     if not layout.is_moe:
         return Placement("fit", reason="a dense model; whole layers move to the CPU as needed", slots=slots,
-                         context=context)
+                         context=context, checks=tuple(checks + ["dense: the engine's fit mode"]))
     if FLAG_CPU_MOE not in flags:
         return Placement("fit", reason=f"the installed llama-server has no {FLAG_CPU_MOE}", slots=slots,
-                         context=context)
-    ram_budget = max(0, ram_total_mb - RAM_RESERVE_MB)
+                         context=context, checks=tuple(checks + [f"no {FLAG_CPU_MOE}: the engine's fit mode"]))
+    # Experts held in RAM must fit what is free NOW with room left for Windows and the
+    # other apps; total RAM over-promised as soon as anything else was running.
+    ram_budget = max(0, ram_free - RAM_RESERVE_MB)
+    self_streams = engine_streams and layout.file_mb > ram_total_mb - ENGINE_SELF_STREAM_MARGIN_MB
+    checks.append("engine streams experts itself" + (" (file bigger than RAM minus 8 GB)" if self_streams else
+                                                     ": no" if not engine_streams else " only past RAM minus 8 GB"))
     placed = _place_experts(layout, allowance, kv, GPU_OVERHEAD_MB, stream=False, flags=flags, slots=slots,
                             context=context)
-    if placed.mode == "experts-cpu" and placed.cpu_mb > ram_budget:
-        placed = _place_experts(layout, allowance, kv, STREAM_OVERHEAD_MB, stream=True, flags=flags, slots=slots,
-                                context=context)
-    return _grow_context(layout, allowance, placed, slots, kv_bytes_per_value, flags)
+    if placed.mode == "experts-cpu":
+        if self_streams:
+            checks.append("planned as a stream because the engine will stream it anyway")
+        elif placed.cpu_mb > ram_budget:
+            checks.append(f"{placed.cpu_mb} MB of experts exceed {ram_budget} MB of free RAM "
+                          f"(keeping {RAM_RESERVE_MB} MB for the system): streamed")
+        else:
+            checks.append(f"{placed.cpu_mb} MB of experts fit {ram_budget} MB of free RAM: held in RAM")
+        if self_streams or placed.cpu_mb > ram_budget:
+            placed = _place_experts(layout, allowance, kv, STREAM_OVERHEAD_MB, stream=True, flags=flags,
+                                    slots=slots, context=context)
+    placed = _grow_context(layout, allowance, placed, slots, kv_bytes_per_value, flags)
+    if placed.mode == "stream" and engine_streams:
+        cache = stream_cache_mb(placed.cpu_mb, ram_free)
+        checks.append(f"RAM expert cache {cache} MB (free {ram_free} - engine {STREAM_ENGINE_HOST_MB} - "
+                      f"system {RAM_RESERVE_MB}, at most the {placed.cpu_mb} MB streamed)")
+        placed = replace(placed, ram_cache_mb=cache)
+    if placed.mode == "stream":
+        checks.append("no VRAM hot-expert cache over streamed experts (measured 4-5x slower)")
+    return replace(placed, checks=tuple(checks))
+
+
+def stream_cache_mb(streamed_mb: int, ram_free_mb: int) -> int:
+    """The RAM expert cache for a streamed model: what is free at launch less the engine's
+    own buffers and the system's reserve, never more than the experts it could hold, never
+    under STREAM_CACHE_MIN_MB."""
+    room = ram_free_mb - STREAM_ENGINE_HOST_MB - RAM_RESERVE_MB
+    return int(max(STREAM_CACHE_MIN_MB, min(streamed_mb, room)))
 
 
 def _grow_context(layout: ModelLayout, allowance: float, placed: Placement, slots: int,
@@ -501,6 +574,28 @@ def engine_flags(binary: str, run: Callable[..., Any] = subprocess.run) -> froze
     return frozenset(flag for flag in PLANNER_FLAGS if flag in text)
 
 
+@functools.lru_cache(maxsize=8)
+def engine_streams(binary: str) -> bool:
+    """True when the llama-server at `binary` is a build with its own expert streaming:
+    its CPU backend (ggml-cpu, beside the server or linked into it) carries STREAM_MARKER.
+    Cached per path; False when nothing can be read, which plans as a stock build."""
+    if not binary or not Path(binary).is_file():
+        return False
+    folder = Path(binary).parent
+    candidates = [Path(binary)] + sorted(folder.glob("*ggml-cpu*"))
+    for path in candidates:
+        try:
+            with path.open("rb") as handle:
+                tail = b""
+                while chunk := handle.read(4 * MB):
+                    if STREAM_MARKER in tail + chunk:
+                        return True
+                    tail = chunk[-len(STREAM_MARKER):]
+        except OSError:
+            continue
+    return False
+
+
 def kv_bytes_per_value(server_args: list[str]) -> float:
     """1 for a q8_0 (or smaller) KV cache set in the row's server_args, else 2 (f16)."""
     for i, arg in enumerate(server_args):
@@ -523,7 +618,9 @@ def slots_from(server_args: list[str]) -> int:
 def plan_for_launch(binary: str, location: str, context: int, server_args: list[str], vram_free_mb: int | None,
                     *, layout_fn: Callable[[str], ModelLayout] = read_layout,
                     flags_fn: Callable[[str], frozenset[str]] = engine_flags,
-                    ram_fn: Callable[[], int] = ram_total_mb) -> Placement | None:
+                    ram_fn: Callable[[], int] = ram_total_mb,
+                    ram_free_fn: Callable[[], int] | None = None,
+                    streams_fn: Callable[[str], bool] = engine_streams) -> Placement | None:
     """The plan for one launch, or None when the planner has nothing to say (the file
     is missing or unreadable, the card's free memory is unknown, or the model is not a
     MoE bigger than the card). Never raises: a planning problem must not stop a launch."""
@@ -536,8 +633,11 @@ def plan_for_launch(binary: str, location: str, context: int, server_args: list[
         if not layout.is_moe or layout.file_mb + GPU_OVERHEAD_MB <= vram_free_mb - VRAM_MARGIN_MB:
             return None
         flags = set(flags_fn(binary))
-        placed = plan(layout, vram_free_mb, ram_fn(), context, slots_from(server_args),
-                      kv_bytes_per_value(server_args), flags)
+        total = ram_fn()
+        free = (ram_free_fn or ram_available_mb)()
+        placed = plan(layout, vram_free_mb, total, context, slots_from(server_args),
+                      kv_bytes_per_value(server_args), flags,
+                      ram_free_mb=free if free > 0 else None, engine_streams=bool(streams_fn(binary)))
     except Exception:   # a corrupt header, an odd binary: the engine's fit mode still works
         return None
     return placed if placed.changes_argv else None

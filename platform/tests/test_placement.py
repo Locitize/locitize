@@ -255,6 +255,82 @@ def test_plan_streams_from_the_drive_when_the_experts_exceed_ram():
     assert placed.cpu_moe_blocks <= in_ram.cpu_moe_blocks
 
 
+def _gpt_oss_like() -> ModelLayout:
+    # 57 GB: 36 blocks of 1,500 MB experts and 3 GB of shared weights, bigger than a 64 GB
+    # machine's RAM minus 8 GB, which is where the streaming build streams by itself.
+    return _layout(expert_per_block_mb=1500, blocks=36, shared_mb=3000)
+
+
+def test_plan_streams_a_model_the_engine_will_stream_by_itself_and_caps_its_cache():
+    """Measured 2026-11-05 (gpt-oss-120b, 64 GB): planned as 'experts in RAM' the streaming build
+    streamed anyway, under a VRAM hot-expert cache, at 6.8 tok/s; planned as a stream, 30."""
+    layout = _gpt_oss_like()
+    blind = plan(layout, 15000, 64000, 8192, kv_bytes_per_value=1.0, flags=ALL_FLAGS, ram_free_mb=55700)
+    assert blind.mode == "experts-cpu", "a stock build holds experts that fit free RAM in RAM"
+    placed = plan(layout, 15000, 64000, 8192, kv_bytes_per_value=1.0, flags=ALL_FLAGS, ram_free_mb=55700,
+                  engine_streams=True)
+    assert placed.mode == "stream" and placed.moe_cache_mib == 0
+    assert FLAG_MOE_CACHE not in placed.args(ALL_FLAGS, thread_args=[])
+    want = 55700 - placement.STREAM_ENGINE_HOST_MB - placement.RAM_RESERVE_MB
+    assert placed.ram_cache_mb == want and placed.env() == {"GGML_EXPERT_STREAM": "1", "GGML_EXPERT_STREAM_MB": str(want)}
+    assert "RAM expert cache" in placed.describe()
+    line = placed.describe_checks()
+    for fact in ("VRAM 15000 MB free", "RAM 55700 MB free of 64000 MB", "engine streams experts itself",
+                 "the engine will stream it anyway", f"RAM expert cache {want} MB"):
+        assert fact in line, fact
+
+
+def test_plan_holds_experts_in_ram_only_when_they_fit_the_ram_free_at_launch():
+    # 128 GB of RAM but 30 GB free: total RAM would have said "in RAM"; what is free says stream.
+    layout = _layout(expert_per_block_mb=1200, blocks=36, shared_mb=3000)
+    assert plan(layout, 15000, 128000, 8192, kv_bytes_per_value=1.0, flags=ALL_FLAGS).mode == "experts-cpu"
+    placed = plan(layout, 15000, 128000, 8192, kv_bytes_per_value=1.0, flags=ALL_FLAGS, ram_free_mb=30000)
+    assert placed.mode == "stream" and "exceed" in placed.describe_checks()
+    roomy = plan(layout, 15000, 128000, 8192, kv_bytes_per_value=1.0, flags=ALL_FLAGS, ram_free_mb=100000,
+                 engine_streams=True)
+    assert roomy.mode == "experts-cpu" and "held in RAM" in roomy.describe_checks()
+    assert roomy.env() == {} and roomy.ram_cache_mb == 0
+
+
+def test_stream_cache_leaves_the_engine_and_the_system_their_share():
+    room = 55700 - placement.STREAM_ENGINE_HOST_MB - placement.RAM_RESERVE_MB
+    assert placement.stream_cache_mb(48000, 55700) == room
+    assert placement.stream_cache_mb(10000, 100000) == 10000, "never more than the experts streamed"
+    assert placement.stream_cache_mb(48000, 15000) == placement.STREAM_CACHE_MIN_MB
+
+
+def test_a_stock_build_streams_through_the_file_map_with_no_cache_size():
+    placed = plan(_gpt_oss_like(), 15000, 32000, 8192, kv_bytes_per_value=1.0, flags=ALL_FLAGS, ram_free_mb=25000)
+    assert placed.mode == "stream" and placed.ram_cache_mb == 0 and placed.env() == {"GGML_EXPERT_STREAM": "1"}
+
+
+def test_engine_streams_finds_the_streaming_cpu_backend_beside_the_server(tmp_path: Path):
+    placement.engine_streams.cache_clear()
+    fork, stock = tmp_path / "fork", tmp_path / "stock"
+    for folder in (fork, stock):
+        folder.mkdir()
+        (folder / "llama-server.exe").write_bytes(b"MZ")
+    (fork / "ggml-cpu.dll").write_bytes(b"\0" * (5 * MB) + b"getenv GGML_EXPERT_STREAM_MB")   # past the first read
+    (stock / "ggml-cpu.dll").write_bytes(b"\0" * 1024)
+    assert placement.engine_streams(str(fork / "llama-server.exe"))
+    assert not placement.engine_streams(str(stock / "llama-server.exe"))
+    assert not placement.engine_streams(str(tmp_path / "missing.exe"))
+    placement.engine_streams.cache_clear()
+
+
+def test_plan_for_launch_weighs_free_ram_and_the_engines_own_streaming(tmp_path: Path):
+    big = _big_moe(tmp_path)
+    flags = lambda binary: frozenset(ALL_FLAGS)   # noqa: E731
+    kwargs = dict(flags_fn=flags, ram_fn=lambda: 128000)
+    roomy = plan_for_launch("llama-server.exe", str(big), 8192, [], 15000, ram_free_fn=lambda: 120000,
+                            streams_fn=lambda b: False, **kwargs)
+    assert roomy is not None and roomy.mode == "experts-cpu"
+    busy = plan_for_launch("llama-server.exe", str(big), 8192, [], 15000, ram_free_fn=lambda: 30000,
+                           streams_fn=lambda b: True, **kwargs)
+    assert busy is not None and busy.mode == "stream"
+    assert busy.ram_cache_mb == 30000 - placement.STREAM_ENGINE_HOST_MB - placement.RAM_RESERVE_MB
+
+
 def test_plan_counts_blocks_not_expert_layers_when_experts_are_interleaved():
     # Experts only in the odd blocks (a hybrid like Nemotron-H): --n-cpu-moe must still
     # name a block number, so the first two expert layers (blocks 1 and 3) end at block 4.

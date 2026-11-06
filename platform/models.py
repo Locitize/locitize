@@ -339,6 +339,8 @@ class ModelRegistry:
             # ... and the context it grew into the leftover VRAM, when it did.
             resolved_ctx = plan.context or resolved_ctx
             get_logger("launcher").info("%s: %s", model.id, plan.describe())
+            if plan.checks:
+                get_logger("launcher").info("%s: %s", model.id, plan.describe_checks())
         command = engine.core_command(
             binary, model, s, port, resolved_ctx, resolved_gpu, fit_target=fit_target
         )
