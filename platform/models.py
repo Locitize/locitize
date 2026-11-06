@@ -121,6 +121,7 @@ class ModelRegistry:
         self._placement_fn = placement.plan_for_launch
         self._clear_fn = placement.clear_machine
         self._release_fn = placement.release_machine
+        self._measure_fn = gpu_ledger.placement_of
         # Index by id for O(1) lookup; ids are validated unique at load time.
         self._by_id = {m.id: m for m in data.models}
 
@@ -330,8 +331,19 @@ class ModelRegistry:
             and placement.placement_mode(model.placement) != placement.PLACEMENT_FIT
             and budget is not None
         ):
+            # What else this launch puts on the card: a vision add-on, and what earlier
+            # loads of this model measured over their plan (passed only when there is any,
+            # so a plain model's call is unchanged).
+            vram_extra: dict[str, Any] = {}
+            if getattr(model, "mmproj", None):
+                vram_extra["side_files"] = [model.mmproj]
+            if s.data_dir is not None:
+                learned = placement.learned_extra_mb(s.data_dir, model.id)
+                if learned:
+                    vram_extra["learned_mb"] = learned
             plan = self._placement_fn(
-                binary, model.location, resolved_ctx, list(resolved_server_args), budget.real_free_mib
+                binary, model.location, resolved_ctx, list(resolved_server_args), budget.real_free_mib,
+                **vram_extra,
             )
         if plan is not None:
             # The plan says exactly what goes where: every layer on the GPU except the
@@ -354,6 +366,19 @@ class ModelRegistry:
             where = prompt_memory.folder(s.data_dir)
             command.extend([prompt_memory.SAVE_PATH_FLAG, str(where) + "\\"])
             memory_log = lambda text: get_logger("launcher").info("%s: %s", model.id, text)   # noqa: E731
+            known_mb = (plan.gpu_mb + placement.side_files_mb([model.mmproj] if getattr(model, "mmproj", None) else [])
+                        if plan is not None else 0)
+
+            def measure_against_plan(pid: int) -> None:
+                # The plan is arithmetic; the card is the truth. What this load took over what
+                # the plan knew of is kept for the model's next plan (placement.record_measured).
+                used = self._measure_fn(pid)
+                if used is None:
+                    return
+                total = used.dedicated_mb + used.shared_mb
+                over = placement.record_measured(s.data_dir, model.id, known_mb, total)
+                memory_log(f"VRAM measured {total} MB ({used.shared_mb} MB of it paged through system RAM) "
+                           f"against {known_mb} MB planned: the next plan keeps {over} MB more")
             # Named from the finished argv (the row's own KV and adapter flags come later
             # in this method), so read at hook time, not now.
             full = command
@@ -366,7 +391,9 @@ class ModelRegistry:
                     where.mkdir(parents=True, exist_ok=True)
                     prompt_memory.save(port, prompt_memory.file_name(model.id, full), log=memory_log)
 
-            def recall(port: int | None) -> None:
+            def recall(port: int | None, pid: int | None = None) -> None:
+                if plan is not None and pid:
+                    measure_against_plan(pid)
                 if port is not None:
                     prompt_memory.restore(port, prompt_memory.file_name(model.id, full), where, log=memory_log)
                     # Also saved as the model reads, so a force-closed app keeps it too.

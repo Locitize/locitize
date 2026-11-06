@@ -184,8 +184,8 @@ def test_the_manager_restores_after_ready_and_saves_before_a_stop_even_when_hook
     order = []
     proc = _Proc()
 
-    def ready(port):
-        order.append(("ready", port, proc.alive))
+    def ready(port, pid=None):
+        order.append(("ready", port, proc.alive, pid))   # the pid lets the model's VRAM be measured
 
     def before(port):
         order.append(("before_stop", port, proc.alive))
@@ -199,5 +199,5 @@ def test_the_manager_restores_after_ready_and_saves_before_a_stop_even_when_hook
     manager = ManagedProcess(spec, launcher=launch, readiness=lambda s, h: True)
     assert manager.start() is ServiceStatus.RUNNING
     assert manager.stop() is ServiceStatus.STOPPED
-    assert order == [("before_start",), ("launch",), ("ready", 8081, True), ("before_stop", 8081, True)], \
+    assert order == [("before_start",), ("launch",), ("ready", 8081, True, 4242), ("before_stop", 8081, True)], \
         "the folder exists before the launch; saved while the model still runs"

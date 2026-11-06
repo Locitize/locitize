@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import functools
 import glob
+import json
 import os
 import re
 import struct
@@ -127,6 +128,17 @@ CPU_UBATCH = 1024
 RAM_RESERVE_MB = 8192
 # VRAM kept free beside the plan, for the driver and display.
 VRAM_MARGIN_MB = 256
+# More, when the card also drives a monitor: Windows' desktop and every open window
+# draw from the same VRAM. Planned to within ~440 MB of a full card, Qwen3.8-Flash-Next
+# spilled 1.6 GB into shared memory and the screen flickered as windows were paged out
+# and redrawn (2026-11-05).
+DISPLAY_RESERVE_MB = 1024
+# Beside the weights the plan sizes, a launch can put more on the card: a vision add-on
+# (--mmproj, its weights about its file size) and buffers no formula here predicts
+# (Qwen3.8-Flash-Next measured 1.76 GB over its plan with an 0.86 GB mmproj, 2026-11-05).
+# The add-on is counted from its file; the rest is measured after each load
+# (record_measured) and kept per model in the data folder for the next plan.
+LEARNED_FILE = "placement-learned.json"
 # A hot-expert cache smaller than this is not worth its bookkeeping.
 MIN_CACHE_MB = 768
 # A model that cannot fit the card gets its context grown into the VRAM left after
@@ -413,7 +425,8 @@ class Placement:
 
 def plan(layout: ModelLayout, vram_free_mb: int, ram_total_mb: int, context: int,
          slots: int = 1, kv_bytes_per_value: float = 2.0, flags: set[str] | None = None,
-         ram_free_mb: int | None = None, engine_streams: bool = False) -> Placement:
+         ram_free_mb: int | None = None, engine_streams: bool = False, display_mb: int = 0,
+         extra_gpu_mb: int = 0, extra_note: str = "") -> Placement:
     """Fit `layout` into `vram_free_mb` of VRAM with `ram_total_mb` of RAM behind it.
 
     `context` is the total context llama-server gets (its --ctx-size), shared by
@@ -421,13 +434,20 @@ def plan(layout: ModelLayout, vram_free_mb: int, ram_total_mb: int, context: int
     is the RAM free at launch (other apps hold the rest; None = all of it), and
     `engine_streams` says the installed build has its own expert streaming, which it
     switches on by itself for a file bigger than RAM minus ENGINE_SELF_STREAM_MARGIN_MB.
+    `display_mb` is VRAM kept for a monitor the card drives (DISPLAY_RESERVE_MB, or 0);
+    `extra_gpu_mb` is what else the launch puts on the card (an add-on, measured buffers).
 
     Every fact weighed is recorded in the result's `checks`, so the log says why."""
     flags = flags if flags is not None else set(PLANNER_FLAGS)
-    allowance = vram_free_mb - VRAM_MARGIN_MB
+    allowance = vram_free_mb - VRAM_MARGIN_MB - max(0, display_mb) - max(0, extra_gpu_mb)
     ram_free = ram_total_mb if ram_free_mb is None else max(0, min(ram_free_mb, ram_total_mb))
     checks = [f"VRAM {vram_free_mb} MB free", f"RAM {ram_free} MB free of {ram_total_mb} MB",
               f"model {int(layout.file_mb)} MB"]
+    checks.append(f"the card drives a display: {display_mb} MB kept for it" if display_mb > 0
+                  else "no display on the card")
+    if extra_gpu_mb > 0:
+        checks.append(f"{extra_gpu_mb} MB more on the card beside the weights"
+                      + (f" ({extra_note})" if extra_note else ""))
     # The cache a hybrid model keeps for its Mamba blocks is fixed, so it counts as part of the KV.
     kv = layout.kv_mb(context, kv_bytes_per_value) + layout.recurrent_mb(slots)
     if layout.file_mb + kv + GPU_OVERHEAD_MB <= allowance:
@@ -574,6 +594,65 @@ def engine_flags(binary: str, run: Callable[..., Any] = subprocess.run) -> froze
     return frozenset(flag for flag in PLANNER_FLAGS if flag in text)
 
 
+def side_files_mb(paths: list[str]) -> int:
+    """VRAM for files loaded beside the model (a vision projector): their size on disk."""
+    total = 0
+    for path in paths:
+        try:
+            total += os.path.getsize(path)
+        except OSError:
+            continue
+    return int(total / MB)
+
+
+def _learned_path(data_dir: str | Path) -> Path:
+    return Path(data_dir) / LEARNED_FILE
+
+
+def learned_extra_mb(data_dir: str | Path, model_id: str) -> int:
+    """What this model measured over its plan last time (0 when never measured)."""
+    try:
+        value = json.loads(_learned_path(data_dir).read_text(encoding="utf-8")).get(model_id, {})
+        return max(0, int(value.get("over_plan_mb", 0)))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return 0
+
+
+def record_measured(data_dir: str | Path, model_id: str, planned_mb: int, measured_mb: int) -> int:
+    """Keep how far a load went over what its plan knew of (dedicated plus shared VRAM
+    against the weights, KV, buffers and add-ons the plan counted); returns the amount
+    kept. Never raises."""
+    over = max(0, int(measured_mb) - int(planned_mb))
+    try:
+        path = _learned_path(data_dir)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data = data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            data = {}
+        data[model_id] = {"over_plan_mb": over, "planned_mb": int(planned_mb), "measured_mb": int(measured_mb)}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    return over
+
+
+def display_reserve_mb(run: Callable[..., Any] = subprocess.run) -> int:
+    """DISPLAY_RESERVE_MB when nvidia-smi says the card drives a display, else 0. Asked at
+    every launch (a monitor can be plugged in or out); unknown counts as a display, the
+    safe side for a desktop."""
+    try:
+        proc = run(["nvidia-smi", "--query-gpu=display_active", "--format=csv,noheader"], capture_output=True,
+                   text=True, timeout=10, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        first = ((getattr(proc, "stdout", "") or "").strip().splitlines() or [""])[0].strip().lower()
+    except (OSError, subprocess.SubprocessError):
+        return DISPLAY_RESERVE_MB
+    return 0 if first == "disabled" else DISPLAY_RESERVE_MB
+
+
 @functools.lru_cache(maxsize=8)
 def engine_streams(binary: str) -> bool:
     """True when the llama-server at `binary` is a build with its own expert streaming:
@@ -620,7 +699,9 @@ def plan_for_launch(binary: str, location: str, context: int, server_args: list[
                     flags_fn: Callable[[str], frozenset[str]] = engine_flags,
                     ram_fn: Callable[[], int] = ram_total_mb,
                     ram_free_fn: Callable[[], int] | None = None,
-                    streams_fn: Callable[[str], bool] = engine_streams) -> Placement | None:
+                    streams_fn: Callable[[str], bool] = engine_streams,
+                    display_fn: Callable[[], int] = display_reserve_mb,
+                    side_files: list[str] | None = None, learned_mb: int = 0) -> Placement | None:
     """The plan for one launch, or None when the planner has nothing to say (the file
     is missing or unreadable, the card's free memory is unknown, or the model is not a
     MoE bigger than the card). Never raises: a planning problem must not stop a launch."""
@@ -630,14 +711,21 @@ def plan_for_launch(binary: str, location: str, context: int, server_args: list[
         if not os.path.isfile(location):
             return None
         layout = layout_fn(location)
-        if not layout.is_moe or layout.file_mb + GPU_OVERHEAD_MB <= vram_free_mb - VRAM_MARGIN_MB:
+        display = max(0, int(display_fn()))
+        side = side_files_mb(side_files or [])
+        learned = max(0, int(learned_mb))
+        extra = side + learned
+        note = ", ".join(n for n in ((f"add-on files {side} MB" if side else ""),
+                                     (f"measured on earlier loads {learned} MB" if learned else "")) if n)
+        if not layout.is_moe or layout.file_mb + GPU_OVERHEAD_MB + extra <= vram_free_mb - VRAM_MARGIN_MB - display:
             return None
         flags = set(flags_fn(binary))
         total = ram_fn()
         free = (ram_free_fn or ram_available_mb)()
         placed = plan(layout, vram_free_mb, total, context, slots_from(server_args),
                       kv_bytes_per_value(server_args), flags,
-                      ram_free_mb=free if free > 0 else None, engine_streams=bool(streams_fn(binary)))
+                      ram_free_mb=free if free > 0 else None, engine_streams=bool(streams_fn(binary)),
+                      display_mb=display, extra_gpu_mb=extra, extra_note=note)
     except Exception:   # a corrupt header, an odd binary: the engine's fit mode still works
         return None
     return placed if placed.changes_argv else None

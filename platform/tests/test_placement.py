@@ -718,7 +718,104 @@ def test_start_spec_serves_the_grown_context(tmp_path: Path, monkeypatch: pytest
     monkeypatch.setattr(placement, "engine_flags", lambda binary: frozenset(ALL_FLAGS))
     registry._placement_fn = lambda binary, location, context, server_args, vram_free: placement.plan_for_launch(
         binary, location, context, server_args, vram_free, flags_fn=lambda b: frozenset(ALL_FLAGS),
-        ram_fn=lambda: 32000)
+        ram_fn=lambda: 32000, display_fn=lambda: 0)
     spec = registry.build_start_spec("big")
     cmd = spec.command
     assert cmd[cmd.index("--ctx-size") + 1] == str(placement.CONTEXT_GROW_MAX), "the row said 8192; the plan grew it"
+
+
+def test_a_card_driving_a_monitor_keeps_vram_for_the_desktop():
+    """Measured 2026-11-05: planned to within ~440 MB of a full card, Flash-Next spilled 1.6 GB
+    into shared memory and the screen flickered as windows were paged out and redrawn."""
+    layout = _gpt_oss_like()
+    headless = plan(layout, 15000, 64000, 8192, kv_bytes_per_value=1.0, flags=ALL_FLAGS, ram_free_mb=55000,
+                    engine_streams=True)
+    desktop = plan(layout, 15000, 64000, 8192, kv_bytes_per_value=1.0, flags=ALL_FLAGS, ram_free_mb=55000,
+                   engine_streams=True, display_mb=placement.DISPLAY_RESERVE_MB)
+    assert desktop.gpu_mb <= 15000 - placement.VRAM_MARGIN_MB - placement.DISPLAY_RESERVE_MB
+    assert desktop.cpu_moe_blocks >= headless.cpu_moe_blocks
+    assert f"drives a display: {placement.DISPLAY_RESERVE_MB} MB kept" in desktop.describe_checks()
+    assert "no display on the card" in headless.describe_checks()
+
+
+def test_display_reserve_follows_nvidia_smi_and_assumes_a_display_when_unsure():
+    class Out:
+        def __init__(self, text):
+            self.stdout = text
+    assert placement.display_reserve_mb(lambda *a, **k: Out("Enabled\r\n")) == placement.DISPLAY_RESERVE_MB
+    assert placement.display_reserve_mb(lambda *a, **k: Out("Disabled\r\n")) == 0
+
+    def missing(*a, **k):
+        raise OSError("no nvidia-smi")
+    assert placement.display_reserve_mb(missing) == placement.DISPLAY_RESERVE_MB
+
+
+def test_a_vision_add_on_and_measured_overshoot_come_off_the_cards_allowance(tmp_path: Path):
+    big = _big_moe(tmp_path)
+    mmproj = tmp_path / "mmproj-F16.gguf"
+    mmproj.write_bytes(b"\0" * (3 * MB))
+    kwargs = dict(flags_fn=lambda b: frozenset(ALL_FLAGS), ram_fn=lambda: 64000, ram_free_fn=lambda: 55000,
+                  streams_fn=lambda b: True, display_fn=lambda: 0)
+    bare = plan_for_launch("llama-server.exe", str(big), 8192, [], 15000, **kwargs)
+    loaded = plan_for_launch("llama-server.exe", str(big), 8192, [], 15000, side_files=[str(mmproj)],
+                             learned_mb=1500, **kwargs)
+    assert loaded.gpu_mb <= 15000 - placement.VRAM_MARGIN_MB - 3 - 1500
+    assert loaded.cpu_moe_blocks > bare.cpu_moe_blocks, "the room the add-on and the overshoot take costs expert blocks"
+    assert "add-on files 3 MB, measured on earlier loads 1500 MB" in loaded.describe_checks()
+
+
+def test_measured_overshoot_is_kept_per_model_and_read_back(tmp_path: Path):
+    assert placement.learned_extra_mb(tmp_path, "flash") == 0
+    assert placement.record_measured(tmp_path, "flash", planned_mb=13530, measured_mb=14428) == 898
+    assert placement.record_measured(tmp_path, "oss", planned_mb=13000, measured_mb=12500) == 0, "under plan keeps 0"
+    assert placement.learned_extra_mb(tmp_path, "flash") == 898 and placement.learned_extra_mb(tmp_path, "oss") == 0
+    (tmp_path / placement.LEARNED_FILE).write_text("not json", encoding="utf-8")
+    assert placement.learned_extra_mb(tmp_path, "flash") == 0, "a damaged file plans as never measured"
+
+
+def test_a_planned_model_is_measured_once_ready_and_its_next_plan_keeps_the_overshoot(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    settings = Settings(base_dir=tmp_path)
+    settings.paths.llama_cpp = "llama-server.exe"
+    _big_moe(tmp_path)
+    registry = ModelRegistry(ModelRegistryData(version=1, models=[Model(
+        id="big", name="Big", description="d", location=str(tmp_path / "gpt-oss-120b.gguf"), context_size=8192,
+        gpu_layers=999, status="installed", server_args=["--cache-type-k", "q8_0"])]), settings)
+    registry._fit_budget_fn = lambda binary: _Budget()
+    calls = []
+
+    def planner(binary, location, context, server_args, vram_free, **extra):
+        calls.append(extra)
+        return placement.plan_for_launch(binary, location, context, server_args, vram_free,
+                                         flags_fn=lambda b: frozenset(ALL_FLAGS), ram_fn=lambda: 32000,
+                                         display_fn=lambda: 0, **extra)
+    registry._placement_fn = planner
+    registry._measure_fn = lambda pid: placement_of_fake(pid)
+    spec = registry.build_start_spec("big")
+    assert calls[-1] == {}, "never measured: the call is the plain one"
+    import prompt_memory
+    monkeypatch.setattr(prompt_memory, "restore", lambda *a, **k: False)   # no server here
+    monkeypatch.setattr(prompt_memory, "Watcher", _NoWatcher)
+    spec.on_ready(8081, pid=4242)
+    learned = placement.learned_extra_mb(tmp_path, "big")
+    assert 0 < learned < 15100 + 700, "measured (dedicated + shared) less what the plan knew of"
+    registry.build_start_spec("big")
+    assert calls[-1] == {"learned_mb": learned}
+
+
+class _NoWatcher:
+    def __init__(self, *a, **k):
+        pass
+
+    def start(self):
+        return self
+
+    def stop(self):
+        pass
+
+
+def placement_of_fake(pid):
+    import gpu_ledger
+    assert pid == 4242
+    return gpu_ledger.GpuPlacement(pid=pid, dedicated_mb=15100, shared_mb=700)
+
