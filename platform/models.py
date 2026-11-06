@@ -357,8 +357,11 @@ class ModelRegistry:
             # Named from the finished argv (the row's own KV and adapter flags come later
             # in this method), so read at hook time, not now.
             full = command
+            watching: list[prompt_memory.Watcher] = []
 
             def remember(port: int | None) -> None:
+                while watching:
+                    watching.pop().stop()
                 if port is not None:
                     where.mkdir(parents=True, exist_ok=True)
                     prompt_memory.save(port, prompt_memory.file_name(model.id, full), log=memory_log)
@@ -366,6 +369,9 @@ class ModelRegistry:
             def recall(port: int | None) -> None:
                 if port is not None:
                     prompt_memory.restore(port, prompt_memory.file_name(model.id, full), where, log=memory_log)
+                    # Also saved as the model reads, so a force-closed app keeps it too.
+                    watching.append(prompt_memory.Watcher(
+                        port, lambda: prompt_memory.file_name(model.id, full), log=memory_log).start())
             memory_hooks = {"on_ready": recall, "before_stop": remember,
                             # llama-server refuses to start when the folder is missing
                             "before_start": lambda: where.mkdir(parents=True, exist_ok=True)}

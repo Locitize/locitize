@@ -93,12 +93,72 @@ def test_the_model_spec_carries_the_save_path_and_both_hooks(tmp_path: Path, mon
     spec.before_start()
     assert where.is_dir()
     seen = []
+
+    class FakeWatcher:
+        def __init__(self, port, name_fn, log):
+            seen.append(("watch", port, name_fn()))
+
+        def start(self):
+            return self
+
+        def stop(self):
+            seen.append(("unwatch",))
+    monkeypatch.setattr(prompt_memory, "Watcher", FakeWatcher)
     monkeypatch.setattr(prompt_memory, "save", lambda port, name, log: seen.append(("save", port, name)))
     monkeypatch.setattr(prompt_memory, "restore", lambda port, name, folder, log: seen.append(("restore", port, name)))
-    spec.before_stop(8081)
     spec.on_ready(8081)
+    spec.before_stop(8081)
     name = prompt_memory.file_name("small", spec.command)
-    assert seen == [("save", 8081, name), ("restore", 8081, name)] and where.is_dir()
+    assert seen == [("restore", 8081, name), ("watch", 8081, name), ("unwatch",), ("save", 8081, name)]
+    assert where.is_dir()
+
+
+def _metrics(read: int) -> str:
+    return f"# HELP llamacpp:prompt_tokens_total x\nllamacpp:prompt_tokens_total {read}\nllamacpp:n_decode_total 3\n"
+
+
+def test_the_watcher_saves_after_a_long_new_read_once_the_model_is_idle():
+    state = {"read": 0, "busy": False}
+    saves = []
+    now = [1000.0]
+
+    def saver(port, name, post, get, log):
+        saves.append((port, name, state["read"]))
+        return True
+    watcher = prompt_memory.Watcher(8081, lambda: "m.bin", get=lambda url, t: [{"is_processing": state["busy"]}],
+                                    get_text=lambda url, t: _metrics(state["read"]), clock=lambda: now[0],
+                                    saver=saver)
+    assert not watcher.check() and watcher.baseline == 0, "the first look only sets the baseline"
+    state.update(read=10046, busy=True)            # the portal's opening is being read
+    assert not watcher.check()
+    state["busy"] = False
+    assert not watcher.check(), "idle once is not enough: a reply may follow at once"
+    assert watcher.check() and saves == [(8081, "m.bin", 10046)]
+    # More reading soon after: held back for WATCH_MIN_GAP_S, then saved.
+    state["read"] = 10046 + 4000
+    watcher.check(), watcher.check()
+    assert len(saves) == 1
+    now[0] += prompt_memory.WATCH_MIN_GAP_S
+    assert watcher.check() and saves[-1][2] == 14046
+    # A little new reading is not worth a 1 GB file.
+    state["read"] += 300
+    now[0] += prompt_memory.WATCH_MIN_GAP_S
+    watcher.check(), watcher.check()
+    assert len(saves) == 2
+
+
+def test_the_watcher_skips_a_check_it_cannot_read_and_follows_a_restarted_counter():
+    def down(url, t):
+        raise OSError("refused")
+    watcher = prompt_memory.Watcher(8081, lambda: "m.bin", get=down, get_text=down,
+                                    saver=lambda *a, **k: (_ for _ in ()).throw(AssertionError("no save")))
+    assert not watcher.check() and watcher.baseline is None
+    counts = iter([9000, 50])
+    watcher = prompt_memory.Watcher(8081, lambda: "m.bin", get=lambda url, t: [{"is_processing": False}],
+                                    get_text=lambda url, t: _metrics(next(counts)), saver=lambda *a, **k: True)
+    watcher.check(), watcher.check()
+    assert watcher.baseline == 50, "a server restarted under the watcher starts a new count"
+    assert prompt_memory.prompt_tokens_read("nothing here") is None
 
 
 class _Proc:

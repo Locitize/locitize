@@ -23,6 +23,10 @@ afresh instead of restoring a state that no longer fits. A restore that the serv
 refuses is logged and the file left for the next save to replace; nothing here can
 stop a model from starting or stopping.
 
+Saving only at a stop lost what a force-closed app had read, so while a model runs a
+Watcher also saves once the server has read WATCH_MIN_NEW_TOKENS new prompt tokens and
+sits idle (the first time after each load at once, then at most every WATCH_MIN_GAP_S).
+
 The saved state holds the slot's last prompt, so it stays on this machine, in the data
 folder, beside the chat history that holds the same text.
 """
@@ -32,6 +36,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
+import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
@@ -46,6 +52,14 @@ STATE_FLAGS = ("--model", "-m", "--ctx-size", "-c", "--cache-type-k", "-ctk", "-
                "--parallel", "-np", "--lora", "--lora-scaled", "--swa-full", "--kv-unified", "--no-kv-unified")
 SAVE_TIMEOUT_S = 120.0
 RESTORE_TIMEOUT_S = 120.0
+# Saving only at a stop lost everything a force-closed Locitize had read. While a model
+# runs, a watcher also saves once the server has read this many NEW prompt tokens (its own
+# llamacpp:prompt_tokens_total, which leaves out what was restored or reused) and has been
+# idle for two checks in a row...
+WATCH_INTERVAL_S = 15.0
+WATCH_MIN_NEW_TOKENS = 2048
+# ... but after the first save of a load, no more often than this: a file is ~1 GB.
+WATCH_MIN_GAP_S = 600.0
 
 
 def folder(data_dir: str | Path) -> Path:
@@ -97,6 +111,82 @@ def save(port: int, name: str, *, post: Callable[..., dict] = _post, get: Callab
     ms = (result.get("timings") or {}).get("save_ms")
     log(f"prompt memory: saved {saved} tokens as {name}" + (f" in {ms:.0f} ms" if isinstance(ms, (int, float)) else ""))
     return saved > 0
+
+
+def _get_text(url: str, timeout: float) -> str:
+    with urllib.request.urlopen(url, timeout=timeout) as r:   # noqa: S310 - loopback only
+        return r.read().decode("utf-8", "replace")
+
+
+def prompt_tokens_read(metrics_text: str) -> int | None:
+    """llama-server's count of prompt tokens it has actually read (Prometheus text)."""
+    for line in metrics_text.splitlines():
+        if line.startswith("llamacpp:prompt_tokens_total"):
+            try:
+                return int(float(line.split()[-1]))
+            except ValueError:
+                return None
+    return None
+
+
+def worth_saving(read_since_save: int, idle_checks: int, saved_this_load: bool, seconds_since_save: float) -> bool:
+    """The watcher's rule: enough new reading, the model idle twice running, and (after the
+    first save of this load) WATCH_MIN_GAP_S since the last one."""
+    return (read_since_save >= WATCH_MIN_NEW_TOKENS and idle_checks >= 2
+            and (not saved_this_load or seconds_since_save >= WATCH_MIN_GAP_S))
+
+
+class Watcher:
+    """Saves a running model's prompt memory as it goes (see worth_saving), on a daemon
+    thread; stop() ends it. Every failure is a skipped check, never an error."""
+
+    def __init__(self, port: int, name_fn: Callable[[], str], *, get=_get, get_text=_get_text, post=_post,
+                 log: Callable[[str], None] = lambda text: None, interval: float = WATCH_INTERVAL_S,
+                 clock: Callable[[], float] = time.monotonic, saver: Callable[..., bool] | None = None):
+        self._port, self._name_fn, self._get, self._get_text, self._post = port, name_fn, get, get_text, post
+        self._log, self._interval, self._clock = log, interval, clock
+        self._save = saver or save
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.baseline: int | None = None
+        self.idle_checks = 0
+        self.saved_this_load = False
+        self.last_save = clock()
+
+    def check(self) -> bool:
+        """One look at the server; True when it saved."""
+        base = f"http://127.0.0.1:{self._port}"
+        try:
+            read = prompt_tokens_read(self._get_text(base + "/metrics", 5.0))
+            slots = self._get(base + "/slots", 5.0)
+        except Exception:   # noqa: BLE001 - the server is loading, busy or gone: look again later
+            return False
+        if read is None:
+            return False
+        if self.baseline is None or read < self.baseline:   # first look, or a restarted counter
+            self.baseline, self.idle_checks = read, 0
+            return False
+        busy = bool(slots[0].get("is_processing")) if isinstance(slots, list) and slots else True
+        self.idle_checks = 0 if busy else self.idle_checks + 1
+        if not worth_saving(read - self.baseline, self.idle_checks, self.saved_this_load,
+                            self._clock() - self.last_save):
+            return False
+        if self._save(self._port, self._name_fn(), post=self._post, get=self._get, log=self._log):
+            self.baseline, self.saved_this_load, self.last_save = read, True, self._clock()
+            return True
+        return False
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            self.check()
+
+    def start(self) -> "Watcher":
+        self._thread = threading.Thread(target=self._run, name=f"prompt-memory:{self._port}", daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
 
 
 def restore(port: int, name: str, where: Path, *, post: Callable[..., dict] = _post,
