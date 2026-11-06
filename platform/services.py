@@ -206,6 +206,15 @@ class ServiceSpec:
     # the GPU back to the neighbours it asked to step aside (placement.py). Failures
     # are logged, never raised; a stop is a stop.
     on_stop: Any = None
+    # Called with the resolved port once the service is ready, and again with it just
+    # before a running service is stopped (prompt_memory.py restores and saves a model's
+    # read-in prompt here). Failures are logged, never raised: neither may stop a start
+    # or a stop.
+    on_ready: Any = None
+    before_stop: Any = None
+    # Called with no arguments just before the process is spawned (prompt memory makes
+    # the folder llama-server insists already exists for --slot-save-path).
+    before_start: Any = None
 
 
 # Injectable seams for testing --------------------------------------------- #
@@ -552,6 +561,12 @@ class ManagedProcess:
         else:
             creationflags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
             startupinfo = None
+        prepare = getattr(spec, "before_start", None)
+        if prepare is not None:
+            try:
+                prepare()
+            except Exception as exc:  # the launch itself reports anything that really matters
+                self._log.warning("before_start hook for %s failed: %s", spec.name, exc)
         try:
             self._handle = self._launcher(
                 args=command,
@@ -571,6 +586,7 @@ class ManagedProcess:
         # Readiness (Architecture 4.2 step 3).
         if self._await_ready():
             self._status = ServiceStatus.RUNNING
+            self._run_port_hook("on_ready")
         else:
             # Timed out or died: stop the partial process, report the error.
             interrupted = self._stop_requested
@@ -782,6 +798,8 @@ class ManagedProcess:
             self._status = ServiceStatus.STOPPED
             self._close_log_handle()
             return self._status
+        if self._status is ServiceStatus.RUNNING:
+            self._run_port_hook("before_stop")
 
         # Graceful: signal the process group (valid due to CREATE_NEW_PROCESS_GROUP).
         signalled = True
@@ -865,6 +883,15 @@ class ManagedProcess:
             self._close_log_handle()
             self._run_on_stop()
         return self._status
+
+    def _run_port_hook(self, name: str) -> None:
+        hook = getattr(self._spec, name, None)
+        if hook is None:
+            return
+        try:
+            hook(self._resolved_port)
+        except Exception as exc:  # a hook is a courtesy; the start or stop stands
+            self._log.warning("%s hook for %s failed: %s", name, self._spec.name, exc)
 
     def _run_on_stop(self) -> None:
         hook = getattr(self._spec, "on_stop", None)

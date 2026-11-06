@@ -19,6 +19,7 @@ import backends
 import finetune
 import gpu_ledger
 import placement
+import prompt_memory
 from config import Model, ModelRegistryData, Settings
 from logger import get_logger
 from services import ServiceSpec, resolve_service_cwd, strip_managed_flags
@@ -346,6 +347,28 @@ class ModelRegistry:
         )
         if plan is not None:
             command.extend(plan.args(set(placement.engine_flags(binary))))
+        # Prompt memory (prompt_memory.py): the model keeps the opening it has read across a
+        # switch or a restart - saved just before it stops, restored as soon as it is ready.
+        memory_hooks: dict[str, Any] = {}
+        if engine.name == backends.DEFAULT_BACKEND and s.data_dir is not None:
+            where = prompt_memory.folder(s.data_dir)
+            command.extend([prompt_memory.SAVE_PATH_FLAG, str(where) + "\\"])
+            memory_log = lambda text: get_logger("launcher").info("%s: %s", model.id, text)   # noqa: E731
+            # Named from the finished argv (the row's own KV and adapter flags come later
+            # in this method), so read at hook time, not now.
+            full = command
+
+            def remember(port: int | None) -> None:
+                if port is not None:
+                    where.mkdir(parents=True, exist_ok=True)
+                    prompt_memory.save(port, prompt_memory.file_name(model.id, full), log=memory_log)
+
+            def recall(port: int | None) -> None:
+                if port is not None:
+                    prompt_memory.restore(port, prompt_memory.file_name(model.id, full), where, log=memory_log)
+            memory_hooks = {"on_ready": recall, "before_stop": remember,
+                            # llama-server refuses to start when the folder is missing
+                            "before_start": lambda: where.mkdir(parents=True, exist_ok=True)}
         # L-4 (managed-flag rejection): --host/--port are resolved by the platform
         # and already baked into the argv above. Strip them (with a WARNING) from
         # owner-supplied server_args before appending, so a stray --port in
@@ -408,6 +431,7 @@ class ModelRegistry:
             # trace is not overwritten by the next attempt (this is the evidence the
             # D-M4-1 investigation needed).
             append_log=True,
+            **memory_hooks,
         )
 
     def _build_spec_args(
