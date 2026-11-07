@@ -95,7 +95,7 @@ def test_the_model_spec_carries_the_save_path_and_both_hooks(tmp_path: Path, mon
     seen = []
 
     class FakeWatcher:
-        def __init__(self, port, name_fn, where, log):
+        def __init__(self, port, name_fn, **kw):
             seen.append(("watch", port, name_fn()))
 
         def start(self):
@@ -104,12 +104,15 @@ def test_the_model_spec_carries_the_save_path_and_both_hooks(tmp_path: Path, mon
         def stop(self):
             seen.append(("unwatch",))
     monkeypatch.setattr(prompt_memory, "Watcher", FakeWatcher)
-    monkeypatch.setattr(prompt_memory, "save", lambda port, name, where, log: seen.append(("save", port, name)))
-    monkeypatch.setattr(prompt_memory, "restore", lambda port, name, folder, log: seen.append(("restore", port, name)))
+    monkeypatch.setattr(prompt_memory, "save", lambda port, name, **kw: seen.append(("save", port, name)))
+    monkeypatch.setattr(prompt_memory, "restore", lambda port, name, folder, **kw: seen.append(("restore", port, name)))
     spec.on_ready(8081)
+    assert prompt_memory.for_port(8081) is not None, "the router can find the running model's slot"
     spec.before_stop(8081)
+    assert prompt_memory.for_port(8081) is None
     name = prompt_memory.file_name("small", spec.command)
-    assert seen == [("restore", 8081, name), ("watch", 8081, name), ("unwatch",), ("save", 8081, name)]
+    # No app named yet: the model-wide file, as before; the watcher has nothing to name.
+    assert seen == [("restore", 8081, name), ("watch", 8081, None), ("unwatch",), ("save", 8081, name)]
     assert where.is_dir()
     # The server's own output is kept (it went to the null device until 2026-11-06).
     assert spec.log_path and spec.log_path.endswith("llama-server.log") and spec.append_log
@@ -302,3 +305,198 @@ def test_the_server_log_rotates_once_it_is_too_big(tmp_path: Path, monkeypatch):
     models._keep_server_log(log)
     assert not log.exists() and (tmp_path / "logs" / "llama-server.log.1").read_bytes() == b"x" * 10
     models._keep_server_log(None)
+
+
+# --- One saved opening per app (2026-11-06) ---------------------------------------------------
+# The portal and Open WebUI both used Flash-Next; the model's one slot held only the last app's
+# opening, so the other app's first chat after a switch or restart re-read ~4,000 tokens (~60 s).
+
+def _chat(system: str, tools: int = 0, user: str = "hi") -> bytes:
+    import json as _json
+    body = {"model": "m", "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    if tools:
+        body["tools"] = [{"type": "function", "function": {"name": f"tool_{i}", "parameters": {}}} for i in range(tools)]
+    return _json.dumps(body).encode()
+
+
+PORTAL = "You are the Agent Portal. " + "Rules and tools. " * 400
+OWUI = "You are a helpful assistant in Open WebUI. " + "Knowledge. " * 500
+
+
+def test_each_app_is_told_apart_by_the_start_of_its_opening():
+    key = prompt_memory.opening_key
+    portal_today = key(_chat(PORTAL + "\n\nToday: Friday 06 November 2026", tools=5))
+    portal_tomorrow = key(_chat(PORTAL + "\n\nToday: Saturday 07 November 2026", tools=5, user="other"))
+    assert portal_today and portal_today == portal_tomorrow, "the date at the end does not make a new app"
+    assert key(_chat(OWUI)) not in (None, portal_today)
+    assert key(_chat(PORTAL, tools=6)) != key(_chat(PORTAL, tools=5)), "a different tool set is another opening"
+    assert key(_chat("Generate a concise title for this chat.")) is None, "short requests never swap"
+    assert key(b"not json") is None and key(b'{"prompt": "x"}') is None
+    parts = {"model": "m", "messages": [{"role": "system", "content": [{"type": "text", "text": OWUI}]}]}
+    import json as _json
+    assert key(_json.dumps(parts).encode()) == key(_chat(OWUI))
+
+
+class _FakeSlotServer:
+    """llama-server's slot endpoints over one slot: save writes what the slot holds, restore
+    loads it back. `slot` is the app whose opening the slot holds now."""
+
+    def __init__(self, where: Path):
+        self.where, self.slot, self.calls = where, None, []
+
+    def post(self, url, body, timeout):
+        action = url.split("action=")[1]
+        self.calls.append((action, body["filename"]))
+        path = self.where / body["filename"]
+        if action == "save":
+            _state_file(path, 100, 50)
+            path.write_bytes(path.read_bytes() + (self.slot or "-").encode())
+            return {"n_saved": 100}
+        self.slot = path.read_bytes()[12 + 400 + 50:].decode() or None
+        return {"n_restored": 100}
+
+    def get(self, url, timeout):
+        return [{"is_processing": False, "n_prompt_tokens": 5000}]
+
+
+def test_the_slot_swaps_to_each_apps_own_opening_and_keeps_what_the_other_read(tmp_path: Path):
+    server = _FakeSlotServer(tmp_path)
+    lines = []
+    slots = prompt_memory.PromptSlots(8081, "m-abc.bin", tmp_path, post=server.post, get=server.get,
+                                      log=lines.append)
+    slots.recall()                                       # first start: nothing saved
+    assert slots.key is None
+    portal, owui = "11111111", "22222222"
+
+    slots.before_request(portal)                         # the portal's first chat reads its opening once
+    assert "read this once" in lines[-1]
+    server.slot = portal
+    slots.before_request(portal)                         # its next chat: nothing to do
+    assert [c for c in server.calls if c[0] == "save"] == []
+
+    slots.before_request(owui)                           # Open WebUI: the portal's opening is kept
+    assert server.calls[-1] == ("save", "m-abc-11111111.bin.part")
+    assert (tmp_path / "m-abc-11111111.bin").is_file()
+    server.slot = owui
+
+    slots.before_request(portal)                         # back to the portal: Open WebUI's kept, the portal's restored
+    assert ("save", "m-abc-22222222.bin.part") in server.calls
+    assert server.calls[-1] == ("restore", "m-abc-11111111.bin") and server.slot == portal
+
+    slots.before_request(None)                           # a title request overwrites the slot
+    assert slots.key is None and server.calls[-1] == ("save", "m-abc-11111111.bin.part")
+    slots.before_request(portal)
+    assert server.calls[-1] == ("restore", "m-abc-11111111.bin") and server.slot == portal
+
+    slots.remember()                                     # the model stops: the portal is the last app
+    assert (tmp_path / "m-abc.last").read_text() == portal
+
+    server.slot = None                                   # a restart: the portal's opening comes back
+    again = prompt_memory.PromptSlots(8081, "m-abc.bin", tmp_path, post=server.post, get=server.get)
+    again.recall()
+    assert again.key == portal and server.slot == portal
+
+
+def test_no_more_than_three_saved_openings_are_kept_per_model(tmp_path: Path):
+    import os as _os
+    import time as _time
+    server = _FakeSlotServer(tmp_path)
+    slots = prompt_memory.PromptSlots(8081, "m-abc.bin", tmp_path, post=server.post, get=server.get)
+    keys = ["aaaaaaa1", "aaaaaaa2", "aaaaaaa3", "aaaaaaa4", "aaaaaaa5"]
+    for i, key in enumerate(keys):
+        slots.before_request(key)
+        server.slot = key
+        slots.dirty = True
+        slots.before_request(None)                       # forces a save of `key`
+        _os.utime(tmp_path / f"m-abc-{key}.bin", (1000 + i, 1000 + i))
+    _time.sleep(0)
+    kept = sorted(f.name for f in tmp_path.glob("m-abc-*.bin"))
+    assert len(kept) == prompt_memory.MAX_SAVED_OPENINGS
+    assert "m-abc-aaaaaaa5.bin" in kept and "m-abc-aaaaaaa1.bin" not in kept
+    assert (tmp_path / "m-abc.bin").exists() is False, "the model-wide file is not an app file"
+
+
+def test_the_watcher_names_nothing_while_the_slot_holds_no_known_app():
+    saves = []
+    reads = iter([0, 9000, 9000, 9000])
+    watcher = prompt_memory.Watcher(8081, lambda: None, get=lambda url, t: [{"is_processing": False}],
+                                    get_text=lambda url, t: _metrics(next(reads)),
+                                    saver=lambda *a, **k: saves.append(a) or True)
+    for _ in range(4):
+        watcher.check()
+    assert saves == []
+
+
+def test_the_router_swaps_the_apps_opening_in_before_it_forwards_a_chat(tmp_path: Path):
+    """End to end over HTTP: the real router, a fake llama-server with slot endpoints."""
+    import json as _json
+    import threading
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from config import Model as _Model
+    from router import ModelRouter
+
+    order = []
+
+    class Upstream(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self._send([{"id": 0, "is_processing": False, "n_prompt_tokens": 5000}])
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if self.path.startswith("/slots/0"):
+                action = self.path.split("action=")[1]
+                name = _json.loads(body)["filename"]
+                order.append((action, name))
+                if action == "save":
+                    _state_file(tmp_path / name, 10, 10)
+                    self._send({"n_saved": 10})
+                else:
+                    self._send({"n_restored": 10})
+                return
+            order.append(("chat", prompt_memory.opening_key(body)))
+            self._send({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+
+        def _send(self, payload):
+            data = _json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    up_port = upstream.server_address[1]
+    row = _Model(id="m", name="M", description="d", location="x.gguf", context_size=8192, gpu_layers=1,
+                 status="installed")
+    router = ModelRouter(port=0, registry_fn=lambda: [row], running_model_id_fn=lambda: "m",
+                         port_provider=lambda: up_port, switch_fn=lambda model_id: (True, "RUNNING"))
+    router.start()
+    slots = prompt_memory.PromptSlots(up_port, "m-abc.bin", tmp_path)
+    prompt_memory.register(up_port, slots)
+    try:
+        def chat(body):
+            bound = router._server.server_address[1]
+            req = urllib.request.Request(f"http://127.0.0.1:{bound}/v1/chat/completions", data=body,
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return _json.load(r)
+        portal, owui = _chat(PORTAL, tools=5), _chat(OWUI)
+        assert chat(portal)["choices"][0]["message"]["content"]
+        chat(owui)
+        chat(portal)
+        pk = prompt_memory.opening_key(portal)
+        names = [entry for entry in order if entry[0] != "chat"]
+        assert names[0] == ("save", f"m-abc-{pk}.bin.part"), names
+        assert ("restore", f"m-abc-{pk}.bin") in names, names
+        assert order[-1][0] == "chat" and order[-2] == ("restore", f"m-abc-{pk}.bin"), \
+            "the portal's opening is restored before its chat is forwarded"
+    finally:
+        prompt_memory.unregister(up_port)
+        router.stop()
+        upstream.shutdown()

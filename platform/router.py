@@ -49,6 +49,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 import audio_api
+import prompt_memory
 import responses_tools
 from local_guard import foreign_request_reason
 from audio_filter import AudioFilterResult
@@ -1169,6 +1170,14 @@ class _RouterHandler(BaseHTTPRequestHandler):
             body = drop_blank_assistant_turns(body)
             if spoken:
                 body = apply_voice_turn(body)
+            # One saved opening per app: swap this app's into the model's single slot first, so
+            # a chat after another app's reads ~1 s of file instead of ~60 s of prompt (prompt_memory).
+            slots = prompt_memory.for_port(router.port())
+            if slots is not None:
+                try:
+                    slots.before_request(prompt_memory.opening_key(body))
+                except Exception:  # noqa: BLE001 - a failed swap only costs the head start
+                    pass
 
         if method == "POST" and path in RESPONSES_SWITCHING_PATHS:
             ok, body = self._ensure_model_for(router, body)

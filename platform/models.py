@@ -405,22 +405,33 @@ class ModelRegistry:
             # in this method), so read at hook time, not now.
             full = command
             watching: list[prompt_memory.Watcher] = []
+            # One saved opening per app (prompt_memory.PromptSlots); the router swaps them.
+            held: list[prompt_memory.PromptSlots] = []
 
             def remember(port: int | None) -> None:
                 while watching:
                     watching.pop().stop()   # waits for a save under way: the kill comes next
                 if port is not None:
+                    prompt_memory.unregister(port)
                     where.mkdir(parents=True, exist_ok=True)
-                    prompt_memory.save(port, prompt_memory.file_name(model.id, full), where=where, log=memory_log)
+                    if held:
+                        held.pop().remember()
+                    else:
+                        prompt_memory.save(port, prompt_memory.file_name(model.id, full), where=where,
+                                           log=memory_log)
 
             def recall(port: int | None, pid: int | None = None) -> None:
                 if plan is not None and pid:
                     measure_against_plan(pid)
                 if port is not None:
-                    prompt_memory.restore(port, prompt_memory.file_name(model.id, full), where, log=memory_log)
+                    slots = prompt_memory.PromptSlots(port, prompt_memory.file_name(model.id, full), where,
+                                                      log=memory_log)
+                    slots.recall()
+                    held.append(slots)
+                    prompt_memory.register(port, slots)
                     # Also saved as the model reads, so a force-closed app keeps it too.
                     watching.append(prompt_memory.Watcher(
-                        port, lambda: prompt_memory.file_name(model.id, full), where=where, log=memory_log).start())
+                        port, slots.current_name, where=where, log=memory_log, guard=slots.lock).start())
 
             def prepare() -> None:
                 # llama-server refuses to start when the folder is missing
