@@ -35,9 +35,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
@@ -52,6 +54,13 @@ STATE_FLAGS = ("--model", "-m", "--ctx-size", "-c", "--cache-type-k", "-ctk", "-
                "--parallel", "-np", "--lora", "--lora-scaled", "--swa-full", "--kv-unified", "--no-kv-unified")
 SAVE_TIMEOUT_S = 120.0
 RESTORE_TIMEOUT_S = 120.0
+# llama.cpp's sequence-state file starts with this magic ('ggsq'), then a version and the
+# token count (LLAMA_STATE_SEQ_MAGIC in llama.h).
+STATE_MAGIC = 0x67677371
+# A save is written under this suffix and renamed when finished; a file found cut short at
+# restore is set aside under the other.
+PART_SUFFIX = ".part"
+BROKEN_SUFFIX = ".broken"
 # Saving only at a stop lost everything a force-closed Locitize had read. While a model
 # runs, a watcher also saves once the server has read this many NEW prompt tokens (its own
 # llamacpp:prompt_tokens_total, which leaves out what was restored or reused) and has been
@@ -89,11 +98,46 @@ def _get(url: str, timeout: float) -> Any:
         return json.load(r)
 
 
-def save(port: int, name: str, *, post: Callable[..., dict] = _post, get: Callable[..., Any] = _get,
-         log: Callable[[str], None] = lambda text: None) -> bool:
+def _reason(exc: BaseException) -> str:
+    """The server's own words for a refusal (llama-server answers {"error": {"message": ...}}),
+    else the exception text. Before 2026-11-06 only "HTTP Error 400" was logged, which hid why."""
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            body = exc.read().decode("utf-8", "replace")
+            error = json.loads(body).get("error")
+            message = error.get("message") if isinstance(error, dict) else error
+            return f"HTTP {exc.code}: {message or body[:300]}"
+        except Exception:   # noqa: BLE001 - the reason is a nicety, never a new failure
+            return f"HTTP {exc.code}"
+    return str(exc)
+
+
+def file_is_whole(path: Path) -> bool:
+    """True when a saved state's header fits the file: the 'ggsq' magic, then a token count
+    whose tokens the file really holds. A save cut short (the model or Locitize stopped while
+    llama-server was still writing) fails this, and llama-server refuses such a file at once
+    (Flash-Next, 2026-11-06 05:29 and 08:08: refused in ~0.1 s instead of the 3 s a restore takes)."""
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as handle:
+            head = handle.read(12)
+    except OSError:
+        return False
+    if len(head) < 12:
+        return False
+    magic, _version, n_tokens = (int.from_bytes(head[i:i + 4], "little") for i in (0, 4, 8))
+    return magic == STATE_MAGIC and 12 + 4 * n_tokens < size
+
+
+def save(port: int, name: str, *, where: Path | None = None, post: Callable[..., dict] = _post,
+         get: Callable[..., Any] = _get, log: Callable[[str], None] = lambda text: None) -> bool:
     """Save slot 0 of the server on `port` as `name`, when it is idle and holds at least
-    MIN_TOKENS of prompt. True when a file was written."""
+    MIN_TOKENS of prompt. True when a file was written.
+
+    With `where` (the --slot-save-path folder) the server writes `<name>.part` and only a
+    finished file replaces `name`, so a save cut short can never spoil the last good one."""
     base = f"http://127.0.0.1:{port}"
+    target = name + PART_SUFFIX if where is not None else name
     try:
         slots = get(base + "/slots", 5.0)
         slot = slots[0] if isinstance(slots, list) and slots else {}
@@ -103,9 +147,11 @@ def save(port: int, name: str, *, post: Callable[..., dict] = _post, get: Callab
         held = int(slot.get("n_prompt_tokens") or 0) + int(slot.get("n_decoded") or 0)
         if held < MIN_TOKENS:
             return False
-        result = post(base + "/slots/0?action=save", {"filename": name}, SAVE_TIMEOUT_S)
+        result = post(base + "/slots/0?action=save", {"filename": target}, SAVE_TIMEOUT_S)
+        if where is not None:
+            os.replace(where / target, where / name)
     except Exception as exc:   # noqa: BLE001 - a failed save must never hold up a stop
-        log(f"prompt memory: save failed ({exc})")
+        log(f"prompt memory: save failed ({_reason(exc)})")
         return False
     saved = int(result.get("n_saved") or 0)
     ms = (result.get("timings") or {}).get("save_ms")
@@ -140,10 +186,12 @@ class Watcher:
     """Saves a running model's prompt memory as it goes (see worth_saving), on a daemon
     thread; stop() ends it. Every failure is a skipped check, never an error."""
 
-    def __init__(self, port: int, name_fn: Callable[[], str], *, get=_get, get_text=_get_text, post=_post,
-                 log: Callable[[str], None] = lambda text: None, interval: float = WATCH_INTERVAL_S,
-                 clock: Callable[[], float] = time.monotonic, saver: Callable[..., bool] | None = None):
+    def __init__(self, port: int, name_fn: Callable[[], str], *, where: Path | None = None, get=_get,
+                 get_text=_get_text, post=_post, log: Callable[[str], None] = lambda text: None,
+                 interval: float = WATCH_INTERVAL_S, clock: Callable[[], float] = time.monotonic,
+                 saver: Callable[..., bool] | None = None):
         self._port, self._name_fn, self._get, self._get_text, self._post = port, name_fn, get, get_text, post
+        self._where = where
         self._log, self._interval, self._clock = log, interval, clock
         self._save = saver or save
         self._stop = threading.Event()
@@ -171,7 +219,8 @@ class Watcher:
         if not worth_saving(read - self.baseline, self.idle_checks, self.saved_this_load,
                             self._clock() - self.last_save):
             return False
-        if self._save(self._port, self._name_fn(), post=self._post, get=self._get, log=self._log):
+        if self._save(self._port, self._name_fn(), where=self._where, post=self._post, get=self._get,
+                      log=self._log):
             self.baseline, self.saved_this_load, self.last_save = read, True, self._clock()
             return True
         return False
@@ -185,19 +234,34 @@ class Watcher:
         self._thread.start()
         return self
 
-    def stop(self) -> None:
+    def stop(self, wait: float = SAVE_TIMEOUT_S) -> None:
+        """End the watcher, waiting up to `wait` seconds for a save it has under way: the
+        model is stopped right after this, and a server killed mid-save leaves a broken file."""
         self._stop.set()
+        thread = self._thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(wait)
 
 
 def restore(port: int, name: str, where: Path, *, post: Callable[..., dict] = _post,
             log: Callable[[str], None] = lambda text: None) -> bool:
-    """Restore `name` into slot 0 of the server on `port` if the file exists in `where`."""
-    if not (where / name).is_file():
+    """Restore `name` into slot 0 of the server on `port` if the file exists in `where`.
+    A file cut short is set aside as `<name>.broken` (the newest only) instead of sent."""
+    path = where / name
+    if not path.is_file():
+        return False
+    if not file_is_whole(path):
+        try:
+            os.replace(path, where / (name + BROKEN_SUFFIX))
+        except OSError:
+            pass
+        log(f"prompt memory: {name} was cut short (a save stopped part-way) and is set aside as "
+            f"{name}{BROKEN_SUFFIX}; the opening is read afresh and saved again")
         return False
     try:
         result = post(f"http://127.0.0.1:{port}/slots/0?action=restore", {"filename": name}, RESTORE_TIMEOUT_S)
     except Exception as exc:   # noqa: BLE001 - the model still serves, just without the head start
-        log(f"prompt memory: restore of {name} refused ({exc}); it is read afresh and saved again")
+        log(f"prompt memory: restore of {name} refused ({_reason(exc)}); it is read afresh and saved again")
         return False
     restored = int(result.get("n_restored") or 0)
     ms = (result.get("timings") or {}).get("restore_ms")

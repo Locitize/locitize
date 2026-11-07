@@ -12,7 +12,9 @@ spec-builder. It never launches processes itself (that is services.py's job).
 
 from __future__ import annotations
 
+import os
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import backends
@@ -21,11 +23,30 @@ import gpu_ledger
 import placement
 import prompt_memory
 from config import Model, ModelRegistryData, Settings
-from logger import get_logger
+from logger import get_logger, resolve_log_dir
 from services import ServiceSpec, resolve_service_cwd, strip_managed_flags
 
 # Reserved id namespace for discovered fine-tunes (single-sourced in finetune.py).
 _FT_PREFIX = finetune.FT_PREFIX
+
+# The model server's own output (load trace, refusals such as a slot restore's reason).
+# It went to the null device in the desktop app until 2026-11-06, which left the prompt
+# memory refusals of that day without a cause. Appended across starts; rotated once to
+# `.1` when it passes SERVER_LOG_MAX_BYTES so it cannot grow without end.
+SERVER_LOG_NAME = "llama-server.log"
+SERVER_LOG_MAX_BYTES = 20 * 1024 * 1024
+
+
+def _keep_server_log(path: Path | None) -> None:
+    """Make the server log's folder and rotate the log when it is too big. Never raises."""
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_file() and path.stat().st_size > SERVER_LOG_MAX_BYTES:
+            os.replace(path, path.with_name(path.name + ".1"))
+    except OSError:
+        pass
 
 # Sentinel distinguishing "caller did not override" from "caller passed None to
 # force the feature off" for the optional spec-decoding overrides on
@@ -362,6 +383,7 @@ class ModelRegistry:
         # Prompt memory (prompt_memory.py): the model keeps the opening it has read across a
         # switch or a restart - saved just before it stops, restored as soon as it is ready.
         memory_hooks: dict[str, Any] = {}
+        server_log = resolve_log_dir(s) / SERVER_LOG_NAME if s.data_dir is not None else None
         if engine.name == backends.DEFAULT_BACKEND and s.data_dir is not None:
             where = prompt_memory.folder(s.data_dir)
             command.extend([prompt_memory.SAVE_PATH_FLAG, str(where) + "\\"])
@@ -386,10 +408,10 @@ class ModelRegistry:
 
             def remember(port: int | None) -> None:
                 while watching:
-                    watching.pop().stop()
+                    watching.pop().stop()   # waits for a save under way: the kill comes next
                 if port is not None:
                     where.mkdir(parents=True, exist_ok=True)
-                    prompt_memory.save(port, prompt_memory.file_name(model.id, full), log=memory_log)
+                    prompt_memory.save(port, prompt_memory.file_name(model.id, full), where=where, log=memory_log)
 
             def recall(port: int | None, pid: int | None = None) -> None:
                 if plan is not None and pid:
@@ -398,10 +420,13 @@ class ModelRegistry:
                     prompt_memory.restore(port, prompt_memory.file_name(model.id, full), where, log=memory_log)
                     # Also saved as the model reads, so a force-closed app keeps it too.
                     watching.append(prompt_memory.Watcher(
-                        port, lambda: prompt_memory.file_name(model.id, full), log=memory_log).start())
-            memory_hooks = {"on_ready": recall, "before_stop": remember,
-                            # llama-server refuses to start when the folder is missing
-                            "before_start": lambda: where.mkdir(parents=True, exist_ok=True)}
+                        port, lambda: prompt_memory.file_name(model.id, full), where=where, log=memory_log).start())
+
+            def prepare() -> None:
+                # llama-server refuses to start when the folder is missing
+                where.mkdir(parents=True, exist_ok=True)
+                _keep_server_log(server_log)
+            memory_hooks = {"on_ready": recall, "before_stop": remember, "before_start": prepare}
         # L-4 (managed-flag rejection): --host/--port are resolved by the platform
         # and already baked into the argv above. Strip them (with a WARNING) from
         # owner-supplied server_args before appending, so a stray --port in
@@ -464,6 +489,7 @@ class ModelRegistry:
             # trace is not overwritten by the next attempt (this is the evidence the
             # D-M4-1 investigation needed).
             append_log=True,
+            log_path=str(server_log) if server_log is not None else None,
             **memory_hooks,
         )
 
