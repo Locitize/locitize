@@ -314,7 +314,7 @@ def read_layout(path: str) -> ModelLayout:
         block_match = BLOCK_TENSOR.match(name)
         if block_match:
             rest = name[block_match.end():]
-            if rest.startswith(("attn_k.", "attn_kv.", "attn_qkv.", "attn_k_")):
+            if rest.startswith(("attn_k.", "attn_kv.", "attn_qkv.", "attn_k_", "attn_kv_a")):   # attn_kv_a_mqa: latent attention
                 attention_blocks.add(int(block_match.group(1)))
             elif rest.startswith("ssm_"):
                 ssm_blocks.add(int(block_match.group(1)))
@@ -325,12 +325,24 @@ def read_layout(path: str) -> ModelLayout:
     # counting them reserved four times the cache Flash-Next needs (2026-11-05).
     kv_blocks = len(attention_blocks - ssm_blocks) if attention_blocks and ssm_blocks else blocks
     kv_per_token = float(kv_blocks * kv_heads * (key_len + value_len) * 2)
+    kv_lora = arch_int("attention.kv_lora_rank")
+    if kv_lora:
+        # Multi-head latent attention (DeepSeek, Kimi, GLM-5): a block caches one compressed latent
+        # per token (kv_lora_rank, plus the rotary part), not K and V for every head, and a sparse-
+        # attention indexer adds its own small key. Charged per head, GLM-5.3-Flash came out at 816 MB
+        # per 1k tokens instead of about 8, and the planner gave up on placing it (2026-11-07).
+        per_block = kv_lora + arch_int("rope.dimension_count") + arch_int("attention.indexer.key_length")
+        kv_per_token = float(kv_blocks * per_block * 2)
     ssm_state_mb = 0.0
     if ssm_blocks:
         state, inner = arch_int("ssm.state_size"), arch_int("ssm.inner_size")
         conv, groups = arch_int("ssm.conv_kernel", 4), max(1, arch_int("ssm.group_count", 1))
         # f32 state matrix plus the convolution window, per block and slot.
         ssm_state_mb = (state * inner * 4 + (conv - 1) * (inner + 2 * groups * state) * 4) / MB
+        kda_dim = arch_int("kda.head_dim")
+        if kda_dim and not state:
+            # Kimi Delta Attention blocks (GLM-5.3-Flash) keep a head_dim x head_dim f32 matrix per head.
+            ssm_state_mb = arch_int("kda.head_count", heads) * kda_dim * kda_dim * 4 / MB
     return ModelLayout(
         path=path,
         architecture=arch,

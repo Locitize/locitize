@@ -819,3 +819,23 @@ def placement_of_fake(pid):
     assert pid == 4242
     return gpu_ledger.GpuPlacement(pid=pid, dedicated_mb=15100, shared_mb=700)
 
+
+
+
+def test_latent_attention_caches_one_latent_per_token_not_k_and_v_per_head(tmp_path: Path):
+    """GLM-5.3-Flash: 12 latent-attention blocks with an indexer, the rest Kimi Delta Attention.
+    Charged per head, its cache came out at 816 MB per 1k tokens; it is about 8 at q8."""
+    tensors = []
+    for b in range(8):
+        if b % 4 == 3:
+            tensors += [(f"blk.{b}.attn_kv_a_mqa.weight", [100], 1), (f"blk.{b}.indexer.attn_k.weight", [100], 1)]
+        else:
+            tensors += [(f"blk.{b}.attn_k.weight", [100], 1), (f"blk.{b}.ssm_beta.weight", [16], 0)]
+        tensors.append((f"blk.{b}.ffn_down_exps.weight", [32 * 100], 39))
+    meta = {**_ARCH_META, "block_count": 8, "attention.head_count": 64, "attention.key_length": 512,
+            "attention.value_length": 512, "attention.kv_lora_rank": 512, "rope.dimension_count": 0,
+            "attention.indexer.key_length": 128, "kda.head_dim": 128}
+    layout = read_layout(str(write_gguf(tmp_path / "glm5.gguf", "glm5-next", meta, tensors)))
+    assert layout.kv_blocks == 2 and layout.ssm_blocks == 6
+    assert layout.kv_bytes_per_token == 2 * (512 + 0 + 128) * 2
+    assert layout.ssm_state_mb == pytest.approx(64 * 128 * 128 * 4 / MB)
