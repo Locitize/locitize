@@ -570,3 +570,15 @@ def test_kokoro_engine_warm_up_never_blocks_readiness(tmp_path, monkeypatch):
 
     monkeypatch.setattr(engine, "synthesize", boom)
     assert engine._warm_up() == "warm-up failed: cuda out of memory"
+
+
+def test_kokoro_runs_on_the_cpu_unless_told_otherwise(monkeypatch):
+    """On the GPU Kokoro held ~1.2 GB the chat model needed; a sentence renders as fast on the CPU."""
+    monkeypatch.delenv("LOCITIZE_KOKORO_DEVICE", raising=False)
+    spec = build_kokoro_server_spec(_tts_settings())
+    assert spec.command[spec.command.index("--device") + 1] == "cpu"
+    monkeypatch.setenv("LOCITIZE_KOKORO_DEVICE", "cuda")
+    spec = build_kokoro_server_spec(_tts_settings())
+    assert spec.command[spec.command.index("--device") + 1] == "cuda"
+    monkeypatch.setenv("LOCITIZE_KOKORO_DEVICE", "nonsense")
+    assert build_kokoro_server_spec(_tts_settings()).command[-1] == "cpu"

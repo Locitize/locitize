@@ -1884,3 +1884,17 @@ def test_an_abliterated_model_is_not_pre_steered_or_swapped_for_its_name():
         "tools": [{"type": "function", "function": {"name": "laya_route_tools"}}],
     }).encode()
     assert not should_pre_steer_laya(body, "huihui-qwen3-8-27b-abliterated-ud-iq4_xs")
+
+
+def test_listing_says_what_each_model_can_take_in():
+    """Agent Portal in hub mode sends a picture or a recording only to a model with the projector for
+    it; before, every hub model looked text-only and pictures were dropped (2026-11-07)."""
+    from types import SimpleNamespace
+    rows = [SimpleNamespace(id="vl", name="VL", context_size=8192, capabilities=["vision", "tools"], mmproj="p.gguf"),
+            SimpleNamespace(id="omni", name="Omni", context_size=8192, capabilities=["audio", "vision"], mmproj="o.gguf"),
+            SimpleNamespace(id="text", name="Text", context_size=8192, capabilities=["vision"], mmproj=None)]
+    data = {r["id"]: r for r in build_models_payload(rows)["data"]}
+    assert data["vl"]["architecture"]["input_modalities"] == ["text", "image"]
+    assert data["omni"]["architecture"]["input_modalities"] == ["text", "image", "audio"]
+    assert data["text"]["architecture"]["input_modalities"] == ["text"], "no projector, no pictures"
+    assert data["vl"]["capabilities"] == ["vision", "tools"]

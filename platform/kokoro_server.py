@@ -238,12 +238,15 @@ def join_audio_chunks(
     return out
 
 
-def pick_device() -> str:
-    """"cuda" when torch was built with CUDA and a device is present, else "cpu".
+def pick_device(wanted: str = "auto") -> str:
+    """The device to run on: "cpu" or "cuda" when asked for (cuda only when torch has a GPU),
+    else "cuda" when torch was built with CUDA and a device is present, else "cpu".
 
-    Kept a plain function so the choice is testable without a GPU: the
-    decision is torch's own cuda.is_available(), nothing LOCITIZE-specific.
+    Kept a plain function so the choice is testable without a GPU.
     """
+    wanted = (wanted or "auto").strip().lower()
+    if wanted == "cpu":
+        return "cpu"
     import torch
 
     return "cuda" if torch.cuda.is_available() else "cpu"
@@ -258,7 +261,7 @@ class KokoroEngine:
     makes GET /health a truthful readiness signal.
     """
 
-    def __init__(self, model_path: str, voices_dir: str) -> None:
+    def __init__(self, model_path: str, voices_dir: str, device: str = "auto") -> None:
         # Imported lazily inside the child so the parent launcher never pays the
         # multi-second torch import cost.
         from kokoro import KModel, KPipeline
@@ -274,7 +277,7 @@ class KokoroEngine:
         # CPU wheel stays the default install (an 82M model needs no GPU and
         # the CUDA build is a multi-gigabyte download), so this is a runtime
         # choice, not a requirement: the same file runs either way.
-        self.device = pick_device()
+        self.device = pick_device(device)
         model = model.to(self.device).eval()
         # model=... hands the loaded KModel to the pipeline so it is not reloaded.
         self._pipeline = KPipeline(lang_code=_LANG_CODE, model=model)
@@ -535,6 +538,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--model", required=True, help="path to kokoro-v1_0.pth")
     parser.add_argument("--voices", required=True, help="dir holding the voice .pt files")
+    parser.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"),
+                        help="where Kokoro runs; auto = the GPU when torch has one")
     return parser.parse_args(argv)
 
 
@@ -547,7 +552,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Load the model BEFORE binding the socket so /health is never 200 until the
     # engine is actually ready (the readiness contract the ServiceSpec relies on).
-    engine = KokoroEngine(args.model, args.voices)
+    engine = KokoroEngine(args.model, args.voices, args.device)
 
     server = ThreadingHTTPServer((host, args.port), _KokoroHandler)
     server.engine = engine  # type: ignore[attr-defined]

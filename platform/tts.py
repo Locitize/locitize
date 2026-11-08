@@ -25,6 +25,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+import os
 from typing import Any, Callable, Iterable
 
 from config import Settings
@@ -99,6 +100,12 @@ def list_voices(voices_dir: str) -> list[str]:
     return sorted(p.stem for p in directory.glob("*.pt"))
 
 
+def kokoro_device() -> str:
+    """cpu (the default), cuda or auto, from LOCITIZE_KOKORO_DEVICE."""
+    value = os.environ.get("LOCITIZE_KOKORO_DEVICE", "cpu").strip().lower()
+    return value if value in ("cpu", "cuda", "auto") else "cpu"
+
+
 def build_kokoro_server_spec(settings: Settings, log_path: str | None = None) -> ServiceSpec:
     """Build the kokoro_server.py ServiceSpec from settings (the whisper analog).
 
@@ -137,6 +144,11 @@ def build_kokoro_server_spec(settings: Settings, log_path: str | None = None) ->
         model,
         "--voices",
         voices,
+        # On the CPU unless LOCITIZE_KOKORO_DEVICE says otherwise: a sentence renders in 0.06-0.11 s
+        # warm on either device (kokoro_server.py), and on the GPU it holds ~1.2 GB the chat model
+        # needs - Qwen3.8-27B spilled layers to the CPU and wrote at 19 tok/s instead of 44 (2026-11-07).
+        "--device",
+        kokoro_device(),
     ]
     return ServiceSpec(
         name=KOKORO_SERVER_NAME,

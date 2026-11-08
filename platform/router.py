@@ -85,6 +85,14 @@ SWITCHING_PATHS = (
 RESPONSES_SWITCHING_PATHS = ("/v1/responses", "/responses")
 
 
+def _input_modalities(model: Any) -> list[str]:
+    """text, plus image and audio when the row says it can and has a projector to do it with."""
+    caps = {str(c).lower() for c in (getattr(model, "capabilities", None) or [])}
+    projector = bool(getattr(model, "mmproj", None))
+    return ["text"] + (["image"] if projector and "vision" in caps else []) + (
+        ["audio"] if projector and "audio" in caps else [])
+
+
 def _served_context(model: Any) -> int:
     """The row's context, or the smaller one its running server was started with when the
     placement planner had to shrink it to fit the card (placement.SERVED_CONTEXT)."""
@@ -142,6 +150,10 @@ def build_models_payload(
                 # assuming a cloud-sized window and hitting the server's limit.
                 # A window the planner had to shrink to fit the card is the one reported.
                 **({"context_length": _served_context(model)} if getattr(model, "context_size", 0) else {}),
+                # What the model can do and take in, so a client (Agent Portal in hub mode) sends a
+                # picture or a recording only to a model that has the projector for it.
+                "capabilities": [str(c) for c in (getattr(model, "capabilities", None) or [])],
+                "architecture": {"input_modalities": _input_modalities(model)},
             }
             for model in ordered
         ],
