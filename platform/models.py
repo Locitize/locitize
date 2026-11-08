@@ -375,6 +375,7 @@ class ModelRegistry:
             get_logger("launcher").info("%s: %s", model.id, plan.describe())
             if plan.checks:
                 get_logger("launcher").info("%s: %s", model.id, plan.describe_checks())
+        placement.SERVED_CONTEXT[model.id] = int(resolved_ctx)      # what clients are told (router.py)
         command = engine.core_command(
             binary, model, s, port, resolved_ctx, resolved_gpu, fit_target=fit_target
         )

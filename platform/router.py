@@ -85,6 +85,15 @@ SWITCHING_PATHS = (
 RESPONSES_SWITCHING_PATHS = ("/v1/responses", "/responses")
 
 
+def _served_context(model: Any) -> int:
+    """The row's context, or the smaller one its running server was started with when the
+    placement planner had to shrink it to fit the card (placement.SERVED_CONTEXT)."""
+    import placement                                                       # noqa: PLC0415
+    row = int(model.context_size)
+    served = placement.SERVED_CONTEXT.get(model.id)
+    return min(row, int(served)) if served else row
+
+
 def build_models_payload(
     models: list[Any], running_model_id: str | None = None
 ) -> dict[str, Any]:
@@ -131,7 +140,8 @@ def build_models_payload(
                 # The context the row is served with (its floor; the planner may grow it),
                 # so a client can budget its history and compact in time instead of
                 # assuming a cloud-sized window and hitting the server's limit.
-                **({"context_length": int(model.context_size)} if getattr(model, "context_size", 0) else {}),
+                # A window the planner had to shrink to fit the card is the one reported.
+                **({"context_length": _served_context(model)} if getattr(model, "context_size", 0) else {}),
             }
             for model in ordered
         ],

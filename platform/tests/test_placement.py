@@ -349,9 +349,11 @@ def test_plan_falls_back_to_fit_mode_for_dense_models_and_unfit_shared_weights()
     huge_shared = _layout(expert_per_block_mb=1000, blocks=10, shared_mb=20000)
     placed = plan(huge_shared, 15000, 32000, 8192, flags=ALL_FLAGS)
     assert placed.mode == "fit" and "lower context_size" in placed.describe()
-    # A KV cache that alone eats the card says the same.
+    # A KV cache that alone eats the card at the row's window: the window is shrunk until the
+    # experts can be placed (2026-11-07), rather than the whole model falling to fit mode.
     layout = _layout(expert_per_block_mb=1000, blocks=36, shared_mb=3000, kv_per_token=65536)   # 16 GB at 262k
-    assert plan(layout, 15000, 32000, 262144, kv_bytes_per_value=2.0, flags=ALL_FLAGS).mode == "fit"
+    shrunk = plan(layout, 15000, 32000, 262144, kv_bytes_per_value=2.0, flags=ALL_FLAGS)
+    assert shrunk.mode == "stream" and shrunk.context < 262144 and shrunk.requested_context == 262144
     assert plan(layout, 15000, 32000, 8192, flags=ALL_FLAGS).mode == "stream"
 
 
@@ -839,3 +841,35 @@ def test_latent_attention_caches_one_latent_per_token_not_k_and_v_per_head(tmp_p
     assert layout.kv_blocks == 2 and layout.ssm_blocks == 6
     assert layout.kv_bytes_per_token == 2 * (512 + 0 + 128) * 2
     assert layout.ssm_state_mb == pytest.approx(64 * 128 * 128 * 4 / MB)
+
+
+def test_a_context_too_big_for_the_card_is_shrunk_instead_of_falling_to_fit():
+    """GLM-5.3-Flash at 262144 on a card with 3 GB held by other programs fell to the engine's fit
+    mode and read prompts at a tenth of the streamed speed. Half the window keeps the plan."""
+    kv_per_token = 4000 * MB / (0.5 * 262144)          # a 4,000 MB cache at 262144, q8
+    layout = _layout(expert_per_block_mb=1000, blocks=36, shared_mb=9000, embd_mb=500, kv_per_token=kv_per_token)
+    placed = plan(layout, vram_free_mb=13100, ram_total_mb=64000, context=262144, kv_bytes_per_value=1.0,
+                  flags=ALL_FLAGS)
+    assert placed.changes_argv and placed.context == 131072 and placed.requested_context == 262144
+    assert "shrunk from 262144" in placed.describe()
+    assert any("context shrunk from 262144 to 131072" in c for c in placed.checks)
+    # With no room even at the floor, the engine's fit mode stays the answer.
+    tiny = plan(layout, vram_free_mb=9000, ram_total_mb=64000, context=262144, kv_bytes_per_value=1.0,
+                flags=ALL_FLAGS)
+    assert tiny.mode == "fit" and tiny.context == 262144
+
+
+def test_the_router_reports_the_window_the_server_really_has():
+    import router
+
+    class Row:
+        id, name, context_size = "big", "Big", 262144
+    placement.SERVED_CONTEXT.pop("big", None)
+    try:
+        assert router._served_context(Row()) == 262144
+        placement.SERVED_CONTEXT["big"] = 131072                 # the plan shrank it
+        assert router._served_context(Row()) == 131072
+        placement.SERVED_CONTEXT["big"] = 300000                 # grown: the row's floor is still told
+        assert router._served_context(Row()) == 262144
+    finally:
+        placement.SERVED_CONTEXT.pop("big", None)

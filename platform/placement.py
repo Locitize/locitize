@@ -376,7 +376,7 @@ class Placement:
     cpu_mb: int = 0
     slots: int = 1
     context: int = 0
-    requested_context: int = 0  # the row's context when `context` was grown past it, else 0
+    requested_context: int = 0  # the row's context when `context` was grown past it or shrunk under it, else 0
     reason: str = ""
     ram_cache_mb: int = 0       # stream: the engine's RAM expert cache (GGML_EXPERT_STREAM_MB), 0 = not set
     checks: tuple[str, ...] = ()  # every machine fact the plan weighed, and what it decided from each
@@ -426,13 +426,25 @@ class Placement:
         cache = f", {self.moe_cache_mib} MiB of VRAM caching hot experts" if self.moe_cache_mib else ""
         if self.ram_cache_mb:
             cache += f", a {self.ram_cache_mb} MB RAM expert cache"
-        grown = f" (grown from {self.requested_context})" if self.requested_context else ""
+        grown = ""
+        if self.requested_context:
+            word = "grown" if self.context > self.requested_context else "shrunk"
+            grown = f" ({word} from {self.requested_context})"
         return (f"placement: experts of the first {self.cpu_moe_blocks} blocks {where} "
                 f"({self.cpu_mb} MB), {self.gpu_mb} MB on the GPU at {self.context} tokens{grown}{cache}")
 
     def describe_checks(self) -> str:
         """One line: what the plan looked at and what it concluded, for the log."""
         return "placement checked: " + "; ".join(self.checks) if self.checks else ""
+
+
+# A context that leaves no room on the card is halved until the plan fits, down to this; below
+# it the engine's fit mode is the better trade. GLM-5.3-Flash at 262144 on a card with 3 GB held
+# by other programs fell to fit mode and read prompts at a tenth of the streamed speed (2026-11-07).
+CONTEXT_SHRINK_FLOOR = 16384
+# model id -> the context its server was last started with (models.py), so the router can tell
+# clients the window the server really has when a plan shrank it.
+SERVED_CONTEXT: dict[str, int] = {}
 
 
 def plan(layout: ModelLayout, vram_free_mb: int, ram_total_mb: int, context: int,
@@ -477,20 +489,41 @@ def plan(layout: ModelLayout, vram_free_mb: int, ram_total_mb: int, context: int
     self_streams = engine_streams and layout.file_mb > ram_total_mb - ENGINE_SELF_STREAM_MARGIN_MB
     checks.append("engine streams experts itself" + (" (file bigger than RAM minus 8 GB)" if self_streams else
                                                      ": no" if not engine_streams else " only past RAM minus 8 GB"))
-    placed = _place_experts(layout, allowance, kv, GPU_OVERHEAD_MB, stream=False, flags=flags, slots=slots,
-                            context=context)
-    if placed.mode == "experts-cpu":
-        if self_streams:
-            checks.append("planned as a stream because the engine will stream it anyway")
-        elif placed.cpu_mb > ram_budget:
-            checks.append(f"{placed.cpu_mb} MB of experts exceed {ram_budget} MB of free RAM "
-                          f"(keeping {RAM_RESERVE_MB} MB for the system): streamed")
-        else:
-            checks.append(f"{placed.cpu_mb} MB of experts fit {ram_budget} MB of free RAM: held in RAM")
-        if self_streams or placed.cpu_mb > ram_budget:
-            placed = _place_experts(layout, allowance, kv, STREAM_OVERHEAD_MB, stream=True, flags=flags,
-                                    slots=slots, context=context)
-    placed = _grow_context(layout, allowance, placed, slots, kv_bytes_per_value, flags)
+
+    def place(ctx: int) -> tuple[Placement, list[str]]:
+        """The expert placement at one context, and what it decided."""
+        notes: list[str] = []
+        kv_ctx = layout.kv_mb(ctx, kv_bytes_per_value) + layout.recurrent_mb(slots)
+        placed = _place_experts(layout, allowance, kv_ctx, GPU_OVERHEAD_MB, stream=False, flags=flags,
+                                slots=slots, context=ctx)
+        if placed.mode == "experts-cpu":
+            if self_streams:
+                notes.append("planned as a stream because the engine will stream it anyway")
+            elif placed.cpu_mb > ram_budget:
+                notes.append(f"{placed.cpu_mb} MB of experts exceed {ram_budget} MB of free RAM "
+                             f"(keeping {RAM_RESERVE_MB} MB for the system): streamed")
+            else:
+                notes.append(f"{placed.cpu_mb} MB of experts fit {ram_budget} MB of free RAM: held in RAM")
+            if self_streams or placed.cpu_mb > ram_budget:
+                placed = _place_experts(layout, allowance, kv_ctx, STREAM_OVERHEAD_MB, stream=True, flags=flags,
+                                        slots=slots, context=ctx)
+        return _grow_context(layout, allowance, placed, slots, kv_bytes_per_value, flags), notes
+
+    placed, notes = place(context)
+    if placed.mode == "fit" and context > CONTEXT_SHRINK_FLOOR:
+        # Too big a window for what the card has free: a smaller one that keeps the experts
+        # placed beats the full one in the engine's fit mode, which reads them a layer at a time.
+        tried = context
+        while tried > CONTEXT_SHRINK_FLOOR:
+            tried = max(CONTEXT_SHRINK_FLOOR, tried // 2 // CONTEXT_GROW_STEP * CONTEXT_GROW_STEP)
+            trial, trial_notes = place(tried)
+            if trial.changes_argv:
+                notes = trial_notes + [f"context shrunk from {context} to {trial.context}: at {context} "
+                                       f"attention, shared weights and the cache did not fit the "
+                                       f"{int(allowance)} MB free"]
+                placed = replace(trial, requested_context=context)
+                break
+    checks += notes
     if placed.mode == "stream" and engine_streams:
         cache = stream_cache_mb(placed.cpu_mb, ram_free)
         checks.append(f"RAM expert cache {cache} MB (free {ram_free} - engine {STREAM_ENGINE_HOST_MB} - "
