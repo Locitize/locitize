@@ -538,6 +538,30 @@ class Launcher:
             # sure nothing is left running (shutdown() is idempotent via stop_all).
             manager.stop_all()
 
+    def _clear_orphaned_servers(self, settings: Any) -> list[int]:
+        """Stop the servers a dead desktop left running, before this one starts any.
+
+        Only locitize's own executables whose starting process is gone
+        (gpu_ledger.orphaned_servers); left running they hold the card, and the
+        first model start would refuse to stack a second model beside them.
+        Returns the pids it stopped. Never raises.
+        """
+        try:
+            import gpu_ledger
+            from logger import get_logger
+
+            orphans = gpu_ledger.orphaned_servers(Path(settings.data_dir) / "bin")
+            if not orphans:
+                return []
+            log = get_logger("launcher")
+            for pid, exe in orphans:
+                log.info("stopping %s (pid %s): left running by a locitize that is no longer open",
+                         Path(exe).name, pid)
+            results = gpu_ledger.terminate_pids([pid for pid, _exe in orphans])
+            return [pid for pid, ok in results.items() if ok]
+        except Exception:  # noqa: BLE001 - a start must never fail over the clean-up
+            return []
+
     def _run_desktop(self, settings: Any, models: Any) -> int:
         """Launch the PySide6 desktop over the existing GUI controller (M12).
 
@@ -554,6 +578,7 @@ class Launcher:
         gate = ensure_desktop_interpreter(self._out)
         if gate is not None:
             return gate
+        self._clear_orphaned_servers(settings)
         _model_registry, manager, controller = self._build_controller(settings, models)
         whisper_controller = self._build_whisper_controller(settings, manager)
         self._service_manager = manager

@@ -35,9 +35,15 @@ def main():
         if not (resolve_data_dir() / "settings.yaml").is_file():
             from setup_wizard import run
             return run()
+    args = sys.argv[1:] or ["--desktop"]
+    import keeper
+
+    if keeper.keeps(args):
+        # The desktop runs as a child that is started again if it crashes.
+        return keeper.main(args, interpreter_flags=["-B", "-E", "-s"])
     from launcher import main as launch
 
-    return launch(sys.argv[1:] or ["--desktop"])
+    return launch(args)
 
 
 if __name__ == "__main__":

@@ -186,6 +186,44 @@ def terminate_pids(
     return results
 
 
+def orphaned_servers(bin_dir: str | Path | None, processes: Any = None) -> list[tuple[int, str]]:
+    """LOCITIZE's own servers whose locitize process is gone: [(pid, exe)].
+
+    A server is one of ours when its executable lives under `bin_dir`, and an
+    orphan when the process that started it has exited: a desktop that crashed or
+    was killed leaves its llama-server holding the card, and the next start then
+    refused to stack a second model beside it until someone pressed Free up GPU
+    (owner report 2026-11-12: the desktop died in the night, the model server
+    stayed). A server whose parent still runs - a second desktop, a benchmark or a
+    smoke start from the command line - is never one. psutil's parent() checks
+    the parent's start time too, so a reused parent pid does not hide an orphan.
+
+    `processes` is injected by tests (objects with .pid, .exe(), .parent()).
+    Never raises; anything it cannot read is left alone.
+    """
+    if not bin_dir:
+        return []
+    base = str(Path(bin_dir)).replace("\\", "/").rstrip("/").lower() + "/"
+    if processes is None:
+        try:
+            import psutil  # noqa: PLC0415 - only the desktop's start needs it
+
+            processes = psutil.process_iter()
+        except Exception:  # noqa: BLE001
+            return []
+    found: list[tuple[int, str]] = []
+    for proc in processes:
+        try:
+            exe = proc.exe() or ""
+            if not exe.replace("\\", "/").lower().startswith(base):
+                continue
+            if proc.parent() is None:
+                found.append((int(proc.pid), exe))
+        except Exception:  # noqa: BLE001 - gone, or not ours to read
+            continue
+    return found
+
+
 def summarize(procs: list[GpuProcess]) -> str:
     """One honest status line for a chip or log."""
     if not procs:

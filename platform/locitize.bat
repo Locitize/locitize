@@ -29,7 +29,8 @@ if not exist "setup_wizard.py" goto :launch
 if errorlevel 1 goto :setup
 
 :launch
-"%PY%" launcher.py --desktop %*
+rem keeper.py starts the desktop again if it crashes (not when it is closed).
+"%PY%" keeper.py --desktop %*
 goto :eof
 
 :uninstall

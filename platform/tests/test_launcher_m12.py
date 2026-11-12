@@ -62,7 +62,7 @@ def test_gui_shortcut_prefers_repository_venv_and_routes_to_qt():
     local_venv = 'else if exist ".venv\\scripts\\python.exe"'
     assert text.index(parent_venv) < text.index(local_venv)
     assert 'set "py=..\\.venv\\scripts\\python.exe"' in text
-    assert '"%py%" launcher.py --desktop' in text
+    assert '"%py%" keeper.py --desktop' in text          # keeper.py runs launcher.py
     assert "tkinter" not in text
 
 
@@ -78,6 +78,9 @@ def test_gui_shortcut_executes_parent_venv_python_with_gui_flag(tmp_path):
     venv.EnvBuilder(with_pip=False).create(tmp_path / ".venv")
     shortcut = platform_dir / source.name
     shortcut.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    # The batch starts the desktop through keeper.py (restart after a crash).
+    keeper_source = source.with_name("keeper.py")
+    (platform_dir / "keeper.py").write_text(keeper_source.read_text(encoding="utf-8"), encoding="utf-8")
     probe = tmp_path / "launch-probe.txt"
     (platform_dir / "launcher.py").write_text(
         "# Temporary launcher probe used only by this test.\n"
