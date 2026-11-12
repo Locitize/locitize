@@ -114,6 +114,10 @@ drive reads, not the model's total size. Use an NVMe drive (a SATA SSD or a hard
 disk is far slower), keep 8 GB of RAM free, and do not add `--no-mmap` to such a
 model's server_args: streaming needs the memory map.
 
+[Strata](https://github.com/Niko1221/Strata) showed first that a consumer PC can run a
+model bigger than its RAM from the SSD, with its own engine for each model family.
+locitize does it for any mixture-of-experts GGUF, on llama.cpp.
+
 These numbers come from a llama.cpp build that streams experts into its own RAM
 cache with direct reads; locitize detects such a build and sizes its cache. That
 build is not published yet. The llama.cpp release setup installs runs the same
