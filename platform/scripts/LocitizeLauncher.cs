@@ -5,7 +5,7 @@ using System.Reflection;
 using System.Windows.Forms;
 
 [assembly: AssemblyTitle("locitize")]
-[assembly: AssemblyVersion("1.0.4.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
 
 internal static class LocitizeLauncher
 {

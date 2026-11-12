@@ -1,5 +1,21 @@
 # locitize Platform Changelog
 
+## 1.2.0 - models bigger than RAM - 2026-11-12
+
+- Streamed models: the plan follows what the engine will really do, from the RAM free at
+  launch; Qwen3.8 Flash Next plans and streams; latent-attention models (GLM-5.3) size their
+  cache per token; a context that leaves no room is shrunk instead of falling back to the
+  engine's fit mode; VRAM is kept for the desktop when the card drives a display, and each
+  model's measured VRAM is learned for its next start.
+- Prompt memory: a model keeps the prompt it has read across a model switch or a restart
+  (llama-server slot save and restore), saved when it stops and while it runs.
+- Router: streamed reasoning stays reasoning; a tool-call turn keeps its reasoning;
+  /v1/models gives each model's context_length; abliterated models get their own tool calls.
+- Kokoro voice runs on the CPU by default, leaving the GPU to the model.
+- A desktop that crashes is started again (keeper.py: at most three times in ten minutes,
+  never after a normal close), and the next start stops the model server a dead session
+  left on the GPU instead of refusing to start a model beside it.
+
 ## Big-model placement - 2026-11-04
 
 - A mixture-of-experts model larger than the GPU is served with its expert weights in RAM

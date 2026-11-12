@@ -11,7 +11,7 @@ restart the first chat read it all again, about two minutes on Qwen3.8-Flash-Nex
 What it does
 ------------
 llama-server can save a slot's state to a file and restore it (`--slot-save-path`,
-`POST /slots/0?action=save|restore`); the WiFiBlu build also writes the context
+`POST /slots/0?action=save|restore`); some builds also write the context
 checkpoints a hybrid model needs to resume part-way. Before Locitize stops a model it
 saves slot 0 (when the slot holds a prompt worth keeping and is not busy); right after
 the model is ready again it restores the file. The next chat then reads only what is

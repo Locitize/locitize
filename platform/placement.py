@@ -148,7 +148,7 @@ MIN_CACHE_MB = 768
 CONTEXT_GROW_MAX = 32768
 CONTEXT_GROW_STEP = 4096
 
-# The WiFiBlu llama.cpp build streams experts by itself (its own reads into its own RAM
+# An expert-streaming llama.cpp build (one with GGML_EXPERT_STREAM) streams experts by itself (its own reads into its own RAM
 # cache) whenever the model file is bigger than physical RAM minus this, whatever the
 # planner asks for (ggml-cpu/expert-stream.h). A plan that assumed "experts in RAM" then
 # added a VRAM hot-expert cache over streamed experts: measured 2026-11-05 on gpt-oss-120b

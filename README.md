@@ -10,7 +10,7 @@ unless you ask it to.
 
 ## Install in 3 steps
 
-1. **Download** `locitize-1.1.0-windows.zip` from the
+1. **Download** `locitize-1.2.0-windows.zip` from the
    [latest release](https://github.com/locitize/locitize/releases/latest) and
    extract it to a folder. Python is included - nothing else to install first.
 2. **Double-click `Install locitize.bat`.** It checks every file, installs under
@@ -87,6 +87,37 @@ tools' global configuration or disable their permission prompts. Open WebUI's
 request-selected model remains authoritative unless a coding session has reserved
 the running model. **Release model** on the Code page lets the model switch again once
 you have finished in the coding terminals.
+
+## Models bigger than your GPU, or your RAM
+
+A mixture-of-experts (MoE) model uses only a few of its experts for each token:
+Qwen3.8 Flash Next has 125B parameters, but about 6B work on each token. locitize
+plans such a model from the GGUF file itself when it does not fit the GPU. There is
+nothing to set:
+
+- Attention, the shared weights and the KV cache go on the GPU.
+- The experts stay in RAM when they fit. When they do not, they stay on the drive,
+  memory mapped, and Windows keeps the ones in use in RAM, so RAM works as a cache.
+- The CPU reads prompts in large batches where the experts are, instead of copying
+  them to the GPU for every batch.
+
+Measured on an RTX 5070 Ti 16 GB with 64 GB of RAM and a PCIe 5.0 NVMe drive, with
+prompts of 1,500 to 15,000 tokens:
+
+| Model | File | Reading a prompt | Writing |
+|---|---|---|---|
+| Qwen3.8 Flash Next 125B-A6B, UD-Q3_K_XL | 84 GB | 106 to 165 tok/s | 22 to 24 tok/s |
+| GLM-5.3 Flash 321B-A18B, UD-IQ4_XS | 148 GB | 40 to 61 tok/s | 3 to 4 tok/s |
+
+What decides the speed is how many parameters work on each token and how fast the
+drive reads, not the model's total size. Use an NVMe drive (a SATA SSD or a hard
+disk is far slower), keep 8 GB of RAM free, and do not add `--no-mmap` to such a
+model's server_args: streaming needs the memory map.
+
+These numbers come from a llama.cpp build that streams experts into its own RAM
+cache with direct reads; locitize detects such a build and sizes its cache. That
+build is not published yet. The llama.cpp release setup installs runs the same
+models and streams through the Windows file cache instead; expect it to be slower.
 
 ## Session migration and data
 
